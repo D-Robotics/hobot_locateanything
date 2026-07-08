@@ -181,8 +181,8 @@ export LINARO_GCC_ROOT=$PWD/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linu
 ### 2.4 验证
 
 ```bash
-python -c "import leap_llm; print(leap_llm.__version__)"
-python -c "from hbdk4.compiler import leap; print(leap)"
+python -c "import importlib.metadata as m; print('leap_llm', m.version('leap_llm'))"
+python -c "from hbdk4.compiler import leap; print('hbdk4 leap OK:', leap)"
 ```
 
 ---
