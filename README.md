@@ -7,7 +7,7 @@ This repository records the S600 deployment work for LocateAnything-3B, includin
 ## 1. Clone this repository
 
 ```bash
-cd /home/kangjie.xu
+cd ~
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything
 ```
@@ -17,14 +17,14 @@ cd oe_locateanything
 The Eagle / LocateAnything source tree is kept as a local dependency and is not committed into this repository.
 
 ```bash
-cd /home/kangjie.xu/oe_locateanything
+cd ~/oe_locateanything
 git clone https://github.com/NVlabs/EAGLE.git eagle
 ```
 
 If using an internal mirror or a prepared archive, place the extracted Eagle repository at:
 
 ```text
-/home/kangjie.xu/oe_locateanything/eagle
+~/oe_locateanything/eagle
 ```
 
 Expected layout:
@@ -42,7 +42,7 @@ oe_locateanything/
 ## 3. Download D-Robotics LLM S600 SDK
 
 ```bash
-cd /home/kangjie.xu/oe_locateanything
+cd ~/oe_locateanything
 mkdir -p oellm/s600_sdk
 wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
 tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C oellm/s600_sdk
@@ -51,13 +51,13 @@ tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C oellm/s600_sdk
 Expected SDK path:
 
 ```text
-/home/kangjie.xu/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
+~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
 ```
 
 ## 4. Download D-Robotics LLM S600 documents
 
 ```bash
-cd /home/kangjie.xu/oe_locateanything
+cd ~/oe_locateanything
 mkdir -p oellm/s600_doc
 wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_Doc.zip
 unzip D-Robotics_LLM_S600_1.0.5_Doc.zip -d oellm/s600_doc
@@ -66,20 +66,20 @@ unzip D-Robotics_LLM_S600_1.0.5_Doc.zip -d oellm/s600_doc
 Expected document path:
 
 ```text
-/home/kangjie.xu/oe_locateanything/oellm/s600_doc/D-Robotics_LLM_S600_1.0.5_Doc
+~/oe_locateanything/oellm/s600_doc/D-Robotics_LLM_S600_1.0.5_Doc
 ```
 
 ## 5. Build OELLM S600 Docker environment
 
 ```bash
-cd /home/kangjie.xu/oe_locateanything
+cd ~/oe_locateanything
 docker build   -t locateanything_oellm_s600:1.0.5   -f main/docker/Dockerfile.oellm_s600   .
 ```
 
 Run the environment:
 
 ```bash
-cd /home/kangjie.xu/oe_locateanything
+cd ~/oe_locateanything
 main/scripts/run_oellm_s600_docker.sh bash
 ```
 
