@@ -27,7 +27,7 @@
 - **Runtime**  Host 侧 visual embeddings 与 KV cache 调度
 - **Validation**  PyTorch 与 HBM 输出一致性校验
 
-前置准备（拉取源码、下载权重、跑基线）在 NVIDIA GPU 主机上完成，量化编译使用地平线 OELLM S600 工具链，端侧运行在 S600。文档中每一步都会标注对应的执行环境。
+前置准备、量化编译在 NVIDIA GPU 主机（x86）上完成，端侧运行在 S600 主机上。
 
 ---
 
@@ -72,7 +72,7 @@ Host: PBD / Hybrid sampling → fallback → box / coordinate post-processing
 
 ## 1. 基础环境准备（NVIDIA GPU 主机）
 
-前置动作全部在 NVIDIA GPU 主机上完成，用于生成 PyTorch 基线，供后续 S600 量化与端侧对齐使用。
+在 NVIDIA GPU 主机上生成 PyTorch 基线，供后续 S600 量化与端侧对齐使用。
 
 ### 1.1 拉取仓库
 
@@ -130,13 +130,27 @@ boxes: [{'x1': ..., 'y1': ..., 'x2': ..., 'y2': ...}]
 
 ---
 
-## 2. OELLM S600 编译环境（x86 主机）
+## 2. OELLM S600 编译环境（NVIDIA GPU 主机）
 
-参考地平线官方 [x86 环境配置文档](https://developer.d-robotics.cc/) 完成 OELLM S600 工具链安装。
+OELLM S600 工具链与文档在同一台 NVIDIA GPU 主机上安装，用于将 LocateAnything 量化编译为 S600 上可执行的 HBM。
 
-### 2.1 准备 SDK 与文档
+### 2.1 下载并解压 SDK 与文档
 
-将官方发布包解压至：
+```bash
+cd ~/oe_locateanything/oellm
+
+mkdir -p s600_sdk s600_doc
+
+wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
+wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_Doc.zip
+
+tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C s600_sdk
+unzip -q D-Robotics_LLM_S600_1.0.5_Doc.zip -d s600_doc
+
+rm D-Robotics_LLM_S600_1.0.5_SDK.tar.gz D-Robotics_LLM_S600_1.0.5_Doc.zip
+```
+
+解压后目录：
 
 ```text
 oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
@@ -156,11 +170,11 @@ pip install oellm_build/hbdk4_runtime_aarch64_unknown_linux_gnu_nash-*.whl
 pip install oellm_build/leap_llm-*.whl
 ```
 
-### 2.3 交叉编译工具链（可选，仅端侧 runtime 编译需要）
+### 2.3 交叉编译工具链
 
 ```bash
 sudo mkdir -p /opt/aarch64
-sudo tar -xf oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C /opt/aarch64
+sudo tar -xf ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C /opt/aarch64
 export LINARO_GCC_ROOT=/opt/aarch64/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linux-gnu
 ```
 
