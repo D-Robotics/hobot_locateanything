@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # ?? oe_locateanything
 
@@ -197,6 +197,182 @@ Inside the container, the workspace is mounted at:
 
 ---
 
+---
+
+## NVIDIA GPU Environment Preparation
+
+This section prepares the LocateAnything PyTorch environment on an NVIDIA GPU machine. The generated outputs are used as the baseline for later S600 conversion and validation.
+
+### 1. Clone Eagle / LocateAnything
+
+```bash
+cd ~/oe_locateanything
+git clone https://github.com/NVlabs/EAGLE.git eagle
+cd eagle/Embodied
+```
+
+If the source tree is prepared from an internal mirror or archive, keep the same layout:
+
+```text
+~/oe_locateanything/eagle/Embodied
+```
+
+### 2. Create LocateAnything conda environment
+
+```bash
+cd ~/oe_locateanything/eagle/Embodied
+
+conda create -n locateanything_export python=3.10 -y
+conda activate locateanything_export
+
+python -m pip install -U pip
+python -m pip install -U huggingface_hub hf_transfer
+```
+
+### 3. Download LocateAnything-3B weights
+
+Model page:
+
+```text
+https://huggingface.co/nvidia/LocateAnything-3B
+```
+
+Download command:
+
+```bash
+cd ~/oe_locateanything/eagle/Embodied
+rm -rf LocateAnything-3B
+
+export HF_ENDPOINT=https://hf-mirror.com
+unset HF_HUB_ENABLE_HF_TRANSFER
+
+hf download nvidia/LocateAnything-3B \
+  --local-dir LocateAnything-3B
+```
+
+Expected model directory:
+
+```text
+~/oe_locateanything/eagle/Embodied/LocateAnything-3B
+```
+
+### 4. Install Eagle / LocateAnything package
+
+```bash
+cd ~/oe_locateanything/eagle/Embodied
+conda activate locateanything_export
+pip install -e .
+```
+
+### 5. Prepare a minimal baseline test
+
+Create test directories:
+
+```bash
+cd ~/oe_locateanything/eagle/Embodied
+mkdir -p deploy_s600/tests deploy_s600/golden
+```
+
+Create the test script:
+
+```bash
+cat > deploy_s600/tests/demo_min.py <<'PY'
+import os
+import subprocess
+from pathlib import Path
+
+
+def pick_free_gpu():
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        print(f"Using existing CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+        return
+
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+        )
+    except Exception as exc:
+        print(f"Failed to query GPU with nvidia-smi: {exc}")
+        return
+
+    gpus = []
+    for line in output.strip().splitlines():
+        index, free_mem = line.split(",")
+        gpus.append((int(index.strip()), int(free_mem.strip())))
+
+    if not gpus:
+        return
+
+    best_gpu, best_free_mem = max(gpus, key=lambda item: item[1])
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+    print(f"Auto selected GPU {best_gpu} with {best_free_mem} MiB free")
+
+
+pick_free_gpu()
+
+from PIL import Image
+
+from locateanything_worker import LocateAnythingWorker
+
+root = Path(__file__).resolve().parents[2]
+model_dir = root / "LocateAnything-3B"
+image_path = root / "test-cat.jpg"
+
+worker = LocateAnythingWorker(
+    str(model_dir),
+    device="cuda",
+)
+
+img = Image.open(image_path).convert("RGB")
+
+result = worker.detect(
+    img,
+    ["cat"],
+    max_new_tokens=256,
+    verbose=False,
+)
+
+answer = result["answer"]
+boxes = worker.parse_boxes(answer, img.width, img.height)
+
+print("answer:", answer)
+print("boxes:", boxes)
+
+out_dir = root / "deploy_s600" / "golden"
+out_dir.mkdir(parents=True, exist_ok=True)
+(out_dir / "official_answer.txt").write_text(answer, encoding="utf-8")
+(out_dir / "official_boxes.txt").write_text(str(boxes), encoding="utf-8")
+PY
+```
+
+### 6. Run the baseline test
+
+```bash
+cd ~/oe_locateanything/eagle/Embodied
+conda activate locateanything_export
+PYTHONPATH=$PWD python deploy_s600/tests/demo_min.py
+```
+
+A successful run prints output similar to:
+
+```text
+answer: <ref>cat</ref><box><...><...><...><...></box>
+boxes: [{'x1': ..., 'y1': ..., 'x2': ..., 'y2': ...}]
+```
+
+The script also writes baseline files to:
+
+```text
+~/oe_locateanything/eagle/Embodied/deploy_s600/golden/official_answer.txt
+~/oe_locateanything/eagle/Embodied/deploy_s600/golden/official_boxes.txt
+```
+
+This confirms that the LocateAnything source tree, model weights, processor, tokenizer and PyTorch runtime are ready for later S600 conversion and validation.
 ## ?? Model Summary
 
 | Module | Description |
