@@ -1,0 +1,44 @@
+# Heavy external assets
+/eagle/
+/oellm/s600_sdk/
+/oellm/s600_doc/
+
+# Model weights and generated artifacts
+*.safetensors
+*.bin
+*.hbm
+*.hbo
+*.bc
+*.onnx
+*.pt
+*.pth
+*.gguf
+*.npy
+*.npz
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.xz
+
+# Generated data and outputs
+/main/golden/**
+/main/outputs/**
+/main/logs/**
+/main/benchmarks/**
+/main/**/output/**
+/main/**/outputs/**
+/main/**/cache/**
+/main/**/__pycache__/**
+
+# Python / editor
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+
+# Keep directory placeholders
+!.gitkeep
+!README.md

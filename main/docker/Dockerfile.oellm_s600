@@ -1,0 +1,14 @@
+FROM hub.hobot.cc/dlp/hat:runtime-py3.10-torch2.8.0-cu128-ubuntu-3.0.1
+
+WORKDIR /workspace/oe_locateanything
+
+COPY oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/oellm_build/requirements.txt /tmp/oellm_requirements.txt
+COPY oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/oellm_build/leap_llm-1.0.5-py3-none-any.whl /tmp/
+COPY oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/oellm_build/hbdk4_compiler-4.10.2a2.dev202603180400+4c23b55.develop-cp310-cp310-manylinux_2_28_x86_64.whl /tmp/
+
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install -r /tmp/oellm_requirements.txt && \
+    python3 -m pip install /tmp/hbdk4_compiler-4.10.2a2.dev202603180400+4c23b55.develop-cp310-cp310-manylinux_2_28_x86_64.whl /tmp/leap_llm-1.0.5-py3-none-any.whl && \
+    rm -f /tmp/oellm_requirements.txt /tmp/leap_llm-1.0.5-py3-none-any.whl /tmp/hbdk4_compiler-4.10.2a2.dev202603180400+4c23b55.develop-cp310-cp310-manylinux_2_28_x86_64.whl
+
+CMD [" bash\]
