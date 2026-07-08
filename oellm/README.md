@@ -1,10 +1,12 @@
-# OELLM Resources
+# oellm
 
-Place D-Robotics LLM S600 SDK and documentation here when setting up a local build environment.
+D-Robotics LLM S600 SDK 与文档存放位置。
 
-Expected local-only directories:
+## 目录
 
-- `s600_sdk/`
-- `s600_doc/`
+| 目录 | 说明 |
+|---|---|
+| `s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK` | 官方 SDK，含 `oellm_build`、`oellm_runtime` |
+| `s600_doc/D-Robotics_LLM_S600_1.0.5_Doc` | 官方文档 |
 
-These directories are ignored by Git because they contain large third-party SDK files.
+两目录均在 `.gitignore` 中，需从地平线官方渠道单独获取。

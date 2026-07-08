@@ -1,243 +1,102 @@
-﻿<div align="center">
+<div align="center">
 
-# ?? oe_locateanything
+# oe_locateanything
 
-**LocateAnything-3B deployment workspace for D-Robotics S600**
+**LocateAnything-3B deployment on D-Robotics S600**
 
 <p align="center">
-  <img src="assets/LocateAnything.jpg" alt="D-Robotics LocateAnything" width="100%">
+  <img src="assets/LocateAnything.jpg" alt="LocateAnything" width="100%">
 </p>
 
-[![Platform](https://img.shields.io/badge/Platform-D--Robotics%20S600-brightgreen)](#)
-[![Runtime](https://img.shields.io/badge/Runtime-OELLM%20S600-blue)](#)
-[![Model](https://img.shields.io/badge/Model-LocateAnything--3B-orange)](#)
-[![Status](https://img.shields.io/badge/Status-Deployment%20Research-yellow)](#)
+[![Platform](https://img.shields.io/badge/platform-D--Robotics%20S600-brightgreen)](#)
+[![Runtime](https://img.shields.io/badge/runtime-OELLM%201.0.5-blue)](#)
+[![Model](https://img.shields.io/badge/model-LocateAnything--3B-orange)](#)
+[![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey)](LICENSE)
 
 </div>
 
-## ?? Overview
+---
 
-`oe_locateanything` records the deployment workflow of **LocateAnything-3B** on the **D-Robotics S600** platform.
+## 概述
 
-The project focuses on a modular S600 deployment path for LocateAnything, including:
+本仓库提供 LocateAnything-3B 在 D-Robotics S600 平台上的端到端部署实现，包括：
 
-- ?? **Vision Module**: MoonViT + MLP Projector
-- ?? **Language Module**: LocateAnything Qwen2.5 Decoder
-- ? **Generation Module**: Slow / Fast(PBD) / Hybrid decoding
-- ?? **Runtime Integration**: visual embeddings + text embeddings + KV cache scheduling
-- ? **Validation**: PyTorch / HBM output alignment and benchmark records
+- **Vision**  MoonViT + MLP Projector
+- **Language**  LocateAnything Qwen2.5 Decoder
+- **Generation**  Slow / Fast (PBD) / Hybrid 三种解码模式
+- **Runtime**  Host 侧 visual embeddings 与 KV cache 调度
+- **Validation**  PyTorch 与 HBM 输出一致性校验
 
-This repository only tracks deployment code, configuration, notes, and scripts. Model weights, SDK packages, generated HBM files, calibration data, and large artifacts are kept local.
+前置准备（拉取源码、下载权重、跑基线）在 NVIDIA GPU 主机上完成，量化编译使用地平线 OELLM S600 工具链，端侧运行在 S600。文档中每一步都会标注对应的执行环境。
 
 ---
 
-## ?? Target Architecture
+## 架构
+
+<details>
+<summary>展开详细数据流</summary>
 
 ```text
 image
-  ?
-Vision HBM
-  MoonViT + MLP Projector
-  input : pixel_values [1656, 3, 14, 14]
-  output: visual_embeds [414, 2048]
+  ↓
+Vision HBM (MoonViT + MLP Projector)
+  input  pixel_values [1656, 3, 14, 14]
+  output visual_embeds [414, 2048]
 
 text prompt
-  ?
-Host tokenizer
-  input_ids
+  ↓
+Host tokenizer → input_ids
 
 input_ids + visual_embeds
-  ?
-Host prepares inputs_embeds / position_ids / attention_mask
+  ↓
+Host: inputs_embeds / position_ids / attention_mask
 
 Qwen Prefill HBM
-  input : inputs_embeds [prefill_len, 2048]
-          position_ids
-          attention_mask
-  output: logits
-          KV cache
+  input  inputs_embeds [prefill_len, 2048], position_ids, attention_mask
+  output logits, KV cache
 
-PBD Decode HBM
-  input : current block embeddings [6, 2048]
-          KV cache
-          position_ids
-          attention_mask
-  output: logits [6, vocab]
-          updated KV cache
+PBD Decode HBM (q_len=6)
+  input  block embeddings [6, 2048], KV cache, position_ids, attention_mask
+  output logits [6, vocab], updated KV cache
 
-AR Decode HBM
-  input : current token embedding [1, 2048]
-          KV cache
-          position_ids
-          attention_mask
-  output: logits [1, vocab]
-          updated KV cache
+AR Decode HBM (q_len=1)
+  input  token embedding [1, 2048], KV cache, position_ids, attention_mask
+  output logits [1, vocab], updated KV cache
 
-Host
-  PBD / Hybrid sampling
-  fallback decision
-  box / coordinate / token post-processing
+Host: PBD / Hybrid sampling → fallback → box / coordinate post-processing
 ```
+
+</details>
 
 ---
 
-## ?? Repository Layout
+## 1. 基础环境准备（NVIDIA GPU 主机）
 
-```text
-oe_locateanything/
-  assets/
-    LocateAnything.jpg
-  main/
-    vision/        # MoonViT + MLP Vision Module deployment work
-    language/      # Qwen2.5 Prefill / Decode / PBD deployment work
-    runtime/       # Host-side runtime integration
-    configs/       # Build and runtime configuration files
-    scripts/       # Environment, build, validation and benchmark scripts
-    golden/        # Golden data placeholders
-    benchmarks/    # Benchmark data and records
-    outputs/       # Generated artifact placeholders
-    logs/          # Build and validation logs
-  oellm/
-    README.md      # OELLM SDK placement notes
-  README.md
-```
+前置动作全部在 NVIDIA GPU 主机上完成，用于生成 PyTorch 基线，供后续 S600 量化与端侧对齐使用。
 
-Local-only directories:
-
-```text
-eagle/             # Eagle / LocateAnything source tree
-oellm/s600_sdk/    # D-Robotics LLM S600 SDK
-oellm/s600_doc/    # D-Robotics LLM S600 documentation
-```
-
-These directories are ignored by Git.
-
----
-
-## ??? Environment Setup
-
-### 1. Clone this repository
+### 1.1 拉取仓库
 
 ```bash
 cd ~
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything
+git clone https://github.com/NVlabs/Eagle.git eagle
 ```
 
-### 2. Clone LocateAnything / Eagle source
-
-```bash
-git clone https://github.com/NVlabs/EAGLE.git eagle
-```
-
-Expected layout:
-
-```text
-oe_locateanything/
-  eagle/
-    Embodied/
-    Eagle/
-    Eagle2_5/
-```
-
-If using an internal mirror or a prepared archive, place the extracted Eagle repository at:
-
-```text
-~/oe_locateanything/eagle
-```
-
-### 3. Download D-Robotics LLM S600 SDK
-
-```bash
-mkdir -p oellm/s600_sdk
-wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
-tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C oellm/s600_sdk
-```
-
-Expected SDK path:
-
-```text
-oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
-```
-
-### 4. Download D-Robotics LLM S600 documentation
-
-```bash
-mkdir -p oellm/s600_doc
-wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_Doc.zip
-unzip D-Robotics_LLM_S600_1.0.5_Doc.zip -d oellm/s600_doc
-```
-
-Expected document path:
-
-```text
-oellm/s600_doc/D-Robotics_LLM_S600_1.0.5_Doc
-```
-
-### 5. Build the OELLM S600 Docker image
-
-```bash
-docker build \
-  -t locateanything_oellm_s600:1.0.5 \
-  -f main/docker/Dockerfile.oellm_s600 \
-  .
-```
-
-### 6. Enter the build environment
-
-```bash
-main/scripts/run_oellm_s600_docker.sh bash
-```
-
-Inside the container, the workspace is mounted at:
-
-```text
-/workspace/oe_locateanything
-```
-
----
-
----
-
-## NVIDIA GPU Environment Preparation
-
-This section prepares the LocateAnything PyTorch environment on an NVIDIA GPU machine. The generated outputs are used as the baseline for later S600 conversion and validation.
-
-### 1. Clone Eagle / LocateAnything
-
-```bash
-cd ~/oe_locateanything
-git clone https://github.com/NVlabs/EAGLE.git eagle
-cd eagle/Embodied
-```
-
-If the source tree is prepared from an internal mirror or archive, keep the same layout:
-
-```text
-~/oe_locateanything/eagle/Embodied
-```
-
-### 2. Create LocateAnything conda environment
+### 1.2 创建 Conda 环境
 
 ```bash
 cd ~/oe_locateanything/eagle/Embodied
 
-conda create -n locateanything_export python=3.10 -y
-conda activate locateanything_export
+conda create -n locateanything python=3.10 -y
+conda activate locateanything
 
-python -m pip install -U pip
-python -m pip install -U huggingface_hub hf_transfer
+python -m pip install -U pip huggingface_hub hf_transfer
 ```
 
-### 3. Download LocateAnything-3B weights
+### 1.3 下载模型权重
 
-Model page:
-
-```text
-https://huggingface.co/nvidia/LocateAnything-3B
-```
-
-Download command:
+模型页面：<https://huggingface.co/nvidia/LocateAnything-3B>
 
 ```bash
 cd ~/oe_locateanything/eagle/Embodied
@@ -246,185 +105,150 @@ rm -rf LocateAnything-3B
 export HF_ENDPOINT=https://hf-mirror.com
 unset HF_HUB_ENABLE_HF_TRANSFER
 
-hf download nvidia/LocateAnything-3B \
-  --local-dir LocateAnything-3B
+hf download nvidia/LocateAnything-3B --local-dir LocateAnything-3B
 ```
 
-Expected model directory:
+权重存放路径：`~/oe_locateanything/eagle/Embodied/LocateAnything-3B`。
 
-```text
-~/oe_locateanything/eagle/Embodied/LocateAnything-3B
-```
-
-### 4. Install Eagle / LocateAnything package
+### 1.4 安装 LocateAnything 并跑基线
 
 ```bash
 cd ~/oe_locateanything/eagle/Embodied
-conda activate locateanything_export
 pip install -e .
+
+PYTHONPATH=$PWD python ~/oe_locateanything/main/examples/demo_min.py
 ```
 
-### 5. Prepare a minimal baseline test
-
-Create test directories:
-
-```bash
-cd ~/oe_locateanything/eagle/Embodied
-mkdir -p deploy_s600/tests deploy_s600/golden
-```
-
-Create the test script:
-
-```bash
-cat > deploy_s600/tests/demo_min.py <<'PY'
-import os
-import subprocess
-from pathlib import Path
-
-
-def pick_free_gpu():
-    if os.environ.get("CUDA_VISIBLE_DEVICES"):
-        print(f"Using existing CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
-        return
-
-    try:
-        output = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-        )
-    except Exception as exc:
-        print(f"Failed to query GPU with nvidia-smi: {exc}")
-        return
-
-    gpus = []
-    for line in output.strip().splitlines():
-        index, free_mem = line.split(",")
-        gpus.append((int(index.strip()), int(free_mem.strip())))
-
-    if not gpus:
-        return
-
-    best_gpu, best_free_mem = max(gpus, key=lambda item: item[1])
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
-    print(f"Auto selected GPU {best_gpu} with {best_free_mem} MiB free")
-
-
-pick_free_gpu()
-
-from PIL import Image
-
-from locateanything_worker import LocateAnythingWorker
-
-root = Path(__file__).resolve().parents[2]
-model_dir = root / "LocateAnything-3B"
-image_path = root / "test-cat.jpg"
-
-worker = LocateAnythingWorker(
-    str(model_dir),
-    device="cuda",
-)
-
-img = Image.open(image_path).convert("RGB")
-
-result = worker.detect(
-    img,
-    ["cat"],
-    max_new_tokens=256,
-    verbose=False,
-)
-
-answer = result["answer"]
-boxes = worker.parse_boxes(answer, img.width, img.height)
-
-print("answer:", answer)
-print("boxes:", boxes)
-
-out_dir = root / "deploy_s600" / "golden"
-out_dir.mkdir(parents=True, exist_ok=True)
-(out_dir / "official_answer.txt").write_text(answer, encoding="utf-8")
-(out_dir / "official_boxes.txt").write_text(str(boxes), encoding="utf-8")
-PY
-```
-
-### 6. Run the baseline test
-
-```bash
-cd ~/oe_locateanything/eagle/Embodied
-conda activate locateanything_export
-PYTHONPATH=$PWD python deploy_s600/tests/demo_min.py
-```
-
-A successful run prints output similar to:
+成功时输出：
 
 ```text
 answer: <ref>cat</ref><box><...><...><...><...></box>
 boxes: [{'x1': ..., 'y1': ..., 'x2': ..., 'y2': ...}]
 ```
 
-The script also writes baseline files to:
+同时在 `eagle/Embodied/deploy_s600/golden/` 下生成 `official_answer.txt` 与 `official_boxes.txt`，作为后续 HBM 输出对齐的基线。
+
+---
+
+## 2. OELLM S600 编译环境（x86 主机）
+
+参考地平线官方 [x86 环境配置文档](https://developer.d-robotics.cc/) 完成 OELLM S600 工具链安装。
+
+### 2.1 准备 SDK 与文档
+
+将官方发布包解压至：
 
 ```text
-~/oe_locateanything/eagle/Embodied/deploy_s600/golden/official_answer.txt
-~/oe_locateanything/eagle/Embodied/deploy_s600/golden/official_boxes.txt
+oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
+oellm/s600_doc/D-Robotics_LLM_S600_1.0.5_Doc
 ```
 
-This confirms that the LocateAnything source tree, model weights, processor, tokenizer and PyTorch runtime are ready for later S600 conversion and validation.
-## ?? Model Summary
+### 2.2 创建 Conda 环境
 
-| Module | Description |
+```bash
+conda create -n oellm python=3.10 -y
+conda activate oellm
+
+cd ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
+pip install -r oellm_build/requirements.txt
+pip install oellm_build/hbdk4_compiler-*.whl
+pip install oellm_build/hbdk4_runtime_aarch64_unknown_linux_gnu_nash-*.whl
+pip install oellm_build/leap_llm-*.whl
+```
+
+### 2.3 交叉编译工具链（可选，仅端侧 runtime 编译需要）
+
+```bash
+sudo mkdir -p /opt/aarch64
+sudo tar -xf oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C /opt/aarch64
+export LINARO_GCC_ROOT=/opt/aarch64/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linux-gnu
+```
+
+### 2.4 验证
+
+```bash
+python -c "import leap_llm; print(leap_llm.__version__)"
+python -c "from hbdk4.compiler import leap; print(leap)"
+```
+
+---
+
+## 模型规格
+
+| 模块 | 配置 |
 |---|---|
-| Vision Encoder | MoonViT-SO-400M |
-| Projector | 2-layer MLP, `4608 ? 2048` |
-| Language Model | Qwen2.5-style decoder |
-| Vocabulary | `152681` tokens |
-| PBD Block | `6` tokens per block |
+| Vision Encoder | MoonViT-SO-400M（27 层，hidden=1152，patch=14） |
+| Projector | 2-layer MLP，4608 → 2048 |
+| Language Model | Qwen2.5-3B decoder（36 层，hidden=2048，KV heads=2） |
+| Vocabulary | 152681（含 `<0>~<1000>`、`<ref>`、`<box>` 等坐标 token） |
+| PBD Block | 6 tokens / block |
 | Output Format | `<ref>label</ref><box>x1 y1 x2 y2</box>` |
 
-Parameter statistics:
-
-| Module | Params | Share |
+| 参数量 | 值 | 占比 |
 |---|---:|---:|
-| Qwen2.5 language model | 3.400B | 88.76% |
-| MoonViT vision model | 0.417B | 10.88% |
-| MLP projector | 0.014B | 0.36% |
-| Total | 3.831B | 100% |
+| Qwen2.5 language model | 3.400 B | 88.76% |
+| MoonViT vision model | 0.417 B | 10.88% |
+| MLP projector | 0.014 B | 0.36% |
+| **Total** | **3.831 B** | 100% |
 
 ---
 
-## ? Current Status
+## 仓库结构
 
-- [x] Define S600 deployment workspace layout
-- [x] Prepare OELLM S600 Docker build environment
-- [x] Verify `leap_llm-1.0.5` import and CUDA availability
-- [ ] Analyze S600 `qwen2_5_vl` / `qwen3_vl` build flow
-- [ ] Implement custom MoonViT visual module
-- [ ] Implement custom LocateAnything Qwen module
-- [ ] Build Prefill / PBD Decode / AR Decode HBM artifacts
-- [ ] Integrate Host runtime and validation pipeline
-
----
-
-## ?? Git Policy
-
-The repository does **not** track:
-
-- model weights
-- OELLM SDK packages
-- generated HBM / ONNX / GGUF files
-- calibration datasets
-- `.npy` / `.npz` golden outputs
-- large logs and benchmark artifacts
-
-See `.gitignore` for details.
+```text
+oe_locateanything/
+├── assets/                    静态资源
+├── main/                      S600 部署工作目录
+│   ├── examples/              基线与集成示例
+│   ├── vision/                MoonViT + MLP Vision Module
+│   ├── language/              Qwen Prefill / PBD Decode / AR Decode
+│   ├── runtime/               Host 侧 runtime
+│   ├── configs/               编译与运行配置
+│   ├── scripts/               构建、验证、benchmark 脚本
+│   ├── golden/                golden 数据
+│   ├── benchmarks/            benchmark 输入与结果
+│   ├── outputs/               编译产物（.gitignore）
+│   └── logs/                  编译与验证日志
+├── oellm/                     S600 SDK 与文档位置说明
+├── eagle/                     LocateAnything / Eagle 源码（.gitignore）
+└── README.md
+```
 
 ---
 
-## ?? References
+## Roadmap
 
-- [LocateAnything / Eagle](https://github.com/NVlabs/EAGLE)
-- [D-Robotics LLM S600 SDK](https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz)
-- [D-Robotics LLM S600 Documentation](https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_Doc.zip)
+- [ ] S600 `qwen2_5_vl` / `qwen3_vl` 编译流程分析
+- [ ] MoonViT + MLP 自定义 visual module 接入 leap_llm
+- [ ] LocateAnything Qwen2.5 自定义 language module 接入 leap_llm
+- [ ] Prefill / PBD Decode (q_len=6) / AR Decode HBM 编译
+- [ ] Host runtime 集成 PBD / Hybrid 采样
+- [ ] PyTorch ↔ HBM 单图与批量精度对齐
+- [ ] S600 端侧性能与精度评估
+
+---
+
+## Citation
+
+```bibtex
+@misc{locateanything,
+  title  = {LocateAnything},
+  author = {NVIDIA},
+  year   = {2025},
+  url    = {https://huggingface.co/nvidia/LocateAnything-3B}
+}
+```
+
+---
+
+## References
+
+- [LocateAnything / Eagle](https://github.com/NVlabs/Eagle)
+- [D-Robotics OpenExplorer](https://developer.d-robotics.cc/)
+- [Hugging Face: nvidia/LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B)
+
+---
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
