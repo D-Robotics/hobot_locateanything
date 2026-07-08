@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leap-llm"
+version = "1.0.5"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets==3.2.0",
+    "pyyaml==6.0.2",
+    "openpyxl==3.1.5",
+    "paramiko==3.5.1",
+]
+
+[project.scripts]
+oellm_build = "leap_llm.apis.oellm_build:main"
+oellm_verifier = "leap_llm.apis.verifier_cli:main"
+
+[tool.setuptools]
+packages = ["leap_llm", "llm_compression", "scm"]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+leap_llm = "leap_llm"
+llm_compression = "llm_compression"
+scm = "scm"
