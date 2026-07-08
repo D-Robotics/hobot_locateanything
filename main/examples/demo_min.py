@@ -42,7 +42,7 @@ from locateanything_worker import LocateAnythingWorker
 
 embodied_root = Path(__file__).resolve().parents[2] / "eagle" / "Embodied"
 model_dir = embodied_root / "LocateAnything-3B"
-image_path = embodied_root / "test-cat.jpg"
+image_path = Path(__file__).resolve().parent / "test-cat.jpg"
 golden_dir = embodied_root / "deploy_s600" / "golden"
 
 worker = LocateAnythingWorker(str(model_dir), device="cuda")
