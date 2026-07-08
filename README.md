@@ -159,9 +159,9 @@ pip install oellm_build/leap_llm-*.whl
 
 ### 2.3 浜ゅ弶缂栬瘧宸ュ叿閾?
 ```bash
-sudo mkdir -p /opt/aarch64
-sudo tar -xf ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C /opt/aarch64
-export LINARO_GCC_ROOT=/opt/aarch64/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linux-gnu
+cd ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
+tar -xf arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+export LINARO_GCC_ROOT=$PWD/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linux-gnu
 ```
 
 ### 2.4 楠岃瘉
