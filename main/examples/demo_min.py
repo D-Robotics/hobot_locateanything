@@ -36,20 +36,29 @@ def pick_free_gpu():
 
 pick_free_gpu()
 
+import torch
 from PIL import Image
 
 from locateanything_worker import LocateAnythingWorker
+
+MAX_LONG_SIDE = 1024
 
 embodied_root = Path(__file__).resolve().parents[2] / "eagle" / "Embodied"
 model_dir = embodied_root / "LocateAnything-3B"
 image_path = Path(__file__).resolve().parent / "test-cat.jpg"
 golden_dir = embodied_root / "deploy_s600" / "golden"
 
-worker = LocateAnythingWorker(str(model_dir), device="cuda")
+worker = LocateAnythingWorker(str(model_dir), device="cuda", dtype=torch.bfloat16)
 
 img = Image.open(image_path).convert("RGB")
+long_side = max(img.size)
+if long_side > MAX_LONG_SIDE:
+    scale = MAX_LONG_SIDE / long_side
+    new_size = (int(img.width * scale), int(img.height * scale))
+    print(f"resize {img.size} -> {new_size}")
+    img = img.resize(new_size, Image.BICUBIC)
 
-result = worker.detect(img, ["cat"], max_new_tokens=256, verbose=False)
+result = worker.detect(img, ["cat"], max_new_tokens=64, verbose=False)
 
 answer = result["answer"]
 boxes = worker.parse_boxes(answer, img.width, img.height)
