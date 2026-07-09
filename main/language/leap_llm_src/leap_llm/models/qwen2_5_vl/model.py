@@ -860,6 +860,7 @@ class Qwen2_5_VL:
         input_model_format: str = "hf",
         image_width: int = 448,
         image_height: int = 448,
+        decode_seq_len: int = 1,
     ) -> "Qwen2_5_VL":
         assert os.path.isdir(
             model_dir
@@ -884,7 +885,7 @@ class Qwen2_5_VL:
 
         model_args.text_config.prefill_seq_len = chunk_size
         model_args.text_config.cache_len = cache_len
-        model_args.text_config.decode_seq_len = 1
+        model_args.text_config.decode_seq_len = decode_seq_len
         model_args.text_config.batch_size = batch_size
         model_args.vision_config.image_height = image_height
         model_args.vision_config.image_width = image_width
@@ -978,7 +979,7 @@ class Qwen2_5_VL:
                 high_precision_qpp = True
                 inputs = sub_model.get_leap_input_types_decode_model(
                     num_layers,
-                    1,
+                    config.text_config.decode_seq_len,
                     cache_len,
                     batch_size=batch_size,
                 )

@@ -310,6 +310,7 @@ def _build_qwen2_5_vl_3b(args):
         vit_core_num=args.vit_core_num,
         prefill_core_num=args.prefill_core_num,
         decode_core_num=args.decode_core_num,
+        decode_seq_len=args.decode_seq_len,
         input_model_format=args.input_model_format,
         march=args.march,
     )
@@ -341,6 +342,7 @@ def _build_qwen2_5_vl_7b(args):
         vit_core_num=args.vit_core_num,
         prefill_core_num=args.prefill_core_num,
         decode_core_num=args.decode_core_num,
+        decode_seq_len=args.decode_seq_len,
         input_model_format=args.input_model_format,
         march=args.march,
     )

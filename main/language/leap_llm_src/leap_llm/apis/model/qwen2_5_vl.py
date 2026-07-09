@@ -401,6 +401,7 @@ class Qwen2_5VlApi:
         decode_core_num: list[int] = None,
         input_model_format: str = "hf",
         march: str = "nash-p",
+        decode_seq_len: int = 1,
     ):
         if vit_core_num is None:
             vit_core_num = [1]
@@ -432,6 +433,7 @@ class Qwen2_5VlApi:
         self.decode_core_num = decode_core_num
         self.input_model_format = input_model_format
         self.mask_value = mask_value
+        self.decode_seq_len = decode_seq_len
 
         self.output_vit_model_path = standard_vit_name(
             input_model_path,
@@ -484,6 +486,7 @@ class Qwen2_5VlApi:
             input_model_format=self.input_model_format,
             image_width=self.image_width,
             image_height=self.image_height,
+            decode_seq_len=self.decode_seq_len,
         )
         self.model = self.model_wrapper.model
         self.processor = AutoProcessor.from_pretrained(
