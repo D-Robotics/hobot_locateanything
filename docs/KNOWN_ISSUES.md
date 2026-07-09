@@ -164,3 +164,60 @@ divisible by 64, but get 305362.
 - **`--w_bits 8` for the lm_head**: lm_head byte count would become 152681 × 1 = 152681, still `% 64 = 25 ≠ 0`. Does not fix the issue.
 
 **Prevention**: When picking `no_padding` flags, always check `vocab_size × sizeof(dtype) % 64 == 0` for the lm_head output. Add this as a compile-time assertion in `LocateAnythingLanguageApi.__init__` (TBD).
+
+---
+
+## #009 Illegal b30 fusion / A 方案闭环记录 (2026-07-09)
+
+**Symptom**: `oellm_build --model_name locateanything-lm-3b` 编译过程中打印 36 条 `[B30 Fusion MultiCore Legalize]: Illegal b30 fusion operator detected`，每层 self-attention 的 `wv_matmul` 命中一次。曾一度怀疑这是 decode 阶段静默 die 的根因。
+
+**Trigger**: Qwen2.5-3B decoder 的 36 层 self-attention，每层 `wv_matmul` 输出 `[1, 2, 2048, 128]`（GQA: 16 Q-heads / 2 KV-heads / head_dim 128）进入 `b30fusion.scaled_dot_product_attention` / `b30fusion.group_query_attention` 融合初态。
+
+**Root cause**: 良性——`B30FusionMultiCoreLegalizePass` 的诊断日志，非编译错误。
+
+底层机制：
+- B30 fusion 假设 Q/K/V 三分支 rank 4 对齐、num_heads 维度长度一致、heads axis=1、KV 广播显式化。
+- GQA 破坏 "num_heads 一致"（Q 16, KV 2），wv 分支进入 PV-GEMM (`softmax(QK^T) @ V`) 融合入口时需要沿 head 轴复制 8 次到 16，融合初态不合约束。
+- Pass 检测出 → 打印 "Illegal detected" → **同 pass 内部**调用 `LegalizeRankForB30VpuFusion` / `MergeAxesForB30VpuFusion` / `SplitB30VpuFusion` / `UnFoldFusion` 把 IR 改造成合法融合形态。
+- 命名带 "Illegal" 是 MLIR `Legalize*Pass` 的惯例（"合法化前的 findings marker"），不是 bug。
+
+只 `wv_matmul` 触发的原因：wv 是融合区域的输出端消费者，pass 挑选它作为 illegal report 的 layerName 锚点；wk/wq 各自进入的融合前半段（QK^T + softmax）rank/axis 天然对齐，不需要 legalize。
+
+**Evidence**:
+1. Per-layer 等价性：LA-LM 与 baseline qwen2_5-vl-3b 各 36 条 illegal，layerName 逐字符串等价（`layers.0~35.self_attn.wv_matmul`，同源 `matmul.py:27:19`），wk/wq 计数均为 0。
+2. baseline 同样 36 条 illegal 后 `Function compile_hbo done in 4077.7s` 并产出 hbm，error/failed 计数=0。
+3. `libHBDKPythonCAPI.so` strings 里 `B30FusionMultiCoreLegalizePass` 与 `LegalizeRankForB30VpuFusion`, `SplitB30VpuFusion`, `MergeAxesForB30VpuFusion`, `UnFoldFusion` 共存——detect + rewrite 两条路径在同一 pass。
+4. `b30fusion.group_query_attention` op 名存在于二进制字符串表 → B30 硬件原生支持 GQA 融合。
+
+**Fix**: 不改代码。将 illegal 日志归类为 diagnostic-only。
+
+**Alternatives considered**:
+- 把 Qwen2.5-3B 的 GQA (16/2) 改成 MHA (16/16)：破坏预训练权重的 KV 投影矩阵形状，加载失败；即使 pad KV 权重也会破坏精度。
+- 在 leap DSL 里手动把 wv 输出 `.repeat(8, dim=1)` 扩到 16 heads：可行但工程冗余，且 hbdk4 pass 会把重复的 legalize 再做一遍。
+- 关闭 hbdk4 pass 的 illegal 日志：需要改 wheel 源码，收益低于噪声成本。
+
+**Prevention**: `docs/KNOWN_ISSUES.md` 记录 (此条)。下次遇到 `Illegal b30 fusion` 直接按本条判定良性，跳过重新排查；同时把注意力放在 log tail 的其他 warning（如 `output_no_padding=true will not be applied` #008）上。
+
+---
+
+## #010 A 方案修复 vocab 152681 编译闭环 (2026-07-09)
+
+**Symptom**: 上一轮 M2 编译在 prefill.hbo 产出后 python 静默 die 于 decode.compile_hbo（详见 #008）。移除 `input_no_padding=True, output_no_padding=True` 两个 kwargs 后重编。
+
+**Trigger**: 同 #008。
+
+**Root cause**: 同 #008。
+
+**Fix (verified)**: 移除后重编，A 方案生效：
+- `prefill.compile_hbo` done in **4379.6 s** (1h13m)
+- `decode.compile_hbo` done in **3952.2 s** (1h6m)  ← **上一轮 die 的阶段，本轮通过**
+- `link_models` done in **57.1 s**
+- 总 wall-clock ≈ **2h20m** (compile_hbo + link 部分)
+- 最终产物：`LocateAnything-3B_language_chunk_256_cache_1024_w4_nash-p_corenum_4_4.hbm` **1.6 GB** 落盘
+- error/failed 计数 = **0**
+- hbdk4 内部对 vocab 152681 × fp16 = 305362 bytes 的 last-dim 自动 pad 到 305408（≥ 64 对齐），host runtime 后续切 `logits[..., :152681]` 即可
+
+**Alternatives considered**: 同 #008 的 B/C/D。A 方案两行改动 + 无精度影响 + 无侵入模型，成本最低。
+
+**Prevention**: `LocateAnythingLanguageApi` 保持不传 no_padding kwargs；`LocateAnythingApi` (M4 unified) 亦沿用此约定；如未来 vocab 或 dtype 改变，重新校验 `vocab_size × sizeof(dtype) % 64 == 0`。
+
