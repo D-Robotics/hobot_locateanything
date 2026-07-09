@@ -371,6 +371,26 @@ def _build_locateanything_lm_3b(args):
     )
 
 
+@register_model("locateanything-vit-3b", ["nash-p"])
+def _build_locateanything_vit_3b(args):
+    from leap_llm.apis.model.locateanything_vision import (
+        LocateAnythingVisionApi,
+    )
+
+    device = args.device[0] if isinstance(args.device, list) else args.device
+
+    return LocateAnythingVisionApi(
+        input_model_path=args.input_model_path,
+        output_model_path=args.output_model_path,
+        image_width=args.image_width,
+        image_height=args.image_height,
+        device=device,
+        w_bits=args.w_bits,
+        vit_core_num=args.vit_core_num,
+        march=args.march,
+    )
+
+
 @register_model("locateanything-3b", ["nash-p"])
 def _build_locateanything_3b(args):
     from leap_llm.apis.model.locateanything import LocateAnythingApi
