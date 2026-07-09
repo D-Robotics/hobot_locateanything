@@ -221,3 +221,40 @@ divisible by 64, but get 305362.
 
 **Prevention**: `LocateAnythingLanguageApi` 保持不传 no_padding kwargs；`LocateAnythingApi` (M4 unified) 亦沿用此约定；如未来 vocab 或 dtype 改变，重新校验 `vocab_size × sizeof(dtype) % 64 == 0`。
 
+
+---
+
+## #011 4090 上 git push 走 HTTPS + PAT credential store (2026-07-09)
+
+**Symptom**: 4090 上 `git push origin main` 长期挂 `Empty reply from server` (#002 反复) 或 `Permission denied (publickey)`。工作全靠 Windows 中转，4090 本地始终 ahead。ahead 一度累积到 14 commits。
+
+**Trigger**: D-Robotics 内网 → github.com 走 `:443` 的 git-over-https 路径不稳定；SSH `:22` 出网被墙；4090 家目录里也没有配置过 GitHub SSH key。
+
+**Root cause**: 两条通道各有一个短板：
+- HTTPS 走 `git push` 时被中间盒截断 (`Empty reply`)，但走 `curl https://api.github.com/*` 与 `https://LiuAnclouds:<PAT>@github.com/.../.git` 的 push 是同一个 :443 端口却能通——说明中间盒对 "unauthenticated + Content-Length large" 的组合更容易 reset，带 PAT 后走匿名不同路径反而放行；
+- SSH 22 出网被 D-Robotics 内网墙掉 + 4090 家目录里没有 `id_ed25519` 私钥文件，双重原因。
+
+**Evidence**:
+- `curl -H "Authorization: token $PAT" https://api.github.com/user` → HTTP 200 in 2.4s
+- `git remote set-url origin https://LiuAnclouds:$PAT@github.com/.../.git; git push` → `8f207f0..917b5de main -> main` 一次过
+- `ls ~/.ssh/id_*` → No such file or directory
+
+**Fix**:
+1. Fine-grained PAT (permission = `Contents: write`) 存到 `~/.git-credentials` (mode 600):
+   ```
+   git config --global credential.helper store
+   echo "https://LiuAnclouds:<PAT>@github.com" > ~/.git-credentials
+   chmod 600 ~/.git-credentials
+   ```
+2. `origin` 保持干净 URL `https://github.com/LiuAnclouds/oe_locateanything.git` (不把 token 存进 `.git/config`)。
+3. 首次 push 手动加临时 `https://user:token@` URL 触发 credential helper 记录（我们本轮直接写文件，跳过 prompt）。
+
+**Alternatives considered**:
+- 4090 生成 ed25519 keypair 并加到 GitHub —— SSH :22 被内网墙，走不通。
+- Windows 中转（bundle → scp → push）—— 沿用老链路，但每次多一步 scp，不推荐作为长期方案。
+- 走 gh CLI —— 底层还是 HTTPS + PAT，不比直接 credential helper 简单。
+
+**Prevention**:
+- 不把 token 明文写进 `.git/config` 或 shell 命令行历史（曾经在一次 `git remote set-url` 里出现过，事后立刻清掉）。
+- Token 泄露风险应对：GitHub → Settings → Developer settings → PAT 页面可以随时 revoke，rotate 时只改 `~/.git-credentials` 一行。
+- 未来如果切到 fine-grained PAT，权限只勾 `Contents: write` + `Metadata: read`，不给整个 org / 其他 repo。
