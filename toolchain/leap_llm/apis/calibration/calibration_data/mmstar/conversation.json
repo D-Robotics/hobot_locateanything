@@ -1,0 +1,2282 @@
+[
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/0.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which option describe the object relationship in the image correctly?\nOptions: A: The suitcase is on the book., B: The suitcase is beneath the cat., C: The suitcase is beneath the bed., D: The suitcase is beneath the book. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the main feature in the background of the image?\nOptions: A: A park bench near the water., B: A couple sitting on a bench., C: A body of water and the Golden Gate Bridge., D: A mountain in the distance. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/2.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What seems to be the theme of the image?\nOptions: A: Hanging Posters, B: Music, C: Home decoration, D: Playing guitar \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/3.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the most prominent feature in the image?\nOptions: A: The skyline, B: The golf course, C: The trees, D: The person \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/4.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the center of focus in the image?\nOptions: A: A man writing in a book, B: A boy with his head in his hands surrounded by books, C: A cluttered desk with books and a pen, D: A stack of books covering a young man's face \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/5.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the main subject of the flyer seen in the image?\nOptions: A: Hair products, B: Makeup products, C: Spa services, D: Skin products \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/6.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the overall theme of the image?\nOptions: A: A woman in different polka dot dresses, B: A stone wall along a stone path, C: A woman in an outdoor setting, D: A house with a black roof \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/7.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the primary subject in this image?\nOptions: A: a guitar, B: a man on stage, C: a microphone, D: a concert \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/8.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the overall theme of the image?\nOptions: A: A businessman with a unique face, B: A man in a formal dress with a beard, C: An actor with a cut on his face, D: A man with a diagram of his face \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/9.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What feeling is represented in this image?\nOptions: A: engaged, B: distressed, C: angry, D: sad \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/10.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What time of day is it in the image?\nOptions: A: Noon, B: Evening, C: Night, D: Dawn \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/11.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the dominant feature in the image?\nOptions: A: The bridge, B: The lake, C: The city skyline, D: The buildings \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/12.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the main focus of this image?\nOptions: A: The grassy hill, B: The sculpture, C: The fence, D: The building \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/13.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which mood does this image convey?\nOptions: A: Sad, B: Cozy, C: Happy, D: Angry \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/14.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the main subject of the image?\nOptions: A: Sky, B: Water, C: Sun, D: Clouds \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/15.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What object dominates the image in the foreground?\nOptions: A: A rocky and grassy field, B: Hills in the distance, C: A dirt road leading up a grassy hill to a rocky path, D: A large grey rock \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/16.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What feeling is shown in this image?\nOptions: A: engaged, B: distressed, C: angry, D: love \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/17.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the overall theme of the image?\nOptions: A: Beach vacation, B: Athletic lifestyle, C: Summer fashion, D: Urban street style \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/18.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What emotion is illustrated in this image?\nOptions: A: love, B: anger, C: happy, D: sad \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/19.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "<image 1> Which of the following is the most accurate statement of the cartoonist's meaning? \nOptions: A: World War I is the crime of the ages, B: ALl nations involved in World War I at its outbreak are to blame for it, C: Russia and Austria are blamed unfairly, D: The nations of Europe are blaming one another \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/250.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What type of family is shown in the image?\nOptions: A: A family of all women, B: A family of mixed genders, C: A family of all men, D: A family of only children \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/251.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many people are playing music in the image?\nOptions: A: One, B: Two, C: Three, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/252.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the color of the sheep in the foreground?\nOptions: A: Black, B: Brown, C: White, D: Gray \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/253.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the sum of 2002, 2003 and 2004?\nChoices:\n(A) 40.7\n(B) 74\n(C) 70.4\n(D) 70.0 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/254.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many windows are in the living room?\nOptions: A: One, B: Four, C: Three, D: Two \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/255.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which image shows the highest contrast?\nOptions: A: upper left, B: upper right, C: down left, D: down right \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/256.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which scene category matches this image the best?\nOptions: A: forest_path, B: museum/indoor, C: storage_room, D: alley \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/257.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the position of the catcher relative to the home plate?\nOptions: A: The catcher is to the left of the home plate., B: The catcher is to the right of the home plate., C: The catcher is behind the home plate., D: The catcher is in front of the home plate. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/258.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What color are the walls in the bathroom?\nOptions: A: White, B: Blue, C: Beige, D: Tan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/259.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "In the given image, in which direction is the pier facing?\nOptions: A: North, B: South, C: East, D: West \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/260.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What color is the predominant color of the helmets worn by the football players in the image?\nOptions: A: White, B: Gold, C: Black, D: Blue \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/261.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the number of pillows on the bed in the image?\nOptions: A: Two, B: Six, C: Five, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/262.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What type of lighting fixtures are present in the bedroom?\nOptions: A: A chandelier and ceiling fan, B: Wall sconces and a ceiling fan, C: A table lamp and floor lamp, D: Pendant lights and a ceiling fan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/263.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many boats are in the image?\nOptions: A: Two, B: One, C: Three, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/264.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which woman has dark hair in the image?\nOptions: A: Both women, B: The woman standing farther from the teddy bear, C: The woman standing closer to the teddy bear, D: Neither woman \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/265.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many gloves can be seen in this image?\nOptions: A: One, B: Two, C: Three, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/266.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many people are playing guitar in the image?\nOptions: A: One, B: Two, C: Three, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/267.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many chairs are there on the balcony in the image?\nOptions: A: 1, B: 3, C: 2, D: 4 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/268.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many tree stumps are there in the image?\nOptions: A: nan, B: Two, C: One, D: Cannot be determined \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/269.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the subject of the image?\nOptions: A: Green exit sign with an arrow pointing to the right, B: Sign of a toilet on the roof of a building, C: Green exit sign with a directional arrow, D: Green exit sign with an arrow pointing to the left \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/500.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the age gap between these two people in image? (Unit: years)\nChoices:\n(A) 4\n(B) 2\n(C) 3\n(D) 1 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/501.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the approximate time of day in the image?\nOptions: A: Morning, B: Evening, C: Noon, D: Night \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/502.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the relation between the door and the brown panel?\nOptions: A: The panel is next to the door, B: The panel is above the door, C: They are the same object, D: The panel is behind the door \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/503.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the age gap between these two people in image? (Unit: years)\nChoices:\n(A) 10\n(B) 20\n(C) 16\n(D) 32 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/504.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the relation between the arrow and the curve sign?\nOptions: A: The arrow is pointing away from the curve sign, B: The arrow is pointing to the curve sign, C: The arrow and the curve sign are unrelated, D: The arrow and the curve sign are overlapping \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/505.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which of the following statements match the image?\nOptions: A: A green pentagon is above a red shape., B: A red ellipse is above a green pentagon., C: A yellow shape is below a red pentagon., D: A pentagon is below a pentagon. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/506.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the age gap between these two people in image? (Unit: years)\nChoices:\n(A) 4\n(B) 5\n(C) 6\n(D) 7 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/507.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the age gap between these two people in image? (Unit: years)\nChoices:\n(A) 4\n(B) 5\n(C) 6\n(D) 2 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/508.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Are the two hoops in the picture the same size?\nOptions: A: same, B: Not the same, C: Can't judge, D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/509.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "In this comparison picture, are the left and right modules the same shape?\nOptions: A: same, B: Not the same, C: Can't judge, D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/510.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the dominant color of the clothing worn by the models in the image?\nOptions: A: Maroon, B: White, C: Black, D: Red \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/511.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which of the following statements match the image?\nOptions: A: A yellow triangle is below a red rectangle., B: A cross is above a cyan shape., C: A rectangle is above a cyan shape., D: A cyan rectangle is below a red shape. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/512.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the age gap between these two people in image? (Unit: years)\nChoices:\n(A) 0\n(B) 2\n(C) 5\n(D) 9 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/513.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What direction is Serbia in the Mediterranean Sea?\nOptions: A: east, B: south, C: west, D: north \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/514.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What direction is Canada in the Atlantic Ocean?\nOptions: A: east, B: south, C: west, D: north \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/515.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which object is taller, the tree or the building?\nOptions: A: Cannot be determined, B: The building, C: They are the same height, D: The tree \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/516.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the position of the woman in relation to the man?\nOptions: A: To his left, B: Behind him, C: In front of him, D: To his right \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/517.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many lamps are in the bedroom?\nOptions: A: One, B: Two, C: Three, D: Four \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/518.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the relative position of the church and the building in this image?\nOptions: A: The church and the building are on the opposite sides, B: The church is on the right and the building is on the left, C: The church is in the center and the building is on the side, D: The church is on the left and the building is on the right \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/519.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is located outside the windows in the hallway?\nOptions: A: Another house, B: A garden, C: A cityscape, D: A grassy field \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/750.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the age group of the people in this image generally aimed at?\nOptions: A: Middle-aged people, B: Teenagers, C: Children, D: Elderly people \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/751.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "<image 1> is the HRM Roles, David Ulrich (1997) model. According to Ulrich, if HR is to become and remain relevant in the current business environment, what is not something HR professionals must learn?\nOptions: A: Manage human resources operations and infrastructure, B: Become the link between human resources and organizational strategy, C: Optimize the value of employees, D: Be a change agent with a long-term vision for the organization \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/752.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What could be the reason for some people in the image appearing blurry?\nOptions: A: Camera malfunction, B: Distance from the camera, C: They are moving too fast, D: Intentional blur \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/753.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: How many models in the table have a model size larger than 10B?\nChoices:\n(A) 1\n(B) 8\n(C) 10\n(D) 11 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/754.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What time is shown? Answer by typing a time word, not a number. It is (_) to eight.\nChoices:\n(A) half\n(B) quarter\n(C) o'clock\n(D) quarter to \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/755.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: Subtract all tiny shiny balls. Subtract all purple objects. How many objects are left?\nChoices:\n(A) 4\n(B) 8\n(C) 2\n(D) 6 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/756.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Where is the woman holding her belly in the image?\nOptions: A: With both hands, B: With her right hand, C: With her left hand, D: She's not holding her belly \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/757.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "In which direction is the player jumping over the barrier?\nOptions: A: Left to right, B: Right to left, C: Towards the camera, D: Away from the camera \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/758.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the basketball player on the left doing in the image?\nOptions: A: Dribbling the ball, B: Throwing the ball to a teammate, C: Trying to tackle the other player, D: Standing still \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/759.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many types of fruits are there in the image?\nOptions: A: 3, B: 2, C: 5, D: 4 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/760.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which corner doesn't have any food?\nOptions: A: top-right, B: top-left, C: bottom-left, D: bottom-right \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/761.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: How many methods in the table achieve an A-847 score higher than 20.0?\nChoices:\n(A) 0\n(B) 1\n(C) 2\n(D) 3 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/762.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "In the picture, which direction is the baby facing?\nOptions: A: left, B: right, C: up, D: down \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/763.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the position of the person on stage with the guitar relative to the night sky?\nOptions: A: In front of the night sky, B: Behind the night sky, C: At the same level as the night sky, D: There is no visible night sky \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/764.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What type of vegetation is visible in the image?\nOptions: A: Trees only, B: A mix of trees and bushes, C: Bushes only, D: Grass \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/765.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many predators does golden algae have?\nOptions: A: 4, B: 5, C: 3, D: 6 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/766.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Where is the young man in the black robe seated in the painting?\nOptions: A: On a bench, B: None of the above, C: In front of a sculpture, D: On the ground \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/767.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many people are playing instruments in the image?\nOptions: A: 4, B: 3, C: 2, D: 5 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/768.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "How many glasses are present in the image?\nOptions: A: 0, B: 3, C: 2, D: 1 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/769.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: Subtract all yellow metallic balls. Subtract all small yellow shiny things. How many objects are left?\nChoices:\n(A) 4\n(B) 5\n(C) 6\n(D) 8 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1000.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: A square is tangent to a line at point P in the figure above. What is the value of x?\nChoices:\n(A) 30\n(B) 15\n(C) 20\n(D) 45 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1001.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the value of f(0)?\nChoices:\n(A) -1\n(B) 0\n(C) 1\n(D) 10 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1002.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: ABCD is a square. Inscribed Circle center is O. Find the the angle of ∠AMK. Return the numeric value.\nChoices:\n(A) 130.9\n(B) 120\n(C) 129\n(D) 339 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1003.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the size of the shaded area under the curve? Round the answer to 2 decimal places\nChoices:\n(A) 7.07\n(B) 6.97\n(C) 7.14\n(D) 9.00 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1004.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: A spaceship of mass $m=4.50 \\times 10^3 \\mathrm{~kg}$ is in a circular Earth orbit of radius $r=8.00 \\times 10^6 \\mathrm{~m}$ and period $T_0=118.6 \\mathrm{~min}=$ $7.119 \\times 10^3 \\mathrm{~s}$ when a thruster is fired in the forward direction to decrease the speed to $96.0 \\%$ of the original speed. What is the period $T$ of the resulting elliptical orbit (Figure)?\nChoices:\n(A) 4.6\n(B) 6.5\n(C) 6.36\n(D) 8.66 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1005.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What number is shown?\nChoices:\n(A) 7909\n(B) 9999\n(C) 9099\n(D) 9079 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1006.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: Move the ruler to measure the length of the line to the nearest centimeter. The line is about (_) centimeters long.\nChoices:\n(A) 4\n(B) 5\n(C) 6\n(D) 7 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1007.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "The <image 1> shows a typical innovation model. As innovation adds more functions, which of the following options is not a result of it?\nOptions: A: Achieve performance levels required by the market, B: This product has ongoing sales value, C: Customers are overserved, D: Customers receive additional value \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1008.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Calculate the value of bond D shown in the following table, all of which pay interest semiannually. <image 1>\nOptions: A: 1249, B: Other Answers, C: nan, D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1009.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Peninsular Research is initiating coverage of a mature manufacturing industry. John Jones, CFA, head of the research department, gathered the following fundamental industry and market data to help in his analysis: <image 1> Compute the price-to-earnings $(\\frac{P_0}/E_{1})$ ratio for the industry based on this fundamental data\nOptions: A: 30.0, B: Other Answers, C: nan, D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1010.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "<image 1>The graph of y = f(x) is shown in the figure above. The shaded region A has area a and the shadedregion B has area b . If g(x) = f(x) +3 .what is the average value of g on the interval [-2,4]?\nOptions: A: (a+b+3)/6, B: (-a+b+3)/6, C: (-a+b)/6+3, D: (a+b)/6+3 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1011.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the y-intercept of this function?\nChoices:\n(A) 0\n(B) 1\n(C) 2\n(D) 3 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1012.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: In which of the following value ranges of λ2 does the percentage of Attack Effectiveness begin to be lower than that of Diversity?\nChoices:\n(A) 0.0 - 0.2\n(B) 0.2 - 0.4\n(C) 0.4 - 0.6\n(D) 0.6 - 0.8 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1013.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question requiring a floating-point number with two decimal places and provide the final value, e.g., 1.23, 1.34, 1.45, at the end.\nQuestion: In Fig. 21-25, the particles have charges $q_1=-q_2=100 \\mathrm{nC}$ and $q_3=-q_4=200 \\mathrm{nC}$, and distance $a=$ $5.0 \\mathrm{~cm}$. What is the $x$ component of the net electrostatic force on particle 3?\nChoices:\n(A) 0\n(B) 0.34\n(C) 0.17\n(D) 3 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1014.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: How many bars have values smaller than 6?\nChoices:\n(A) 0\n(B) 1\n(C) 2\n(D) 3 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1015.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: As shown in the figure, P is a point outside ⊙O, PA and PB intersect ⊙O at two points C and D respectively. It is known that the central angles of ⁀AB and ⁀CD are 90.0 and 50.0 respectively, then ∠P = ()\nChoices:\n(A) 45°\n(B) 40°\n(C) 25°\n(D) 20° \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1016.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: In the figure above, CDE is an equilateral triangle and ABCE is a square with an area of 1. What is the perimeter of polygon ABCDE?\nChoices:\n(A) 4\n(B) 5\n(C) 6\n(D) 7 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1017.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: Which year has the least difference between the used and new cars?\nChoices:\n(A) 2010\n(B) 2011\n(C) 2015\n(D) 2013 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1018.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: 如图，点D在等边△ABC的边CB的延长线上，点E在线段BC上，连接AD，AE，若DA＝DE，且∠DAB＝20°，那么∠EAC的度数为（）\nChoices:\n(A) 20°\n(B) 15°\n(C) 10°\n(D) 5° \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1019.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: What is the limit as x approaches -1?\nChoices:\n(A) 6\n(B) 1\n(C) 3\n(D) 4 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1250.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which part is represented by the alphabet H?\nOptions: A: flagellum, B: cytosol, C: cell wall, D: capsule \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1251.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "<image 1> What could be the reason for the corky outgrowths on a young ash tree by the roadside in Littondale, Yorkshire?\nOptions: A: Fungal disease, B: Bacterial disease, C: Don't know or not sure, D: Genetic abnormality \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1252.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "The pedigree in <image 1> shows the mode of inheritance of a human disease that is associated with mutations in Gene A. Note: Individuals marrying into this family DO NOT have the disease-associated allele unless shaded and the pedigree is completely penetrant. What is the genotype(s) of Individual 9?\nOptions: A: XAXa, B: Aa, C: Aa or AA, D: XAXA \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1253.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Where would a loss of taste be expected? <image 1>\nOptions: A: 1 and 2, B: 2 and 3, C: 3 and 4, D: 2, 3, and 4 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1254.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Find the amplitude (in terms of V) of the phasor voltage $V_C$ in the circuit of <image 1>.\nOptions: A: 71.6, B: Other Answers, C: nan, D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1255.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Hint: Please answer the question and provide the correct option letter, e.g., A, B, C, D, at the end.\nQuestion: Consider the infinitely long chain of resistors shown below. What is the resistance between terminals a and b if R=1?\nChoices:\n(A) 1.46\n(B) 73\n(C) 0\n(D) 0.73 \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1256.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What letter represents oxygen?\nOptions: A: G, B: C, C: F, D: A \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1257.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which of the following is the enantiomer of the compound shown below ? <image 1>\nOptions: A: <image 2>, B: <image 3>, C: <image 4>, D: <image 5> \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1258.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "<image 1> The structural formula of the glycinium cation is shown above. Arrows indicate the $pK_a$ values for the labile protons in the molecule. Which of the following is true about the geometry of the glycinium cation?\nOptions: A: The leftmost C atom and all the atoms directly bonded to it lie in the same plane. , B: Both C atoms and both O atoms lie in the same plane. , C: The N-C-C bond angle is 180°., D: The geometry around the N atom is planar. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1259.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which label is the one refers to the peat?\nOptions: A: G, B: C, C: B, D: E \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1260.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is represented by organ A?\nOptions: A: centrioles, B: vesicles, C: golgi body, D: mitochondrion \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1261.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which Diagram Shows spring Here ?\nOptions: A: B, B: C, C: A, D: D \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1262.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "The manufacture of compound F requires five separate chemical reactions. The initial reactant, compound A, is converted to compound B, compound B is converted to compound C, and so on. The diagram below summarizes the steps in the manufacture of compound F, including the percent yield for each step. Provide the missing quantities or missing percent yields.Assume that the reactant and product in each step react in a one-to-one mole ratio. <image 1>\nOptions: A: 20.0%,0.50 mol,0.05 mol,20.0%, B: 30.0%,0.50 mol,0.05 mol,20.0%, C: 40.0%,0.50 mol,0.05 mol,20.0%, D: 50.0%,0.50 mol,0.05 mol,20.0% \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1263.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "The stages in its life cycle are labeled A, B, C, and D. Which stage is shown at C?\nOptions: A: adult, B: egg, C: pupal, D: larva \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1264.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What's shown at stages B and I?\nOptions: A: the new moon, B: the moon, C: low tide, D: high tide \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1265.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is represented by H?\nOptions: A: The orbit of the earth., B: The stages of the moon., C: The gravitational pull of the moon., D: The orbit of the moon. \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1266.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which label represents the A horizon ?\nOptions: A: A, B: D, C: B, D: E \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1267.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "What is the object labeled E?\nOptions: A: Earth, B: Uranus, C: Mars, D: Venus \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1268.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Which planet is label C?\nOptions: A: Uranus, B: Saturn, C: Neptune, D: Jupiter \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": "leap_llm/apis/calibration/calibration_data/mmstar/images/1269.jpg",
+                        "resized_width": 448,
+                        "resized_height": 448
+                    },
+                    {
+                        "type": "text",
+                        "text": "Think about the magnetic force between the magnets in each pair. Which of the following statements is true?\nOptions: A: The magnetic force is weaker in Pair 2., B: The strength of the magnetic force is the same in both pairs., C: The magnetic force is weaker in Pair 1., D: nan \nAnswer with the option's letter from the given choices directly."
+                    }
+                ]
+            }
+        ]
+    }
+]

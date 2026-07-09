@@ -51,7 +51,7 @@ while true; do
       echo "ERROR_HITS:"
       echo "$err_hit" | sed 's/^/  /'
     fi
-    if [[ "$log_age" -gt 900 ]]; then
+    if [[ "$log_age" -gt 1800 ]]; then
       echo "WARN: log stalled ${log_age}s (>15min)"
     fi
   } > "$STATUS"
