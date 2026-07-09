@@ -234,8 +234,6 @@ class LocateAnythingLanguageApi:
                 "debug": False,
                 "advice": 0.0,
                 "balance": 100,
-                "input_no_padding": True,
-                "output_no_padding": True,
                 "enable_hpc": True,
                 "core_num": stage_core_map[func_name],
             }
