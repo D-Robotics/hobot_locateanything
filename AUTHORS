@@ -1,0 +1,11 @@
+Authors of oe_locateanything
+============================
+
+Kangjie Xu <https://github.com/LiuAnclouds>
+    Author, maintainer.
+
+Institutional context: work developed at D-Robotics.
+
+For upstream contributions (LocateAnything model, MoonViT vision
+encoder, Qwen2 decoder, D-Robotics OELLM toolchain), see the
+Acknowledgements section of README.md.

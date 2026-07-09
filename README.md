@@ -1,268 +1,175 @@
 <div align="center">
 
-# oe_locateanything
+<img src="assets/LocateAnything.jpg" alt="LocateAnything on S600" width="820">
 
-**LocateAnything-3B deployment on D-Robotics S600**
+# LocateAnything on D-Robotics S600
 
-<p align="center">
-  <img src="assets/LocateAnything.jpg" alt="LocateAnything" width="100%">
-</p>
+Edge deployment of NVIDIA's LocateAnything-3B grounding VLM on the D-Robotics S600 BPU, preserving the model's Parallel Block Decoding (PBD), native MoonViT vision encoder, and full 152,681-token vocabulary.
 
+[![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-D--Robotics%20S600-brightgreen)](#)
 [![Runtime](https://img.shields.io/badge/runtime-OELLM%201.0.5-blue)](#)
-[![Model](https://img.shields.io/badge/model-LocateAnything--3B-orange)](#)
-[![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey)](LICENSE)
+[![Model](https://img.shields.io/badge/model-LocateAnything--3B-orange)](https://huggingface.co/nvidia/LocateAnything-3B)
+[![PBD](https://img.shields.io/badge/PBD-6%20tokens%2Fstep-ff69b4)](#)
+
+**English** · [中文](README.zh-CN.md)
 
 </div>
 
 ---
 
-## 概述
+## Overview
 
-本仓库提供 LocateAnything-3B 在 D-Robotics S600 平台上的端到端部署实现，包括：
+LocateAnything-3B is NVIDIA's grounding-capable vision-language model based on MoonViT-SO-400M and a Qwen2.5-3B decoder trained for Parallel Block Decoding of `<box>x1 y1 x2 y2</box>` structures. This repository ports it to the D-Robotics S600 BPU via the OELLM 1.0.5 toolchain, producing standalone HBM artifacts for the vision and language stages.
 
-- **Vision**  MoonViT + MLP Projector
-- **Language**  LocateAnything Qwen2.5 Decoder
-- **Generation**  Slow / Fast (PBD) / Hybrid 三种解码模式
-- **Runtime**  Host 侧 visual embeddings 与 KV cache 调度
-- **Validation**  PyTorch 与 HBM 输出一致性校验
+Design choices:
 
-前置准备、量化编译在 NVIDIA GPU 主机（x86）上完成，端侧运行在 S600 主机上。
+- Vendored MoonViT-SO-400M vision encoder (27 layers, 2D RoPE) rather than substituting Qwen2.5-VL's ViT.
+- Full 152,681-token vocabulary, including the `<0>`–`<1000>` coordinate tokens and `<ref>`/`<box>` structural anchors.
+- PBD block size 6 exposed to the compile CLI as `--decode_seq_len 6`, producing both AR (q=1) and PBD (q=6) decode graphs for Fast/Hybrid/Slow runtime modes.
+- Independent `locateanything-3b` model family under `toolchain/leap_llm/models/locateanything/`, registered in `model_factory.py` alongside the upstream builders. Runtime imports do not touch `qwen2_5_vl`.
 
----
+## Architecture
 
-## 架构
+```mermaid
+flowchart LR
+    IMG[image] --> PATCHIFY[patchify<br/>1024 x 14x14x3]
+    PROMPT[text prompt] --> TOKENIZER[tokenizer<br/>vocab 152681]
 
-<details>
-<summary>展开详细数据流</summary>
+    subgraph VIS[Vision HBM]
+        PATCHIFY --> MOONVIT[MoonViT-SO-400M<br/>27 blocks · 2D RoPE]
+        MOONVIT --> MERGER[2x2 merger + mlp1<br/>4608 -> 2048]
+    end
 
-```text
-image
-  ↓
-Vision HBM (MoonViT + MLP Projector)
-  input  pixel_values [1656, 3, 14, 14]
-  output visual_embeds [414, 2048]
+    subgraph LM[Language HBM · Qwen2.5-3B]
+        MERGER --> EMBED[merge visual embeds<br/>into inputs_embeds]
+        TOKENIZER --> EMBED
+        EMBED --> PREFILL[Prefill<br/>chunk=256]
+        PREFILL --> KV[(KV cache<br/>cache_len=1024, fp16)]
+        KV --> AR[AR Decode q=1]
+        KV --> PBD[PBD Decode q=6]
+    end
 
-text prompt
-  ↓
-Host tokenizer → input_ids
-
-input_ids + visual_embeds
-  ↓
-Host: inputs_embeds / position_ids / attention_mask
-
-Qwen Prefill HBM
-  input  inputs_embeds [prefill_len, 2048], position_ids, attention_mask
-  output logits, KV cache
-
-PBD Decode HBM (q_len=6)
-  input  block embeddings [6, 2048], KV cache, position_ids, attention_mask
-  output logits [6, vocab], updated KV cache
-
-AR Decode HBM (q_len=1)
-  input  token embedding [1, 2048], KV cache, position_ids, attention_mask
-  output logits [1, vocab], updated KV cache
-
-Host: PBD / Hybrid sampling → fallback → box / coordinate post-processing
+    AR --> HYBRID[Fast/Hybrid/Slow<br/>sampling & fallback]
+    PBD --> HYBRID
+    HYBRID --> POST[box parser<br/>ref/box output]
 ```
 
-</details>
+## Quickstart
 
----
-
-## 1. 基础环境准备（NVIDIA GPU 主机）
-
-在 NVIDIA GPU 主机上生成 PyTorch 基线，供后续 S600 量化与端侧对齐使用。
-
-### 1.1 拉取仓库
+Full step-by-step guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ```bash
-cd ~
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything
 git clone https://github.com/NVlabs/Eagle.git eagle
+
+# Environment setup — see docs/DEPLOYMENT.md
+#   conda env: locateanything (PyTorch baseline)
+#   conda env: oellm          (OELLM S600 compile toolchain)
+
+# Language HBM compile (~3-4 h on 16-core CPU + 1x RTX 4090)
+oellm_build \
+  --model_name locateanything-lm-3b \
+  --march nash-p \
+  --input_model_path eagle/Embodied/LocateAnything-3B \
+  --output_model_path main/language/baseline_outputs/locateanything-lm-3b_nash-p_w4 \
+  --w_bits 4 --chunk_size 256 --cache_len 1024 --decode_seq_len 6 \
+  --device cuda:0 --prefill_core_num 4 --decode_core_num 4 --jobs 16
 ```
 
-### 1.2 创建 Conda 环境
+## Model Specification
 
-```bash
-cd ~/oe_locateanything/eagle/Embodied
-
-conda create -n locateanything python=3.10 -y
-conda activate locateanything
-
-python -m pip install -U pip huggingface_hub hf_transfer
-```
-
-### 1.3 下载模型权重
-
-模型页面：<https://huggingface.co/nvidia/LocateAnything-3B>
-
-```bash
-cd ~/oe_locateanything/eagle/Embodied
-rm -rf LocateAnything-3B
-
-export HF_ENDPOINT=https://hf-mirror.com
-unset HF_HUB_ENABLE_HF_TRANSFER
-
-hf download nvidia/LocateAnything-3B --local-dir LocateAnything-3B
-```
-
-权重存放路径：`~/oe_locateanything/eagle/Embodied/LocateAnything-3B`。
-
-### 1.4 安装 LocateAnything 并跑基线
-
-```bash
-cd ~/oe_locateanything/eagle/Embodied
-pip install -e .
-
-PYTHONPATH=$PWD python ~/oe_locateanything/main/examples/demo_min.py
-```
-
-成功时输出：
-
-```text
-answer: <ref>cat</ref><box><...><...><...><...></box>
-boxes: [{'x1': ..., 'y1': ..., 'x2': ..., 'y2': ...}]
-```
-
-同时在 `eagle/Embodied/deploy_s600/golden/` 下生成 `official_answer.txt` 与 `official_boxes.txt`，作为后续 HBM 输出对齐的基线。
-
----
-
-## 2. OELLM S600 编译环境（NVIDIA GPU 主机）
-
-OELLM S600 工具链与文档在同一台 NVIDIA GPU 主机上安装，用于将 LocateAnything 量化编译为 S600 上可执行的 HBM。
-
-### 2.1 下载并解压 SDK 与文档
-
-```bash
-cd ~/oe_locateanything/oellm
-
-mkdir -p s600_sdk s600_doc
-
-wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
-wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_Doc.zip
-
-tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C s600_sdk
-unzip -q D-Robotics_LLM_S600_1.0.5_Doc.zip -d s600_doc
-
-rm D-Robotics_LLM_S600_1.0.5_SDK.tar.gz D-Robotics_LLM_S600_1.0.5_Doc.zip
-```
-
-解压后目录：
-
-```text
-oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
-oellm/s600_doc/D-Robotics_LLM_S600_1.0.5_Doc
-```
-
-### 2.2 创建 Conda 环境
-
-```bash
-conda create -n oellm python=3.10 -y
-conda activate oellm
-
-cd ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
-pip install -r oellm_build/requirements.txt
-pip install oellm_build/hbdk4_compiler-*.whl
-pip install oellm_build/hbdk4_runtime_aarch64_unknown_linux_gnu_nash-*.whl
-pip install oellm_build/leap_llm-*.whl
-```
-
-### 2.3 交叉编译工具链
-
-```bash
-cd ~/oe_locateanything/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
-tar -xf arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-export LINARO_GCC_ROOT=$PWD/arm-gnu-toolchain-13.2.Rel1-x86_64-aarch64-none-linux-gnu
-```
-
-### 2.4 验证
-
-```bash
-python -c "import importlib.metadata as m; print('leap_llm', m.version('leap_llm'))"
-python -c "from hbdk4.compiler import leap; print('hbdk4 leap OK:', leap)"
-```
-
----
-
-## 模型规格
-
-| 模块 | 配置 |
+| Component | Value |
 |---|---|
-| Vision Encoder | MoonViT-SO-400M（27 层，hidden=1152，patch=14） |
-| Projector | 2-layer MLP，4608 → 2048 |
-| Language Model | Qwen2.5-3B decoder（36 层，hidden=2048，KV heads=2） |
-| Vocabulary | 152681（含 `<0>~<1000>`、`<ref>`、`<box>` 等坐标 token） |
-| PBD Block | 6 tokens / block |
-| Output Format | `<ref>label</ref><box>x1 y1 x2 y2</box>` |
+| Vision encoder | MoonViT-SO-400M · 27 layers · hidden 1152 · patch 14 |
+| Projector | 2-layer MLP · 4608 → 2048 |
+| Language model | Qwen2.5-3B decoder · 36 layers · hidden 2048 · KV heads 2 (GQA) |
+| Vocabulary | 152,681 tokens |
+| PBD block | 6 tokens |
+| Output format | `<ref>label</ref><box>x1 y1 x2 y2</box>` |
+| Total parameters | 3.83 B (LM 3.40 B + MoonViT 0.42 B + projector 0.014 B) |
 
-| 参数量 | 值 | 占比 |
-|---|---:|---:|
-| Qwen2.5 language model | 3.400 B | 88.76% |
-| MoonViT vision model | 0.417 B | 10.88% |
-| MLP projector | 0.014 B | 0.36% |
-| **Total** | **3.831 B** | 100% |
+## Performance
 
----
-
-## 仓库结构
-
-```text
-oe_locateanything/
-├── assets/                    静态资源
-├── main/                      S600 部署工作目录
-│   ├── examples/              基线与集成示例
-│   ├── vision/                MoonViT + MLP Vision Module
-│   ├── language/              Qwen Prefill / PBD Decode / AR Decode
-│   ├── runtime/               Host 侧 runtime
-│   ├── configs/               编译与运行配置
-│   ├── scripts/               构建、验证、benchmark 脚本
-│   ├── golden/                golden 数据
-│   ├── benchmarks/            benchmark 输入与结果
-│   ├── outputs/               编译产物（.gitignore）
-│   └── logs/                  编译与验证日志
-├── oellm/                     S600 SDK 与文档位置说明
-├── eagle/                     LocateAnything / Eagle 源码（.gitignore）
-└── README.md
-```
-
----
+| Stage | HBM size | S600 latency | Status |
+|---|---|---|---|
+| Vision (MoonViT + projector) | TBA | TBA | M3-β |
+| Language prefill (chunk 256) | TBA | TBA | M2 |
+| Language decode AR (q=1) | TBA | TBA | M2 |
+| Language decode PBD (q=6) | TBA | TBA | M2 |
 
 ## Roadmap
 
-- [ ] S600 `qwen2_5_vl` / `qwen3_vl` 编译流程分析
-- [ ] MoonViT + MLP 自定义 visual module 接入 leap_llm
-- [ ] LocateAnything Qwen2.5 自定义 language module 接入 leap_llm
-- [ ] Prefill / PBD Decode (q_len=6) / AR Decode HBM 编译
-- [ ] Host runtime 集成 PBD / Hybrid 采样
-- [ ] PyTorch ↔ HBM 单图与批量精度对齐
-- [ ] S600 端侧性能与精度评估
+- [x] M0 — OELLM baseline dry-run (`qwen2_5-vl-3b`)
+- [x] M1 — PBD `decode_seq_len=6` wired through the compile CLI
+- [x] M2 — LocateAnything language HBM (independent leap DSL, PBD-aware)
+- [x] M3-α — MoonViT vision leap DSL vendored and sanity-verified
+- [ ] M3-β — Vision HBM compile
+- [ ] M4 — Unified `locateanything-3b` builder (vision + language in one run)
+- [ ] M5 — Host runtime: visual embed merge + PBD/Hybrid sampling + box parser
+- [ ] M6 — Precision alignment (HBM ↔ PyTorch baseline logits)
+- [ ] M7 — S600 end-to-end benchmark on grounding suites
 
----
+## Documentation
+
+| Document | English | 中文 |
+|---|---|---|
+| Deployment guide | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | [docs/DEPLOYMENT.zh-CN.md](docs/DEPLOYMENT.zh-CN.md) |
+| Deployment workspace layout | [main/README.md](main/README.md) | — |
+| D-Robotics S600 SDK placement | [oellm/README.md](oellm/README.md) | — |
+
+## Repository Layout
+
+```
+oe_locateanything/
+├── assets/                     visual assets
+├── docs/                       user-facing documentation (EN / 中文)
+├── main/                       deployment artifacts
+│   ├── examples/               PyTorch baseline & HBM verification
+│   ├── scripts/                compile / benchmark scripts
+│   ├── configs/                runtime configs
+│   ├── outputs/                compiled artifacts (git-ignored)
+│   └── logs/                   build / verification logs (git-ignored)
+├── toolchain/                  vendored OELLM leap_llm source
+│   └── leap_llm/models/locateanything/   independent LocateAnything module
+├── oellm/                      S600 SDK placement (git-ignored)
+├── eagle/                      LocateAnything source clone (git-ignored)
+├── LICENSE                     CC BY-NC 4.0
+├── AUTHORS
+├── README.md                   (English)
+└── README.zh-CN.md             (中文)
+```
 
 ## Citation
 
 ```bibtex
-@misc{locateanything,
+@misc{locateanything2025,
   title  = {LocateAnything},
   author = {NVIDIA},
   year   = {2025},
   url    = {https://huggingface.co/nvidia/LocateAnything-3B}
 }
+
+@misc{oe_locateanything2026,
+  title  = {oe\_locateanything: LocateAnything-3B PBD Deployment on D-Robotics S600},
+  author = {Xu, Kangjie},
+  year   = {2026},
+  url    = {https://github.com/LiuAnclouds/oe_locateanything}
+}
 ```
 
----
+## Acknowledgements
 
-## References
-
-- [LocateAnything / Eagle](https://github.com/NVlabs/Eagle)
-- [D-Robotics OpenExplorer](https://developer.d-robotics.cc/)
-- [Hugging Face: nvidia/LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B)
-
----
+- [NVIDIA Eagle team](https://github.com/NVlabs/Eagle) for LocateAnything-3B.
+- [Moonshot AI](https://github.com/MoonshotAI) for MoonViT-SO-400M.
+- [Qwen team](https://github.com/QwenLM/Qwen2.5) for the Qwen2 decoder.
+- [D-Robotics](https://d-robotics.cc/) for the S600 platform and OELLM 1.0.5 toolchain.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Licensed under [Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](LICENSE). Free for research, teaching, and personal use. Commercial use requires a separate agreement.
+
+Copyright © 2026 [LiuAnclouds](https://github.com/LiuAnclouds) · Kangjie Xu · D-Robotics.
+
+Upstream components (LocateAnything model weights, MoonViT weights, D-Robotics OELLM SDK, vendored `leap_llm` source under `toolchain/`) retain their original licenses.
