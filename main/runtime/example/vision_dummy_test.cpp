@@ -38,14 +38,14 @@ void PrintTensorSummary(const char *label, const rt::Tensor &t) {
   // We know vision output is fp16. Decode and summarize.
   if (t.dtype == 4 /*F16*/ && !t.data.empty()) {
     // fp16 decoding on aarch64 without <stdfloat>: cast fp16 bits -> float
-    // via a tiny software decoder. (We can't reinterpret as _Float16 here.)
+    // via a tiny software decoder.
     size_t n = t.data.size() / 2;
     const uint16_t *bits = reinterpret_cast<const uint16_t *>(t.data.data());
     float mn = 1e30f, mx = -1e30f, sum = 0;
     int nan_count = 0;
     for (size_t i = 0; i < n; ++i) {
       uint16_t h = bits[i];
-      // sign(1) exponent(5) mantissa(10)
+      // IEEE 754 binary16: sign(1) exponent(5) mantissa(10)
       uint32_t sign = (h >> 15) & 0x1;
       uint32_t exp = (h >> 10) & 0x1f;
       uint32_t mant = h & 0x3ff;
@@ -54,8 +54,8 @@ void PrintTensorSummary(const char *label, const rt::Tensor &t) {
         if (mant == 0) {
           f = sign ? -0.0f : 0.0f;
         } else {
-          // subnormal
-          float val = mant / 1024.0f * (1.0f / 16384.0f);
+          // subnormal: value = (-1)^sign * (mant/1024) * 2^-14
+          float val = (mant / 1024.0f) * std::ldexp(1.0f, -14);
           f = sign ? -val : val;
         }
       } else if (exp == 31) {
@@ -63,6 +63,7 @@ void PrintTensorSummary(const char *label, const rt::Tensor &t) {
         nan_count++;
         f = std::nanf("");
       } else {
+        // normal: value = (-1)^sign * (1 + mant/1024) * 2^(exp - 15)
         float val = std::ldexp(1.0f + mant / 1024.0f,
                                static_cast<int>(exp) - 15);
         f = sign ? -val : val;
@@ -70,8 +71,8 @@ void PrintTensorSummary(const char *label, const rt::Tensor &t) {
       if (!std::isnan(f)) {
         if (f < mn) mn = f;
         if (f > mx) mx = f;
+        sum += f;
       }
-      sum += std::isnan(f) ? 0.0f : f;
     }
     std::printf("    -> %zu fp16 values, min=%.4f max=%.4f mean=%.4f nan=%d\n",
                 n, mn, mx, sum / static_cast<float>(n), nan_count);

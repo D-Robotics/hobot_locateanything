@@ -367,3 +367,157 @@ self.wv_matmul = FakeQuantMatmul(8, 8, None)
 - M4 unified compile (`locateanything-3b`) 需要同时编译 vision + language + fusion，参考本轮 vision + M2 language 单独编译的 hbm shape 对接接口设计
 - Vision output `(1, 256, 2048)` 直接 concat 到 language prefill 的 embed 序列，无需额外投影
 - 后续 host runtime 侧读入 vision.hbm 一次 forward → 256 tokens → prepend / merge 到 text embed → language prefill
+
+---
+
+## #015 C++ runtime link: hbDNN* in libdnn.so, hbUCP* in libhbucp.so (2026-07-10)
+
+**Symptom**: First CMake `make` on S600 fails at link:
+```
+undefined reference to `hbDNNInitializeFromFiles'
+undefined reference to `hbDNNGetModelNameList'
+...
+undefined reference to `hbDNNInferV2'
+```
+
+**Trigger**: `cd main/runtime && mkdir build && cd build && cmake .. && make`
+
+**Root cause**: CMake's `find_library(HBDNN_LIB hbdnn ...)` looked for `libhbdnn.so` — but on S600, hbDNN* symbols live in `libdnn.so` (no `hb` prefix), and hbUCP* in `libhbucp.so` (the public hobot-dnn deb renamed the libs when splitting off from the internal hbdk4 runtime). Confirmed via `nm -D`:
+```
+$ nm -D /usr/hobot/lib/libdnn.so   | grep hbDNNInitializeFromFiles  → T
+$ nm -D /usr/hobot/lib/libhbucp.so| grep hbUCPWaitTaskDone          → T
+$ nm -D /usr/lib/aarch64-linux-gnu/libucp.so.0 | grep hbUCP         → (none)
+```
+
+**Evidence**: S600 symbol-home map:
+| Symbol prefix | .so file |
+|---|---|
+| `hbDNN*` | `/usr/hobot/lib/libdnn.so` |
+| `hbUCP*` | `/usr/hobot/lib/libhbucp.so` |
+| `hbUCPSys*` (mem struct) | `/usr/hobot/lib/libhbucp.so` |
+| `hbUCP_INITIALIZE_SCHED_PARAM` macro | `/usr/include/hobot/hb_ucp.h:78` |
+
+**Fix**: `find_library(HBDNN_LIB dnn ...)` and `find_library(HBUCP_LIB hbucp ...)` (commit `4c1fc8e`).
+
+**Alternatives considered**:
+- pkg-config — S600's hobot-dnn deb ships no `.pc` files in `/usr/hobot/lib/pkgconfig/`.
+- link `-lhb_dnn` with underscore — also not the symbol home.
+
+**Prevention**: Documented in `main/runtime/CMakeLists.txt` header comment: "S600 symbol homes (verified by nm -D): hbDNN* -> libdnn.so, hbUCP* -> libhbucp.so".
+
+---
+
+## #016 C++ runtime: hbDNNInferV2 does not auto-submit task; schedParam cannot be NULL (2026-07-10)
+
+**Symptom**: After link succeeds, `vision_dummy_test` reports:
+```
+[E] Should first call the `hbUCPSubmitTask` to the taskHandle before calling `hbUCPWaitTaskDone`
+[FAIL] Execute: code=-200004 msg=hbUCPWaitTaskDone failed
+```
+Then after adding `hbUCPSubmitTask(task, nullptr)`:
+```
+[E] sched_param is null pointer
+[FAIL] Execute: code=-100001 msg=hbUCPSubmitTask failed
+```
+
+**Trigger**: First successful Execute attempt on vision.hbm.
+
+**Root cause**: Two coupled mistakes in our `hbm_session.cpp::Graph::Execute`:
+1. We assumed `hbDNNInferV2` auto-submits the task (it does NOT — it only creates+binds).
+2. We passed `nullptr` as `hbUCPSchedParam*`, but S600's UCP refuses NULL ("sched_param is null pointer").
+
+Reference: `HB_HBMRuntime.cc:637-650` (in `/usr/hobot/lib/hbm_runtime/src/`) shows the canonical flow:
+```cpp
+hbDNNInferV2(&task_handle, output_tensors.data(), input_tensors.data(), dnn_handle);
+hbUCPSchedParam sched_param{};
+HB_UCP_INITIALIZE_SCHED_PARAM(&sched_param);   // priority=LOWEST, backend=CORE_ANY
+sched_param.backend = GetBPUCoreMaskForModel(name, bpu_cores);  // default bpu_cores={-1} → HB_UCP_BPU_CORE_ANY
+hbUCPSubmitTask(task_handle, &sched_param);
+hbUCPWaitTaskDone(task_handle, 0);  // timeout=0 (sync)
+```
+
+**Evidence**: commit history shows three incremental fixes (each verified by re-running on S600):
+- `76024c0`: add `hbUCPSubmitTask` call (fixes "Should first call")
+- `d2e27ba`: pass zeroed `hbUCPSchedParam{}` (fixes "sched_param is null pointer")
+- `a11808f`: use `HB_UCP_INITIALIZE_SCHED_PARAM` macro + `backend = HB_UCP_BPU_CORE_ANY` (aligns with reference)
+
+**Fix**: Copy the exact flow from HB_HBMRuntime.cc::InferSingleModel — use the macro for defaults, then explicitly set backend. See `main/runtime/src/hbm_session.cpp::Graph::Execute`.
+
+**Alternatives considered**:
+- hardcode `backend = 0xF` (force all 4 cores) — works for SubmitTask but triggers the L2-memspace bug (#017); not what reference does.
+- timeout -1 (wait forever) — works but reference uses 0 (sync); prefer consistency.
+
+**Prevention**: `hbm_session.cpp` Execute has a comment block citing `HB_HBMRuntime.cc:625-655` as the reference. Future BPU-runtime work should grep the reference before assuming C-API semantics.
+
+---
+
+## #017 C++ runtime: "L2 memory not enough" — set HB_DNN_USER_DEFINED_L2M_SIZES env var (2026-07-10)
+
+**Symptom**: After #016 fixes, `vision_dummy_test` now fails INSIDE hbUCPWaitTaskDone:
+```
+[E] [Plan] model [visual] node [visual.visual_bpu_segment_0] L2 memory not enough,
+    required l2 memspace info: [3244032, 3244032, 3244032, 3244032, ],
+    user-assigned l2 memspace size: [0, 0, 0, 0, ], user-assigned cores: [0, 1, 2, 3, ]
+[E] [Plan] Get BPU temporary memspace failed!
+[E] [HBRT ERROR]HBRT4_STATUS_NULL_OBJECT
+[FAIL] Execute: code=-200003 msg=hbUCPWaitTaskDone failed
+```
+
+**Trigger**: 4-core hbm (`corenum_4`) Execute with all the correct schedParam + alignedByteSize fallback.
+
+**Root cause**: S600 BPU runtime expects the **host process** to pre-declare per-core L2 temp memspace sizes BEFORE submitting any task. The public hbDNN C API has no function to set this — it's done via an **environment variable** `HB_DNN_USER_DEFINED_L2M_SIZES` of the form `<core0>:<core1>:<core2>:<core3>` in megabytes.
+
+When unset, runtime reads "user-assigned l2 memspace size: [0,0,0,0]" and refuses to allocate the temp memspace, so `GetCommand` fails inside `BpuBackendSchedule`.
+
+This is exactly why `HB_HBMRuntime.cc` source has NO L2-memspace code — the env var does it at process level, before any C API call.
+
+**Evidence**: The oellm_runtime reference example ships a run script that sets it:
+```
+$ cat oellm/s600_sdk/.../examples/vlm_demo/run_vlm.sh
+#!/bin/sh
+export LD_LIBRARY_PATH=../../lib:$LD_LIBRARY_PATH
+export HB_DNN_USER_DEFINED_L2M_SIZES=6:6:6:6   # ← THE FIX
+./vlm -c $config_file -i $image_file
+```
+Setting `export HB_DNN_USER_DEFINED_L2M_SIZES=6:6:6:6` before running our `vision_dummy_test` immediately clears the error and Execute returns the expected `(1, 256, 2048)` fp16 output.
+
+**Fix**: `main/runtime/run_vision_dummy_test.sh` sets the env var by default (mirroring `run_vlm.sh`). Future LA run scripts (for language and unified) must do the same.
+
+**Alternatives considered**:
+- Try to find a hbDNN C API to set L2 memspace — none exists in `/usr/include/hobot/dnn/hb_dnn.h` or `/usr/include/hobot/hb_ucp.h`.
+- Increase value to 8:8:8:8 — 6MB is what the reference uses and is enough for MoonViT (3.24 MB required per core).
+
+**Prevention**: Documented in `main/runtime/run_vision_dummy_test.sh` header comment + this KNOWN_ISSUES entry. Any future S600 BPU runtime launch script MUST export `HB_DNN_USER_DEFINED_L2M_SIZES` or all 4-core hbms will fail with -200003.
+
+---
+
+## #018 C++ runtime Phase-1 milestone: vision.hbm x86-free S600 native execute (2026-07-10)
+
+**Symptom**: N/A (success record)
+
+**Trigger**: After #015-#017 fixes, `vision_dummy_test` on S600 runs end-to-end.
+
+**Root cause**: All three KNOWN_ISSUES resolved.
+
+**Evidence** (S600 stdout, post-fix):
+```
+[vision_dummy_test] Phase-1 sanity
+[vision_dummy_test] hbm: .../LocateAnything-3B_vision_448x448_w8_nash-p_corenum_4.hbm
+[BPU][BPU_MONITOR] BPULib verison(2, 2, 15)
+[ok] Load. graphs in hbm: [visual]
+[ok] graph visual: 1 inputs, 1 outputs
+[ok] dummy input built: shape=[1, 1024, 588] floats=602112 bytes=2408448
+[ok] Execute returned 1 output tensors:
+  out[0]  shape=[1,256,2048] dtype=F16 bytes=1048576
+[verdict] vision.hbm Phase-1 sanity PASSED
+```
+
+**Fix**: N/A
+
+**Alternatives considered**: N/A
+
+**Prevention**: Phase-2 (language hbm loop) should:
+- reuse `HbmSession::ExecuteGraphByName` for prefill + decode graphs
+- keep the L2M env var set
+- preserve the SchedParam flow from HB_HBMRuntime.cc reference
+- compare logits against upstream PyTorch for numerical alignment (M6)

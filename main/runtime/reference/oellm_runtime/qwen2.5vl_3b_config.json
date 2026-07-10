@@ -1,0 +1,37 @@
+{
+  "model_type": "Qwen2.5-VL",
+  "model_dir": "../../model/Qwen2.5-VL-3B-Instruct/w4/",
+  "vit_model_file": "Qwen2.5-VL-3B-Instruct_vision_448x448_w8-4_nash-p_corenum_4.hbm",
+  "llm_model_file": "Qwen2.5-VL-3B-Instruct_language_chunk_256_cache_1024_w4_nash-p_corenum_4_4.hbm",
+  "embed_weight_file_path": "Qwen2.5-VL-3B-Instruct_embed_tokens_w4_fp16.bin",
+  "vit_bpu_core": [
+    0,1,2,3
+  ],
+  "prefill_bpu_core": [
+    0,1,2,3
+  ],
+  "decode_bpu_core": [
+    0,1,2,3
+  ],
+  "vocabulary_path" : "../../configs/Qwen2.5_VL_config",
+  "text_end_token" : "<|endoftext|>",
+  "img_start_token": "<|vision_start|>",
+  "img_end_token": "<|vision_end|>",
+  "img_context_token": "<|image_pad|>",
+  "mask_pad_value": -32768,
+  "temporal_patch_size": 1,
+  "vocab_size": 151936,
+  "embed_dim": 2048,
+  "image_height": 448,
+  "image_width": 448,
+  "image_net_mean": [
+    0.48145466,
+    0.4578275,
+    0.40821073
+  ],
+  "image_net_std": [
+    0.26862954,
+    0.26130258,
+    0.27577711
+  ]
+}
