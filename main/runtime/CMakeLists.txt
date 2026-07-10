@@ -1,18 +1,18 @@
 # LocateAnything C++ host runtime — CMake build.
 #
-# Phase 1 scope: a self-contained sanity test that loads vision.hbm and
-# runs the "visual" graph with a dummy input. No external deps (no Python,
-# no pybind11, no image codec yet).
+# Phase 1 (done): vision.hbm sanity via HbmSession + image_preprocess.
+# Phase 2 (in progress): language hbm loop — embed_lookup + attention_mask
+#   + position_ids + kv_cache + pbd_generate. See docs/RUNTIME_ARCHITECTURE.md
+#   for the overall split-HBM design and docs/KNOWN_ISSUES.md #019 for the
+#   decision to self-implement rather than use libxlm.so.
 #
 # Build (on S600):
 #   cd main/runtime
 #   mkdir build && cd build
 #   cmake ..
 #   make -j4
-#   ./vision_dummy_test ../path/to/vision.hbm
-#
-# Or out-of-source with a custom hbm path:
-#   ./vision_dummy_test /home/sunrise/oe_locateanything/main/vision/outputs/locateanything-vit-3b_nash-p_w4/LocateAnything-3B_vision_448x448_w8_nash-p_corenum_4.hbm
+#   ../run_vision_dummy_test.sh        # Phase 1 sanity
+#   ./embed_lookup_test <embed_tokens.bin>   # Phase 2 embed unit test
 
 cmake_minimum_required(VERSION 3.10)
 project(locateanything_runtime CXX)
@@ -21,11 +21,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Search /usr/hobot for the hb_dnn / hb_ucp C API libs.
-# S600 symbol homes (verified by `nm -D`):
+# S600 symbol homes (verified by nm -D, see KNOWN_ISSUES #015):
 #   hbDNN*     -> libdnn.so      (in /usr/hobot/lib)
 #   hbUCP*     -> libhbucp.so    (in /usr/hobot/lib)
-#   hbUCPSys*  -> libhbucp.so    (same)
 find_path(HOBOT_INCLUDE_DIR hobot/dnn/hb_dnn.h
           PATHS /usr/include /usr/local/include)
 find_library(HBDNN_LIB dnn            PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
@@ -41,16 +39,15 @@ if(NOT HOBOT_INCLUDE_DIR)
                        "deb package: sudo apt-get install -y hobot-dnn")
 endif()
 
-# The runtime library (Phase 1 only has hbm_session + image_preprocess).
+# The runtime library. Phase 2 adds embed_lookup; attention_mask /
+# position_ids / kv_cache / pbd_generate land in subsequent commits.
 add_library(locateanything_runtime STATIC
   src/hbm_session.cpp
-  src/image_preprocess.cpp)
+  src/image_preprocess.cpp
+  src/embed_lookup.cpp)
 target_include_directories(locateanything_runtime
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${HOBOT_INCLUDE_DIR})
 
-# Link the D-Robotics runtime libraries. The wrapper only needs hb_dnn +
-# hb_ucp directly, but on S600 those transitively depend on hbrt4 and the
-# underlying ucp/vp/pl/dsp_plugin libs — list them all to be safe.
 set(LA_RT_LIBS)
 if(HBDNN_LIB)
   list(APPEND LA_RT_LIBS ${HBDNN_LIB})
@@ -78,3 +75,7 @@ target_link_libraries(locateanything_runtime PUBLIC ${LA_RT_LIBS})
 # --- Phase 1 sanity executable ------------------------------------------------
 add_executable(vision_dummy_test example/vision_dummy_test.cpp)
 target_link_libraries(vision_dummy_test PRIVATE locateanything_runtime)
+
+# --- Phase 2 embed_lookup unit test -------------------------------------------
+add_executable(embed_lookup_test example/embed_lookup_test.cpp)
+target_link_libraries(embed_lookup_test PRIVATE locateanything_runtime)
