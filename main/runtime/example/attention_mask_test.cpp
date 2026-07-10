@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <vector>
 
 #include "locateanything_runtime/attention_mask.hpp"
