@@ -389,7 +389,7 @@ Result Graph::Execute(hbDNNHandle_t handle,
   // runtime manage L2 memspace allocation itself.
   hbUCPSchedParam sched{};
   HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
-  sched.backend = HB_UCP_BPU_CORE_ANY;
+  sched.backend = 0xF;  // 4-core hbm needs explicit core mask, see KNOWN_ISSUES #016
   err = hbUCPSubmitTask(task, &sched);
   if (err != 0) {
     hbUCPReleaseTask(task);

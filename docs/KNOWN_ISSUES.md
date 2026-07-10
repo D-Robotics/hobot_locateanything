@@ -612,3 +612,52 @@ libxlm 按 Qwen2.5-VL 构造的 embed 序列喂给 LA hbm, 序列错位 → logi
 自身语义 (image_token_index 替换 + vanilla 1D pos + PBD mask). 自研推理流程
 见 `main/runtime/docs/INFERENCE_FLOW.md`. PBD decode 输入 = 1 个上轮尾真实 token +
 5 个 `<text_mask>`(151676), position_ids [-6:]-=1 (n_future_tokens=6=block_size).
+
+---
+
+## #021 language.hbm prefill output layout: 数据存在但 row 0~15 全 0 (2026-07-10)
+
+**Symptom**: prefill_verify 跑 language.hbm prefill graph 成功 (Execute 返回 73
+outputs, KV output[1] 全非0 证明 BPU 真算, logits sample min=-13.7 max=6.76 无
+NaN), 但 argmax(logits[0,255]) 全是 id=0 val=0.0. 初判 "logits 全0", 实际深查
+后不是全 0.
+
+**Trigger**: dummy 输入 (embed token 0..255 真实 embed + pos 0..255 + causal
+mask + 72×KV 全 0) 跑 prefill.
+
+**Root cause (已查清部分)**:
+1. logits output stride = [78184448, 305408, 2] (查 hbdk4 output_strides).
+   每行 152704 fp16 (152681 真实 + 23 padding 对齐 64). 紧密按 152681 读会错位.
+   按 stride[1]=305408 byte / 2 = 152704 fp16 per row 才对.
+2. layout_probe (扫所有非0 byte 段) 显示: 1873 个非0段, 全部集中在 row 16~88
+   之间 (按 152704 stride 算). row 0~15 全 0, row 89~255 全 0. 数据是真实 logits
+   (中间夹的 0 是 fp16 自然小值), 但只有 ~73 行有效, 不是 256 行.
+3. HB_HBMRuntime.cc::PrepareOutputArrays (reference) 读 output 用
+   output_properties.stride[i] 构造 numpy, 不假设紧密 — 验证我们 stride 读法
+   跟官方一致.
+
+**未查清 (待查)**: 为什么只有 row 16~88 有数据, row 0~15 全 0. 假设:
+- input embed token 0~15 (token id 0=pad/<|endoftext|> 等) 触发某种跳过
+- mask causal 填法跟 hbm 期望不符 (hbm mask 语义可能是 cache_len 维度, 不是
+  query 维度 causal)
+- input embed 拼接没做 image_token_index 替换 (LA prefill 期望 prompt 里有
+  image_token_index 占位符, 我们 dummy 输入没放)
+
+**Evidence**:
+- KV out[1] non_zero=676/676 (BPU 确实写 KV cache)
+- logits 1873 个非0段集中在 row 16~88
+- libxlm 跑 LA (Qwen2.5-VL 分支) 时 logits 非零且出 token (虽乱码), 说明 hbm
+  本身能产完整 logits, 差异在 input 构造
+
+**Fix**: 待查. 下一步对照 upstream modeling_locateanything.py 真实 prefill
+input 构造 (image_token_index 替换 + 正确 mask + position), 不用 dummy token
+0..255.
+
+**Alternatives considered**:
+- output stride 读错 — 已排除 (HB_HBMRuntime 也用 stride)
+- hbm 坏 — 已排除 (libxlm 能出非零 logits)
+- output cache 同步 — 已排除 (KV output 全非0)
+
+**Prevention**: prefill verify 判据不能只看 "argmax=0 val=0" 就判 PASS, 必须
+检查 logits 实际数值范围 (min/max/mean) + 非零行分布. 之前判据太松差点漏过
+这个 bug.

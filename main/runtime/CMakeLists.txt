@@ -89,3 +89,9 @@ target_link_libraries(attention_mask_test PRIVATE locateanything_runtime)
 # --- Phase 2 position_ids unit test ------------------------------------------
 add_executable(position_ids_test example/position_ids_test.cpp)
 target_link_libraries(position_ids_test PRIVATE locateanything_runtime)
+
+# --- prefill verify (language hbm prefill graph) ---
+add_executable(prefill_verify example/prefill_verify.cpp)
+target_link_libraries(prefill_verify PRIVATE locateanything_runtime)
+add_executable(layout_probe example/layout_probe.cpp)
+target_link_libraries(layout_probe PRIVATE locateanything_runtime)
