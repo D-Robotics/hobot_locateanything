@@ -349,6 +349,13 @@ Result Graph::Execute(hbDNNHandle_t handle,
   }
 
   // Submit inference + wait.
+  // The hobot-dnn C API splits submission and wait:
+  //   hbDNNInferV2  -> create the task + bind tensors (NOT auto-submitted)
+  //   hbUCPSubmitTask -> actually kick off the BPU
+  //   hbUCPWaitTaskDone -> block until done
+  // SchedParam can be NULL on S600 — the runtime fills defaults (priority 0,
+  // custom_id 0, all-cores). If non-default scheduling is needed later, we
+  // plumb a hbUCPSchedParam through the API; for now NULL is fine.
   hbUCPTaskHandle_t task = nullptr;
   int32_t err = hbDNNInferV2(&task, out_tensors.data(),
                               in_tensors.data(), handle);
@@ -357,8 +364,14 @@ Result Graph::Execute(hbDNNHandle_t handle,
     for (auto &t : out_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
     return Result::Err(err, "hbDNNInferV2 failed");
   }
-  // hbDNNInferV2 returns the task already submitted; we still WaitTaskDone to
-  // block until completion. Timeout -1 = wait forever.
+  err = hbUCPSubmitTask(task, nullptr);
+  if (err != 0) {
+    hbUCPReleaseTask(task);
+    for (auto &t : in_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
+    for (auto &t : out_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
+    return Result::Err(err, "hbUCPSubmitTask failed");
+  }
+  // Timeout -1 = wait forever.
   err = hbUCPWaitTaskDone(task, -1);
   if (err != 0) {
     hbUCPReleaseTask(task);
