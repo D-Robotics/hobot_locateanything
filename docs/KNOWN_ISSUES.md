@@ -521,3 +521,42 @@ Setting `export HB_DNN_USER_DEFINED_L2M_SIZES=6:6:6:6` before running our `visio
 - keep the L2M env var set
 - preserve the SchedParam flow from HB_HBMRuntime.cc reference
 - compare logits against upstream PyTorch for numerical alignment (M6)
+
+---
+
+## #019 Phase 2 路线决策: libxlm.so 不支持 LA 的 PBD + 坐标 token, 走自研 hbDNN 路线 (2026-07-10)
+
+**Symptom**: Phase 2 language hbm 推理 loop 需要选择推理引擎。候选:
+  (A) D-Robotics `libxlm.so` + `xlm.h` 高层 API (config 驱动, vlm_demo.cc 那套)
+  (B) 在我们 `hbm_session.cpp` 基础上自研 embed lookup + KV cache + PBD loop
+
+**Trigger**: 用户要求 "优先复用官方 libxlm, 不行再自研, 一切参照 oellm 官方算子"。
+
+**Root cause**: 对 `oellm/s600_sdk/.../lib/libxlm.so` 做 `strings` 探测, 没有以下 LA-specific 字面:
+  - `pbd` / `block_size` / `parallel_block_decode` — PBD 6-token/step 加速机制
+  - `switch_token` / `coord_start` / `coord_end` / `box_start` / `box_end` — LA 坐标输出 + 模式切换
+  - `locateanything` / `magi` — LA 模型识别串
+  - `is_valid_box_frame` / `handle_pattern` / `decode_bbox_avg` — LA 生成循环的关键函数
+
+libxlm 内部 decode loop 不认识 LA 的 PBD block_size=6 语义 (LA config.json 里 text_config.block_size=6, 而 libxlm 自带的 qwen2.5vl_3b_config.json 里没这字段, 默认 1-token/step)。坐标 token `<0>..<1000>` 的输出格式和 `<switch>` / `<box>` 的模式切换也是 LA 独有, libxlm 没有对应 handler。
+
+**Evidence**:
+- `strings libxlm.so | grep -iE "pbd|block_size|switch_token|coord_|box_start|locateanything|magi|is_valid_box"` → 仅命中 tokenizer (Rust HF tokenizers) 的无关字符串, 无 LA-specific。
+- `qwen2.5vl_3b_config.json` schema 无 `block_size` / `decode_seq_len` 字段。
+- `xlm_model_type` enum (xlm.h:32-46) 到 `XLM_MODEL_TYPE_GEMMA4=14` 截止, 无 LA。
+- S600 上**没装完整 oellm_runtime SDK** (只有系统级 hobot-dnn deb 的 libhbrt4/libdnn/libhbucp), 要走 libxlm 还得先把 SDK 从 4090 拷过去 — 即便拷了也跑不通 PBD。
+
+**Fix**: 选路线 B — 在 `main/runtime/src/hbm_session.cpp` 基础上扩展:
+  1. `embed_lookup` — mmap `embed_tokens.bin` (597MB, 152681×2048 fp16) + gather by token IDs
+  2. `attention_mask` — causal + 最后 block_size=6 列对角块 bidirectional (PBD 语义, 参照 upstream `mask_sdpa_utils.py::update_causal_mask_for_one_gen_window_2d`)
+  3. `position_ids` — `np.arange` + PBD 窗口位共享 `pos_ids[-6:] -= 1` (参照 upstream `_prepare_inputs_in_mtp`)
+  4. `kv_cache` — 36 层 × 2 (K/V) × `(1, 1024, 2, 128)` int8 环状缓冲
+  5. `pbd_generate` — 移植 upstream `generate_utils.py::sample_tokens/handle_pattern/is_valid_box_frame/decode_bbox_avg` 到 C++
+  6. 顶层 `LocateAnythingRuntime` — vision.hbm execute → embed concat → language.hbm prefill → decode loop
+
+**Alternatives considered**:
+- libxlm + 写 LA config 强行跑 — 能加载文件但 decode 不会走 PBD, 输出 6 个 token 里只有第 1 个有效, 性能跟普通 autoregressive 一样, 失去 LA 的核心加速。且坐标 token 不会被解析成 bbox。
+- patch libxlm 加 LA model_type — libxlm.so 是 stripped binary, 无源码, 改不动。
+- 等官方 oellm 后续版本支持 LA — 时间不定, 不阻塞当前部署。
+
+**Prevention**: 此决策记录在此, 后续 review 可追溯。Phase 2 实现时每个模块参照 upstream `eagle/Embodied/LocateAnything-3B/modeling_*.py` 对应函数 (参照 `feedback_locateanything_read_upstream_first` memory), 数值对齐 (前 10 token logits diff < 1e-3) 后才算该模块完成。
