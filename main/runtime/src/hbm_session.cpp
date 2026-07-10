@@ -298,7 +298,15 @@ Result Graph::Execute(hbDNNHandle_t handle,
       return Result::Err(err, "Execute: hbDNNGetInputTensorProperties idx=" + std::to_string(i));
     }
     // Allocate aligned-bytes cacheable memory and memcpy the user data.
-    uint64_t need_bytes = in_tensors[i].properties.alignedByteSize;
+    // Mirror HB_HBMRuntime::PrepareInputTensorData's fallback: if the hbm
+    // didn't bake a positive alignedByteSize (it's -1 / 0), compute it as
+    // strides[0] * validShape.dimensionSize[0]. Without this, MallocCached
+    // may get a bogus size and BPU later complains about L2 memspace.
+    int64_t aligned_bytes = in_tensors[i].properties.alignedByteSize;
+    if (aligned_bytes <= 0) {
+      aligned_bytes = in_tensors[i].properties.stride[0] *
+                     in_tensors[i].properties.validShape.dimensionSize[0];
+    }
     // Sanity: user-provided data size should be >= element_count * elem_bytes.
     int64_t want_elems = ElementCount(in_tensors[i].properties.validShape);
     int64_t want_bytes = want_elems * ElementBytesForType(in_tensors[i].properties.tensorType);
@@ -308,12 +316,15 @@ Result Graph::Execute(hbDNNHandle_t handle,
           std::to_string(inputs[i].data.size()) + " bytes, need " +
           std::to_string(want_bytes));
     }
-    err = hbUCPMallocCached(&in_tensors[i].sysMem, need_bytes, 0);
+    err = hbUCPMallocCached(&in_tensors[i].sysMem, aligned_bytes, 0);
     if (err != 0) {
       return Result::Err(err, "hbUCPMallocCached input idx=" + std::to_string(i));
     }
+    // Copy as much as the user data, leaving the rest as zeroed padding inside
+    // the aligned buffer.
+    std::memset(in_tensors[i].sysMem.virAddr, 0, static_cast<size_t>(aligned_bytes));
     std::memcpy(in_tensors[i].sysMem.virAddr, inputs[i].data.data(),
-                static_cast<size_t>(std::min<int64_t>(want_bytes, need_bytes)));
+                static_cast<size_t>(std::min<int64_t>(want_bytes, aligned_bytes)));
     err = hbUCPMemFlush(&in_tensors[i].sysMem, HB_SYS_MEM_CACHE_CLEAN);
     if (err != 0) {
       hbUCPFree(&in_tensors[i].sysMem);
@@ -321,7 +332,8 @@ Result Graph::Execute(hbDNNHandle_t handle,
     }
   }
 
-  // Allocate output device buffers (BPU will fill them).
+  // Allocate output device buffers (BPU will fill them). Same alignedByteSize
+  // fallback as for inputs.
   std::vector<hbDNNTensor> out_tensors(output_names_.size());
   for (size_t i = 0; i < output_names_.size(); ++i) {
     int32_t err = hbDNNGetOutputTensorProperties(&out_tensors[i].properties,
@@ -335,8 +347,12 @@ Result Graph::Execute(hbDNNHandle_t handle,
       }
       return Result::Err(err, "Execute: hbDNNGetOutputTensorProperties idx=" + std::to_string(i));
     }
-    err = hbUCPMallocCached(&out_tensors[i].sysMem,
-                            out_tensors[i].properties.alignedByteSize, 0);
+    int64_t aligned_bytes = out_tensors[i].properties.alignedByteSize;
+    if (aligned_bytes <= 0) {
+      aligned_bytes = out_tensors[i].properties.stride[0] *
+                     out_tensors[i].properties.validShape.dimensionSize[0];
+    }
+    err = hbUCPMallocCached(&out_tensors[i].sysMem, aligned_bytes, 0);
     if (err != 0) {
       for (auto &t : in_tensors) {
         if (t.sysMem.virAddr != nullptr) hbUCPFree(&t.sysMem);
@@ -364,18 +380,16 @@ Result Graph::Execute(hbDNNHandle_t handle,
     for (auto &t : out_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
     return Result::Err(err, "hbDNNInferV2 failed");
   }
-  // S600's UCP refuses a NULL schedParam, so we hand it a zeroed struct:
-  // priority=0 (normal), customId=0, backend=0 (default), deviceId=0.
-  // For multi-core hbms (like ours compiled with corenum=4), the backend
-  // field MUST specify concrete BPU cores — leaving it HB_UCP_CORE_ANY (0)
-  // makes hbUCPSubmitTask reject with code -100001 ("the backend must be
-  // specified to specific cores"). Use HB_UCP_BPU_CORE_0..3 = 0xF (all 4).
+  // SchedParam mirrors HB_HBMRuntime.cc::InferSingleModel: use the
+  // HB_UCP_INITIALIZE_SCHED_PARAM macro's defaults (priority=LOWEST,
+  // backend=HB_UCP_BPU_CORE_ANY = 1ULL<<7 = 0x80 — runtime picks the cores
+  // itself based on what the hbm was compiled with), then override backend
+  // to HB_UCP_BPU_CORE_ANY explicitly. The earlier 0xF (force 4 cores)
+  // rejected with "L2 memory not enough"; HB_UCP_BPU_CORE_ANY lets the
+  // runtime manage L2 memspace allocation itself.
   hbUCPSchedParam sched{};
-  sched.priority = 0;
-  sched.customId = 0;
-  sched.deviceId = 0;
-  // HB_UCP_BPU_CORE_0..3 from hb_ucp.h: bit-OR of (1<<0..3) = 0xF
-  sched.backend = 0xF;
+  HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
+  sched.backend = HB_UCP_BPU_CORE_ANY;
   err = hbUCPSubmitTask(task, &sched);
   if (err != 0) {
     hbUCPReleaseTask(task);
@@ -383,8 +397,8 @@ Result Graph::Execute(hbDNNHandle_t handle,
     for (auto &t : out_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
     return Result::Err(err, "hbUCPSubmitTask failed");
   }
-  // Timeout -1 = wait forever.
-  err = hbUCPWaitTaskDone(task, -1);
+  // timeout = 0 (synchronous wait — match HB_HBMRuntime.cc::InferSingleModel)
+  err = hbUCPWaitTaskDone(task, 0);
   if (err != 0) {
     hbUCPReleaseTask(task);
     for (auto &t : in_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
