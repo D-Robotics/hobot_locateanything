@@ -364,7 +364,11 @@ Result Graph::Execute(hbDNNHandle_t handle,
     for (auto &t : out_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
     return Result::Err(err, "hbDNNInferV2 failed");
   }
-  err = hbUCPSubmitTask(task, nullptr);
+  // S600's UCP refuses a NULL schedParam, so we hand it a zeroed struct:
+  // priority=0 (normal), customId=0, backend=0 (default), deviceId=0.
+  // These match the defaults the BPU monitor prints when the task runs.
+  hbUCPSchedParam sched{};
+  err = hbUCPSubmitTask(task, &sched);
   if (err != 0) {
     hbUCPReleaseTask(task);
     for (auto &t : in_tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
