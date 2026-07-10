@@ -22,13 +22,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Search /usr/hobot for the hb_dnn / hb_ucp C API libs.
-# Note: hbDNN* symbols live in libdnn.so (not libhbdnn.so), and hbUCP* in
-# libucp.so (not libhbucp.so) on S600 — the C API was renamed when the
-# public hobot-dnn package split off from the internal hbdk4 runtime.
+# S600 symbol homes (verified by `nm -D`):
+#   hbDNN*     -> libdnn.so      (in /usr/hobot/lib)
+#   hbUCP*     -> libhbucp.so    (in /usr/hobot/lib)
+#   hbUCPSys*  -> libhbucp.so    (same)
 find_path(HOBOT_INCLUDE_DIR hobot/dnn/hb_dnn.h
           PATHS /usr/include /usr/local/include)
 find_library(HBDNN_LIB dnn            PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
-find_library(HBUCP_LIB  ucp           PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
+find_library(HBUCP_LIB  hbucp         PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
 find_library(HBRT4_LIB  hbrt4         PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
 find_library(HBTL_LIB  hbtl           PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
 find_library(HBDSP_PLUGIN_LIB hbdsp_plugin PATHS /usr/hobot/lib /usr/lib /usr/lib/aarch64-linux-gnu)
