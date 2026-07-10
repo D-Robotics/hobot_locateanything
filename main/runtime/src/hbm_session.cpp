@@ -366,8 +366,16 @@ Result Graph::Execute(hbDNNHandle_t handle,
   }
   // S600's UCP refuses a NULL schedParam, so we hand it a zeroed struct:
   // priority=0 (normal), customId=0, backend=0 (default), deviceId=0.
-  // These match the defaults the BPU monitor prints when the task runs.
+  // For multi-core hbms (like ours compiled with corenum=4), the backend
+  // field MUST specify concrete BPU cores — leaving it HB_UCP_CORE_ANY (0)
+  // makes hbUCPSubmitTask reject with code -100001 ("the backend must be
+  // specified to specific cores"). Use HB_UCP_BPU_CORE_0..3 = 0xF (all 4).
   hbUCPSchedParam sched{};
+  sched.priority = 0;
+  sched.customId = 0;
+  sched.deviceId = 0;
+  // HB_UCP_BPU_CORE_0..3 from hb_ucp.h: bit-OR of (1<<0..3) = 0xF
+  sched.backend = 0xF;
   err = hbUCPSubmitTask(task, &sched);
   if (err != 0) {
     hbUCPReleaseTask(task);
