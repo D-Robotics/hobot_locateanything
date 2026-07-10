@@ -1,0 +1,47 @@
+{
+  "model_type": "Qwen2.5-VL",
+  "model_dir": "/home/sunrise/oe_locateanything/main/language/outputs/locateanything-lm-3b_nash-p_w4/",
+  "vit_model_file": "LocateAnything-3B_vision_448x448_w8_nash-p_corenum_4.hbm",
+  "llm_model_file": "LocateAnything-3B_language_chunk_256_cache_1024_w4_nash-p_corenum_4_4.hbm",
+  "embed_weight_file_path": "LocateAnything-3B_embed_tokens.bin",
+  "vit_bpu_core": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "prefill_bpu_core": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "decode_bpu_core": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "vocabulary_path": "/home/sunrise/oe_locateanything/main/language/tokenizer/",
+  "text_end_token": "<|im_end|>",
+  "img_start_token": "<|vision_start|>",
+  "img_end_token": "<|vision_end|>",
+  "img_context_token": "<|image_pad|>",
+  "mask_pad_value": -32768,
+  "temporal_patch_size": 1,
+  "patch_size": 14,
+  "vocab_size": 152681,
+  "embed_dim": 2048,
+  "image_height": 448,
+  "image_width": 448,
+  "image_net_mean": [
+    0.5,
+    0.5,
+    0.5
+  ],
+  "image_net_std": [
+    0.5,
+    0.5,
+    0.5
+  ]
+}

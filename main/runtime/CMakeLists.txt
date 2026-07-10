@@ -45,7 +45,8 @@ add_library(locateanything_runtime STATIC
   src/hbm_session.cpp
   src/image_preprocess.cpp
   src/embed_lookup.cpp
-  src/attention_mask.cpp)
+  src/attention_mask.cpp
+  src/position_ids.cpp)
 target_include_directories(locateanything_runtime
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${HOBOT_INCLUDE_DIR})
 
@@ -84,3 +85,7 @@ target_link_libraries(embed_lookup_test PRIVATE locateanything_runtime)
 # --- Phase 2 attention_mask unit test ----------------------------------------
 add_executable(attention_mask_test example/attention_mask_test.cpp)
 target_link_libraries(attention_mask_test PRIVATE locateanything_runtime)
+
+# --- Phase 2 position_ids unit test ------------------------------------------
+add_executable(position_ids_test example/position_ids_test.cpp)
+target_link_libraries(position_ids_test PRIVATE locateanything_runtime)
