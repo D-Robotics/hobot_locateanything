@@ -87,9 +87,11 @@ int main() {
     return decode.data[static_cast<size_t>(i) * cols + j] == kMaskVal;
   };
 
-  // 1. history [0,10) visible to all 6 rows
+  // 1. history [0, past_len-1) visible to all 6 rows. NOTE col past_len-1
+  //    (==9 here) is the prev-round trailing token, which rule (2) masks —
+  //    so we exclude it from the "all history visible" check.
   for (int32_t i = 0; i < rows; ++i) {
-    for (int32_t j = 0; j < 10; ++j) {
+    for (int32_t j = 0; j < 9; ++j) {  // past_len - 1 = 9
       if (!allow(i, j)) { ok = false; std::printf("[FAIL] history (%d,%d) not allow\n", i, j); }
     }
   }
