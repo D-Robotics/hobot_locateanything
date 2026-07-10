@@ -661,3 +661,45 @@ input 构造 (image_token_index 替换 + 正确 mask + position), 不用 dummy t
 **Prevention**: prefill verify 判据不能只看 "argmax=0 val=0" 就判 PASS, 必须
 检查 logits 实际数值范围 (min/max/mean) + 非零行分布. 之前判据太松差点漏过
 这个 bug.
+
+---
+
+## #022 M2 chunk_1024 重编 97% 进程被 SIGHUP 杀 (nohup 不彻底) (2026-07-11)
+
+**Symptom**: M2 重编 (chunk_size=1024 cache_len=2048) 跑到进度 97% (compile_hbo
+快完) 时进程消失, 无 hbm 产出. log 尾部无任何 error/traceback/oom/killed —
+进度条卡 97% 后戛然而止.
+
+**Trigger**: 用 `nohup bash -c "..." & disown` 在 ssh 会话里启动编译. ssh 会话
+断开 (cron tick 的 ssh 连接释放 / Claude session 切换) 时, nohup 的子进程被
+SIGHUP 杀.
+
+**Root cause**: `nohup ... & disown` 在某些 bash 配置下不够彻底 — nohup 忽略
+SIGHUP 但子进程 (oellm_build python) 仍可能继承会话的 controlling terminal,
+ssh 会话关闭时 kernel 给会话前台进程组发 SIGHUP, nohup 没完全屏蔽掉. 长时间
+编译 (3h+) 期间 Claude cron 反复 ssh 连接/断开, 某次断开把 oellm_build 带走.
+
+compile_hbo 97% 卡住不是代码 bug — 是启动方式不稳. 重编用 setsid 彻底脱离
+会话解决.
+
+**Evidence**:
+- log 尾部 30 行全是 "High performance Scaled Dot Product Attention Detected"
+  + 进度条 97%, 无 error.
+- /tmp/m2_recompile.log (wrapper) 尾部是 "process alive ✓" (启动时活的), 没有
+  退出码/信号记录.
+- 4090 内存 7.7G used (编译时可能更高但 dmesg 无 OOM 记录).
+- 无 .hbo 产出 (compile_hbo 97% 没写完).
+
+**Fix**: 重编改用 `setsid nohup bash -c "..." > log 2>&1 < /dev/null &` — setsid
+创建新会话脱离 controlling terminal, 配合 nohup + stdin 重定向 /dev/null,
+ssh 断开不再杀子进程. (commit 这次教训后重编, 新 PID 3703967)
+
+**Alternatives considered**:
+- 从 .hbo 续编 — 无 .hbo (没写完), 不能续.
+- 降 chunk_size 减少编译时间 — 单图 prompt 1001 token, chunk 必须 ≥1024.
+- tmux/screen 会话 — 4090 没装 tmux, 且 setsid 已够.
+
+**Prevention**:
+- 长时间编译 (oellm_build) 一律用 setsid + nohup + `</dev/null`, 不要裸 nohup.
+- cron 监控用 pgrep 模式匹配 (不依赖固定 PID), 进程死了能抓到新 PID.
+- 编译落盘后 watcher 主动写 /tmp/m2_watch.log 记录成败.
