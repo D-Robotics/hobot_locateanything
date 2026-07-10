@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from hbdk4.compiler import leap
 from torch import nn
 
-from leap_llm.nn.modules import DynamicQuantLinear
+from leap_llm.nn.modules import DynamicQuantLinear, LayerNorm
 from leap_llm.nn.utils import Module
 
 
@@ -46,7 +46,7 @@ class LocateAnythingVisionPatchMerger(Module):
 
         if use_plugin:
             self.mlp1 = nn.Sequential(
-                nn.LayerNorm(self.merged_dim),
+                LayerNorm(self.merged_dim),
                 nn.Linear(self.merged_dim, llm_hidden),
                 nn.GELU(),
                 nn.Linear(llm_hidden, llm_hidden),
@@ -55,7 +55,7 @@ class LocateAnythingVisionPatchMerger(Module):
             # LayerNorm + two DynamicQuantLinears + GELU. State-dict keys
             # mlp1.0.weight (LN), mlp1.1.weight (Linear1), mlp1.3.weight (Linear2).
             self.mlp1 = nn.Sequential(
-                nn.LayerNorm(self.merged_dim),
+                LayerNorm(self.merged_dim),
                 DynamicQuantLinear(self.merged_dim, llm_hidden, bias=True, w_bits=8),
                 nn.GELU(),
                 DynamicQuantLinear(llm_hidden, llm_hidden, bias=True, w_bits=8),

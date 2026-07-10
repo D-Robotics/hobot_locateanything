@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from hbdk4.compiler import leap
 from torch import nn
 
-from leap_llm.nn.modules import DynamicQuantLinear, DynamicQuantMatmul
+from leap_llm.nn.modules import DynamicQuantLinear, DynamicQuantMatmul, FakeQuantMatmul, LayerNorm
 from leap_llm.nn.utils import Module
 
 from .vision_attention_leap import (
@@ -73,8 +73,8 @@ class LocateAnythingVisionBlock(Module):
         self.head_dim = self.hidden_size // self.num_heads
         self.q_mul_value = 1.0 / math.sqrt(self.head_dim)
 
-        self.norm0 = nn.LayerNorm(config.hidden_size)
-        self.norm1 = nn.LayerNorm(config.hidden_size)
+        self.norm0 = LayerNorm(config.hidden_size)
+        self.norm1 = LayerNorm(config.hidden_size)
 
         # Packed QKV + output projection — matches upstream `wqkv` / `wo`.
         if use_plugin:
@@ -87,8 +87,8 @@ class LocateAnythingVisionBlock(Module):
             self.wo = DynamicQuantLinear(
                 config.hidden_size, config.hidden_size, bias=True, w_bits=8,
             )
-            self.qk_matmul = DynamicQuantMatmul()
-            self.wv_matmul = DynamicQuantMatmul()
+            self.qk_matmul = FakeQuantMatmul(8, 8, None)
+            self.wv_matmul = FakeQuantMatmul(8, 8, None)
 
         self.mlp = LocateAnythingVisionMLP2(
             config.hidden_size, config.intermediate_size,

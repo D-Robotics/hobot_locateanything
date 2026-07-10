@@ -258,3 +258,112 @@ divisible by 64, but get 305362.
 - 不把 token 明文写进 `.git/config` 或 shell 命令行历史（曾经在一次 `git remote set-url` 里出现过，事后立刻清掉）。
 - Token 泄露风险应对：GitHub → Settings → Developer settings → PAT 页面可以随时 revoke，rotate 时只改 `~/.git-credentials` 一行。
 - 未来如果切到 fine-grained PAT，权限只勾 `Contents: write` + `Metadata: read`，不给整个 org / 其他 repo。
+
+---
+
+## #012 MoonViT LayerNorm 用 torch.nn 触发 leap trace 失败 (2026-07-09)
+
+**Symptom**: M3-β vision 编译秒死。
+```
+TypeError: layer_norm(): argument 'input' (position 1) must be Tensor,
+           not hbdk4.compiler._mlir_libs._mlir.ir.OpResult
+```
+Traceback 定位 `vision_block_leap.py:154 self.norm0(hidden_states)`。
+
+**Trigger**: `oellm_build --model_name locateanything-vit-3b --march nash-p`，编译进入 `export_module` 的 leap trace 阶段。
+
+**Root cause**: `vision_block_leap.py` / `vision_patch_merger_leap.py` / `vision_model_leap.py` 里 norm 层用了 `torch.nn.LayerNorm`。它的 `forward` 调 `F.layer_norm(input, ...)`，要求 `input` 是 `torch.Tensor`；但 leap trace 阶段传入的是 `hbdk4.compiler._mlir_libs._mlir.ir.OpResult`（leap IR 节点），类型不兼容，直接 raise `TypeError`。
+
+不是所有 `torch.nn.*` 都不能进 leap DSL — `torch.nn.Linear` 等模块能走通因为 `leap_llm.nn.modules.DynamicQuantLinear` 是它的 leap-trace-aware wrapper；但 `nn.LayerNorm` 没有 monkey-patch 或替换，必须显式用 `leap_llm.nn.modules.LayerNorm`（该类的 `build(x)` 里走 `leap.layernorm(...)`）。
+
+Language 侧没踩这个坑因为 Qwen2 用 RMSNorm，走的是 `leap_llm.nn.modules.RMSNorm`（已经是 leap-trace-aware）。
+
+**Evidence**:
+1. Traceback `.../torch/nn/functional.py:2905 in layer_norm` + `return torch.layer_norm(...)` 明确是 PyTorch 原生 kernel。
+2. `grep "^class LayerNorm" toolchain/leap_llm/nn/modules/layer_norm.py` 找到 leap-trace-aware 版存在。
+3. 首次编译 PID 4099466 秒死，log_age=10s 时 watchdog 已抓到 traceback。
+
+**Fix**:
+1. `vision_block_leap.py`: `from leap_llm.nn.modules import ..., LayerNorm` + `self.norm0 = LayerNorm(config.hidden_size)` × 2 处
+2. `vision_patch_merger_leap.py`: 同上 × 2 处
+3. `vision_model_leap.py`: 同上 × 1 处 (final_layernorm)
+4. 清 `__pycache__` 避免旧字节码
+5. 重编，进入下一层错误 #013
+
+**Alternatives considered**:
+- 保留 `nn.LayerNorm` 试着 monkey-patch 让它接受 OpResult — 复杂度高，破坏兼容
+- 手写 `leap.reduce_mean + leap.sub + leap.reduce_mean + leap.rsqrt + leap.mul` 实现 LN — 无必要，`leap_llm.nn.modules.LayerNorm` 已封装好
+
+**Prevention**:
+- `_leap.py` 文件里禁止用 `torch.nn.LayerNorm / BatchNorm / GroupNorm / RMSNorm(内置)`；必须用 `leap_llm.nn.modules.*` 提供的 leap-trace-aware 版
+- 加代码前 grep `_leap.py` 里的 `nn\.` 前缀，看是否有非 Linear 的 torch 原生模块
+- Vision 塔 (MoonViT) 用 LN 不是 RMSNorm，因 SigLIP-SO400M 系谱；Qwen 家 language 塔用 RMSNorm
+
+---
+
+## #013 Vision attention DynamicQuantMatmul 外部再手动 transpose K 导致 shape 冲突 (2026-07-09)
+
+**Symptom**:
+```
+loc(...blocks.0.qk_matmul): error: 'hbir.block_quantized_matmul' op cannot infer result type:
+  kernel native::BlockQuantizedTransRhsMatmul config function call failure!
+  Due to lhs[-1]:72 is not equal to rhs[-2]:1024
+```
+lhs[-1]=72 = MoonViT head_dim (1152/16)，rhs[-2]=1024 = image seq_len (448²/14²)，形状对不上。
+
+**Trigger**: 修 #012 后重编，PID 4106407，log_age=42s 时抓到。`_attention_leap` 里 `qk_matmul(q, k_transposed_manually)`。
+
+**Root cause**: `DynamicQuantMatmul` 内部展开为 `leap.block_quantized_matmul`，这个 op **假设 RHS 是 K 的 "trans-rhs" 形态**（即 K 的最后两维已经是 `(K, N)` 顺序，op 内部会做 `LHS @ RHS^T`）。
+
+我们的 `vision_block_leap.py` 在 line 143 手动 `k = leap.transpose(k, [0, 1, 3, 2])` 把 K 变成 `(1, H, hd, seq)`，然后传给 `qk_matmul(q, k)`。**双重 transpose**：外部一次 + block_quantized_matmul 内部 assume 一次 = 语义变回没转，rhs[-2] 就变成了 seq_len 1024 而不是 head_dim 72。
+
+Text 侧成功编译没踩这个坑，因它用 `FakeQuantMatmul(8, 8, None)` — 普通 matmul，需要外部手动 transpose，语义配套一致。
+
+**Evidence**:
+1. `toolchain/leap_llm/nn/modules/matmul.py::DynamicQuantMatmul.build`: `leap.block_quantized_matmul(x_q, y_q, x_s, y_s, mmaAlpha=1024.0)` — 是 "TransRhs" 变体。
+2. Text 侧 `text_attention_leap.py:115`: `FakeQuantMatmul(8, 8, None)`, line 255 `key_states.transpose(2, 3)` 手动转 — 配对一致。
+3. Upstream `modeling_vit.py::eager_attention`: `q @ k.transpose(-2, -1)` — 语义等价于 "外部 transpose + 普通 matmul"。
+
+**Fix**: 对齐 text 侧成功模式，把 vision `qk_matmul` / `wv_matmul` 从 `DynamicQuantMatmul()` 改为 `FakeQuantMatmul(8, 8, None)`：
+```python
+# vision_block_leap.py
+from leap_llm.nn.modules import DynamicQuantLinear, DynamicQuantMatmul, FakeQuantMatmul, LayerNorm
+self.qk_matmul = FakeQuantMatmul(8, 8, None)
+self.wv_matmul = FakeQuantMatmul(8, 8, None)
+```
+
+**Alternatives considered**:
+- 保留 `DynamicQuantMatmul` 但**删掉**外部 `k.transpose(0,1,3,2)` — 也能通，但 `wv_matmul` 那一步也得核对同一约定；保留外部 transpose 让语义符合 upstream 更清晰
+- 用 `leap.matmul(x, y, trans_a=False, trans_b=True)` 直接调 op — 绕过 quant wrapper，失去量化收益
+- 把 vision attention 也改为 packed QKV multi-head 拆分算 — 工程冗余
+
+**Prevention**:
+- `_attention_leap` 里注释区分 `DynamicQuantMatmul` (trans-rhs) vs `FakeQuantMatmul` (plain) 的语义
+- 加代码前先在 text_attention_leap.py 找 successful pattern 对齐；vision / text 用不同 matmul 类要注释说明
+
+---
+
+## #014 M3-β 圆满闭环 (2026-07-09)
+
+**Symptom**: N/A (成功记录)
+
+**Trigger**: 修完 #012 + #013 后 PID 4117845 编译，wall-clock 75 分钟。
+
+**Root cause**: 前两条修复到位，attention shape 语义与 upstream MoonViT 完全对齐，其他 27 层 encoder + patch_embed + merger + final_layernorm 逐一走过。
+
+**Evidence** (hbdk4 verify):
+- march = `nash-p`
+- toolkit = `4.10.2a2.dev202603180400+4c23b55.develop`
+- graphs = `["visual"]`, single-graph
+- input: `(1, 1024, 588)` — 1024 patches (448² / 14²) × 588 flat (3 × 14 × 14 RGB)
+- output: `(1, 256, 2048)` — 256 vision tokens (merger 4× reduce) × 2048 (对接 LM hidden_size)
+- 中间产物: `.visual.bc` 408M / `.visual_convert.bc` 409M / `.visual.hbo` 1.7G / `.hbm` 463M
+
+**Fix**: N/A
+
+**Alternatives considered**: N/A
+
+**Prevention**:
+- M4 unified compile (`locateanything-3b`) 需要同时编译 vision + language + fusion，参考本轮 vision + M2 language 单独编译的 hbm shape 对接接口设计
+- Vision output `(1, 256, 2048)` 直接 concat 到 language prefill 的 embed 序列，无需额外投影
+- 后续 host runtime 侧读入 vision.hbm 一次 forward → 256 tokens → prepend / merge 到 text embed → language prefill

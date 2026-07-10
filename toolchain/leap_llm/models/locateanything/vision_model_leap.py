@@ -21,6 +21,7 @@ from hbdk4.compiler import leap
 from torch import nn
 from torch.quantization import DeQuantStub
 
+from leap_llm.nn.modules import LayerNorm
 from leap_llm.nn.utils import Model
 
 try:
@@ -75,7 +76,7 @@ class LocateAnythingVisionModel(Model):
             LocateAnythingVisionBlock(vision_config, use_plugin=use_plugin)
             for _ in range(vision_config.num_hidden_layers)
         ])
-        self.final_layernorm = nn.LayerNorm(vision_config.hidden_size)
+        self.final_layernorm = LayerNorm(vision_config.hidden_size)
 
         # Merger + mlp1 projector.
         self.merger = LocateAnythingVisionPatchMerger(
