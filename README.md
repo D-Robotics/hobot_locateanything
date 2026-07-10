@@ -116,6 +116,7 @@ oellm_build \
 | Document | English | 中文 |
 |---|---|---|
 | Deployment guide | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | [docs/DEPLOYMENT.zh-CN.md](docs/DEPLOYMENT.zh-CN.md) |
+| Runtime architecture (host + BPU split) | [docs/RUNTIME_ARCHITECTURE.md](docs/RUNTIME_ARCHITECTURE.md) | — |
 | Deployment workspace layout | [main/README.md](main/README.md) | — |
 | D-Robotics S600 SDK placement | [oellm/README.md](oellm/README.md) | — |
 

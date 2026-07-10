@@ -116,6 +116,7 @@ oellm_build \
 | 文档 | English | 中文 |
 |---|---|---|
 | 部署指南 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | [docs/DEPLOYMENT.zh-CN.md](docs/DEPLOYMENT.zh-CN.md) |
+| 运行时架构 (host + BPU 分层) | [docs/RUNTIME_ARCHITECTURE.md](docs/RUNTIME_ARCHITECTURE.md) | — |
 | 部署工作目录说明 | [main/README.md](main/README.md) | — |
 | D-Robotics S600 SDK 存放说明 | [oellm/README.md](oellm/README.md) | — |
 
