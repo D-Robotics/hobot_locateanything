@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -62,8 +63,8 @@ void PrintTensorSummary(const char *label, const rt::Tensor &t) {
         nan_count++;
         f = std::nanf("");
       } else {
-        float val = std::ldexpf(1.0f + mant / 1024.0f,
-                                static_cast<int>(exp) - 15);
+        float val = std::ldexp(1.0f + mant / 1024.0f,
+                               static_cast<int>(exp) - 15);
         f = sign ? -val : val;
       }
       if (!std::isnan(f)) {
