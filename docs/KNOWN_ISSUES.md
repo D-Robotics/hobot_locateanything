@@ -560,3 +560,55 @@ libxlm 内部 decode loop 不认识 LA 的 PBD block_size=6 语义 (LA config.js
 - 等官方 oellm 后续版本支持 LA — 时间不定, 不阻塞当前部署。
 
 **Prevention**: 此决策记录在此, 后续 review 可追溯。Phase 2 实现时每个模块参照 upstream `eagle/Embodied/LocateAnything-3B/modeling_*.py` 对应函数 (参照 `feedback_locateanything_read_upstream_first` memory), 数值对齐 (前 10 token logits diff < 1e-3) 后才算该模块完成。
+
+---
+
+## #020 libxlm Qwen2.5-VL 分支输出乱码 — image embed/position_ids/mask 不匹配 LA (2026-07-10)
+
+**Symptom**: `locateanything_demo` (仿 vlm_demo.cc, config model_type="Qwen2.5-VL")
+xlm_init 成功 + 加载 LA 全部 3 个 hbm (language prefill+decode + vision visual) +
+xlm_infer ret=0 + 真实性能数据 (vit 30ms / prefill 6426 tps / decode 57 tps /
+tpot 17.4ms / e2e 16.9s), 但输出全是随机多语言乱码, 一路 decode 到 KV cache
+满 (980 tokens, "no enough kvcache now stop generating"). prompt 改成 LA 标准
+query 格式 "cat" 也救不回.
+
+**Trigger**: xlm_infer 后 callback 吐乱码; log 显示 `Model type: Qwen2.5-VL` +
+`QwenVLPreprocess success` + `Load hbm ... success` × 3.
+
+**Root cause**: libxlm 走 Qwen2.5-VL 分支, 按 Qwen2.5-VL 的语义构造输入序列:
+1. **image embed 插入**: Qwen2.5-VL 用 `<|vision_start|><|image_pad|>×N<|vision_end|>`
+   (N 个占位符填 N 个 vision embed). LA 用 `image_token_index=151665` **单个**
+   占位符, 运行时替换成 256 个 vision embed (净增 255). 两种插法序列结构不同.
+2. **position_ids**: Qwen2.5-VL 用 M-RoPE 3D (T/H/W 三轴 position_ids [bs,3,seq]).
+   LA 用 vanilla 1D position_ids [bs,1,seq] + PBD `pos[-6:]-=1`.
+3. **attention mask**: Qwen2.5-VL 纯 causal. LA PBD block_size=6, 最后 6×6 块
+   bidirectional + prev-trailing mask (mask_sdpa_utils.py).
+
+libxlm 按 Qwen2.5-VL 构造的 embed 序列喂给 LA hbm, 序列错位 → logits 全乱 →
+采样出随机多语言 token. 不是 hbm 坏, 是 host 端输入构造错.
+
+**Evidence**:
+- `strings libxlm.so` 含 `QwenVLPreprocess success`, `resized_width and resized_height only support 448`, `Get config success! ... image_net_mean ... image_net_std ...` — libxlm 读 config 但按 Qwen2.5-VL 流程预处理.
+- `vlm_model.cc:262 Model type: Qwen2.5-VL` 确认走 Qwen2.5-VL 分支.
+- 输出 token 全是 vocab 里的随机多语言 subword (非 LA 的 `<box>/<0>~<1000>/<ref>` 坐标格式).
+- hbm 本身 verify 过 (hbdk4 + Phase1 vision_dummy_test + #014), 结构正确.
+
+**Fix**: 放弃 libxlm 推理路径 (它只能加载 hbm, 不能正确构造 LA 输入). 纯 C++ 自研:
+- 复用 libxlm 的 `tokenizers_*` C API 做 tokenizer (encode/decode 坐标 token, 不自研 BPE)
+- 复用我们的 hbm_session (hbm 加载+execute, #015-#018 已对齐 HB_HBMRuntime.cc)
+- 复用 embed_lookup + attention_mask + position_ids (Phase 2 已写+测 PASS)
+- 自研 image_preprocess (OpenCV resize 448+BGR2RGB+归一化0.5/0.5+patchify) +
+  vision_text_concat (image_token_index 单占位符→256 vision embed 替换) +
+  kv_cache (36层 ring buffer) + pbd_generate (sample+handle_pattern+decode_bbox_avg,
+  移植 generate_utils.py) + 顶层 locateanything_infer.
+
+**Alternatives considered**:
+- 继续调 libxlm config (改 mean/std/prompt) — prompt "cat" 已试无效, 根因是
+  image embed 插入/position_ids/mask 三层全按 Qwen2.5-VL, config 改不动这些.
+- patch libxlm 加 LA 分支 — libxlm.so stripped binary 无源码, 改不动.
+- 等 libxlm 后续支持 LA — 不确定, 不阻塞.
+
+**Prevention**: libxlm 路径证明 LA hbm 可加载 + 性能可测, 但输入构造必须按 LA
+自身语义 (image_token_index 替换 + vanilla 1D pos + PBD mask). 自研推理流程
+见 `main/runtime/docs/INFERENCE_FLOW.md`. PBD decode 输入 = 1 个上轮尾真实 token +
+5 个 `<text_mask>`(151676), position_ids [-6:]-=1 (n_future_tokens=6=block_size).
