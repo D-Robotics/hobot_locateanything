@@ -218,7 +218,7 @@ class LocateAnythingTextAttention(Module):
             value_states = leap.concat([cache_values, value_states], 2)
 
         kv_len = key_states.type.shape[2]
-        if q_len >= 1024:
+        if q_len >= 2048:  # threshold bumped 1024→2048 so chunk_1024 prefill takes the else (query reshape) branch; see KNOWN_ISSUES #025
             key_states = leap.reshape(
                 key_states, [bsz, self.num_key_value_heads, 1, kv_len, self.head_dim]
             )
@@ -259,7 +259,7 @@ class LocateAnythingTextAttention(Module):
             attn_weights, output_type=hidden_states.type.element_type
         )
 
-        if q_len < 1024:
+        if q_len < 2048:  # threshold bumped, see #025
             attn_weights = leap.reshape(attn_weights, [bsz, self.num_heads, q_len, -1])
         attn_weights = leap.mul(attn_weights, self.q_mul_value)
 
@@ -271,7 +271,7 @@ class LocateAnythingTextAttention(Module):
             attn_weights = leap.add(attn_weights, attention_mask)
         attn_weights = leap.softmax(attn_weights, -1)
         attn_weights = leap.cast_type(attn_weights, output_type=leap.float32)
-        if q_len < 1024:
+        if q_len < 2048:  # threshold bumped, see #025
             attn_weights = leap.reshape(
                 attn_weights,
                 [bsz, self.num_key_value_heads, self.num_key_value_groups * q_len, -1],
