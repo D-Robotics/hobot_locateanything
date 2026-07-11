@@ -703,3 +703,37 @@ ssh 断开不再杀子进程. (commit 这次教训后重编, 新 PID 3703967)
 - 长时间编译 (oellm_build) 一律用 setsid + nohup + `</dev/null`, 不要裸 nohup.
 - cron 监控用 pgrep 模式匹配 (不依赖固定 PID), 进程死了能抓到新 PID.
 - 编译落盘后 watcher 主动写 /tmp/m2_watch.log 记录成败.
+
+---
+
+## #023 M2 chunk_1024/cache_2048 重编闭环 (2026-07-11)
+
+**Symptom**: N/A (成功记录)
+
+**Trigger**: M2 重编 chunk_size=1024 cache_len=2048 (decode_seq_len=6, w4, corenum_4_4),
+setsid 保护跨过上次 97% SIGHUP 死点 (#022), wall-clock ~70min.
+
+**Root cause**: N/A
+
+**Evidence** (hbdk4 verify):
+- march = nash-p
+- toolkit = 4.10.2a2.dev202603180400+4c23b55.develop
+- graphs = ["prefill", "decode"]
+- prefill: 75 in (embeds (1,1024,2048)F16 + pos (1,1,1024)S32 + mask (1,1024,2048)F16
+  + 72×KV (1,1024,2,128)S8) → 73 out (logits (1,1024,152681)F16 + 72×KV)
+- decode: 75 in (embeds (1,6,2048) + pos (1,1,6) + mask (1,6,2048) + 72×KV)
+  → 73 out (logits (1,6,152681) + 72×KV)
+- 关键: prefill input_0 = (1,1024,2048) 能装下真实 LA 单图 prompt 970 token
+  (4090 PyTorch dump ground truth: input_ids 970 + 925 个 151665 占位符)
+- mask shape 从 chunk_256 的 (1,256,1024) 变成 (1,1024,2048) — cache_len 2048
+  后 mask 列维度 = cache_len, 不是 chunk_size
+- KV cache 物理 shape 仍 (1,1024,2,128) — cache_len 2048 是逻辑长度, KV 段
+  1024 滚动复用 (要 verify)
+
+**Fix**: N/A. 之前 chunk_256 装不下真实 prompt 导致 prefill verify row0~15 全0 (#021),
+重编 chunk_1024 解决 input 长度问题.
+
+**Alternatives considered**: chunk_512 (要分 chunk prefill, 复杂), chunk_970 (不通用).
+
+**Prevention**: LA 单图 prompt ~970 token, chunk_size 必须 ≥1024. 多图 (双图 1884,
+三图 2816) 超 cache_len 2048 跑不了, 后续要动态分 chunk 或更大 cache_len.
