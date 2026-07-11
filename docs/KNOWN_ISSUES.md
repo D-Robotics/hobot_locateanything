@@ -661,3 +661,58 @@ input 构造 (image_token_index 替换 + 正确 mask + position), 不用 dummy t
 **Prevention**: prefill verify 判据不能只看 "argmax=0 val=0" 就判 PASS, 必须
 检查 logits 实际数值范围 (min/max/mean) + 非零行分布. 之前判据太松差点漏过
 这个 bug.
+
+---
+
+## #024 chunk_1024 prefill 真实 vision embed 突破: logits 从全0→row17~939有数据 (2026-07-11)
+
+**Symptom**: prefill_verify chunk_1024 用真实 LA prompt (925 个 151665 占位符) +
+dummy vision embed (0.1) 跑, logits 全 0. 换真实 vision embed (4090 PyTorch
+dump 的 (925,2048) fp16) 后, logits row 17~939 出现真实数据 (argmax 真实
+token id 135031/36352/87015/99810, val 14~15, 无 NaN/Inf).
+
+**Trigger**: M2 chunk_1024 重编后 (#023), S600 Python hbm_runtime 跑 prefill,
+input = 真实 LA prompt (925×151665 + system + query "cat") + 4090 dump 的真实
+vit_embeds (925,2048) fp16 填 151665 位.
+
+**Root cause (查清)**:
+1. 之前 logits 全 0 不是 hbm 坏 — 是 dummy vision embed (0.1) 不对, BPU attention
+   算不出有意义 logits.
+2. 真实 vision embed (从 4090 PyTorch LA extract_feature + mlp1 dump) 填进去后,
+   row 17~939 出真实 logits. 证明 hbm prefill graph 正确, input vision embed 是
+   关键.
+3. row 17~939 有数据, row 0~16 + row 940~1023 全 0:
+   - row 0~16 全0: 可能 chunk 对齐预留 (vision 之前的 system prompt 位置?)
+   - row 940~946 全0: 真实 prompt 尾部 (vis_e/cat/im_e/nl/im_s/assistant/nl)
+     位置 — 这些是真实文本 token, 该有 logits 预测下一个, 但全0. 怀疑 mask
+     维度 (1,1024,2048) 或 attention 语义不对, 或 BPU prefill 只给 vision chunk
+     内位置算 logits, vision 之后要 decode.
+4. KV cache input 维度: chunk_1024 cache_len=2048 后 KV 是 (1,2048,2,128) int8
+   不是 1024. mask 是 (1,1024,2048). 之前 chunk_256 KV 是 1024.
+5. L2M env var: chunk_1024 required 6MB/core, 6:6:6:6 刚好但之前 Python 嵌入
+   shell 没 export 到, 报 [0,0,0,0]. 必须 8:8:8:8 (留余量) + 同 shell export.
+
+**Evidence**:
+- 4090 dump: extract_feature 返回 list, mlp1 投影后 (925,2048) bf16 → fp16.
+- S600 Python run: logits shape (1,1024,152681) fp16, row 936~939 argmax
+  135031/36352/87015/99810 val 14~15 nonzero ~152645.
+- 72 KV output 全非0 (int8 -128~127), 证明 BPU 真算.
+- 4090 hbdk4 4.10.2 能加载 chunk_1024 hbm, S600 hbrt4 4.9.6 用 hbDNNInitializeFromFiles
+  C++ 报 "Invalid ELF section header" 但 Python HB_HBMRuntime 能加载 (HB_HBMRuntime
+  构造时初始化了某个 runtime 全局状态, C++ hbm_session 缺). 见 #025.
+
+**Fix (部分)**:
+- 真实 vision embed 替代 dummy (从 4090 dump /tmp/vit_embeds_real_fp16.npy).
+- L2M env var 8:8:8:8 + 同 shell export.
+- KV cache (1,2048,2,128) int8 (不是 1024).
+
+**未解决**: row 940~946 (真实 prompt 尾部 vis_e/cat/assistant 位) 全0.
+下一步: 4090 PyTorch dump prefill logits ground truth, 对比 S600 跑的, 定位
+row 940+ 全0 根因 (mask/attention 语义 / prefill 只覆盖 vision chunk).
+
+**Alternatives considered**:
+- dummy vision (0.1) — 全0, 弃.
+- C++ hbm_session 加载 — Invalid ELF (见 #025), 暂用 Python.
+
+**Prevention**: prefill verify 必须用真实 vision embed (4090 dump), 不能 dummy.
+logits 读法按 stride[1]/2=152704 fp16 per row (有 padding), 不能 reshape 152681.
