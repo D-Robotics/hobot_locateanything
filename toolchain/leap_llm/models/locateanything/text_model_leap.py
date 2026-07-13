@@ -136,7 +136,7 @@ class LocateAnythingTextModel(Model):
         self.register_buffer("cache_sin", cache_sin, persistent=True)
 
         if self.use_plugin:
-            self.quant_input_embeds = QuantStub()
+            self.quant_input_embeds = None  # QuantStub removed: text embed too small (mean 0.02) gets quantized to zero in decode
             self.quant_cos = QuantStub()
             self.quant_sin = QuantStub()
             self.quant_attention_mask = QuantStub()
@@ -181,7 +181,7 @@ class LocateAnythingTextModel(Model):
         if self.use_plugin:
             cos = self.quant_cos(cos)
             sin = self.quant_sin(sin)
-            inputs_embeds = self.quant_input_embeds(inputs_embeds)
+            if self.quant_input_embeds is not None: inputs_embeds = self.quant_input_embeds(inputs_embeds)  # bypassed for LA
             attention_mask = self.quant_attention_mask(attention_mask)
 
         hidden_states = inputs_embeds
