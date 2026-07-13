@@ -79,6 +79,7 @@ class Qwen2PBDTextConfig:
     num_hidden_layers: int = 36
     num_attention_heads: int = 16
     num_key_value_heads: int = 2
+    head_dim: int = 128
     max_position_embeddings: int = 32768
     rms_norm_eps: float = 1e-06
     rope_theta: float = 1000000.0

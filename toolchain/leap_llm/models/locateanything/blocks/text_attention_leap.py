@@ -1,6 +1,5 @@
 import warnings
-from logging import Logger
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 from hbdk4.compiler import leap
@@ -96,16 +95,22 @@ class LocateAnythingTextAttention(Module):
             w_bits=config.w_bits,
             has_scale=config.has_scale,
         )
+        self.q_norm = RMSNorm(
+            self.head_dim, eps=config.rms_norm_eps, use_plugin=self.use_plugin
+        )
+        self.k_norm = RMSNorm(
+            self.head_dim, eps=config.rms_norm_eps, use_plugin=self.use_plugin
+        )
         if self.dynamic_matmul:
             self.qk_matmul = DynamicQuantMatmul()
-            self.sv_matmul = DynamicQuantMatmul()
+            self.wv_matmul = DynamicQuantMatmul()
             self.cache_k_fq = ConstFakeQuant()
             self.cache_v_fq = ConstFakeQuant()
         else:
             self.q_bit, self.k_bit = 8, 16
-            self.s_bit, self.v_bit = 16, 8
+            self.s_bit, self.v_bit = 8, 8
             self.qk_matmul = FakeQuantMatmul(self.q_bit, self.k_bit, None)
-            self.sv_matmul = FakeQuantMatmul(self.s_bit, self.v_bit, None)
+            self.wv_matmul = FakeQuantMatmul(self.s_bit, self.v_bit, None)
             self.cache_k_fq = ConstFakeQuant(self.k_bit)
             self.cache_v_fq = ConstFakeQuant(self.v_bit)
 
@@ -135,11 +140,13 @@ class LocateAnythingTextAttention(Module):
 
         # (bs, seq_len, hidden_size) -> (bs, seq_len, num_heads_hat, head_dim)
         # -> (bs, num_heads, seq_len, head_dim)
+        query_states = self.q_proj(hidden_states).view(hs_shape).transpose(
             1, 2
         )
 
         # (bs, seq_len, hidden_size) -> (bs, seq_len, num_kv_heads, head_dim)
         # -> (bs, num_kv_heads, seq_len, head_dim)
+        key_states = self.k_proj(hidden_states).view(hs_shape).transpose(
             1, 2
         )
 
@@ -197,7 +204,7 @@ class LocateAnythingTextAttention(Module):
         # (bs, num_kv_heads, num_kv_grp*seq_len, ctx_len)
         # * (bs, num_kv_heads, ctx_len, head_dim)
         # -> (bs, num_kv_heads, num_kv_grp*seq_len, head_dim)
-        attn_output = self.sv_matmul(attn_wt, value_states)
+        attn_output = self.wv_matmul(attn_wt, value_states)
         attn_output = torch.reshape(attn_output, [bs, -1, seq_len, self.head_dim])
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bs, seq_len, -1).contiguous()
@@ -314,7 +321,7 @@ class LocateAnythingTextAttention(Module):
             value_states = leap.transpose(value_states, [0, 1, 3, 2])
         # [bs, num_kv_head, num_kv_grp*seq_len, ctx_len]
         # * [bs, num_kv_head, ctx_len, head_dim]
-        attn_output = self.sv_matmul(attn_weights, value_states)
+        attn_output = self.wv_matmul(attn_weights, value_states)
         attn_output = leap.cast_type(
             attn_output, output_type=hidden_states.type.element_type
         )
