@@ -219,9 +219,6 @@ class LocateAnythingTextAttention(Module):
 
         kv_len = key_states.type.shape[2]
         if q_len >= 1024:
-            query_states = leap.reshape(
-                query_states, [bsz, self.num_key_value_heads, -1, self.head_dim]
-            )
             key_states = leap.reshape(
                 key_states, [bsz, self.num_key_value_heads, 1, kv_len, self.head_dim]
             )
