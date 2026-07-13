@@ -737,3 +737,37 @@ setsid 保护跨过上次 97% SIGHUP 死点 (#022), wall-clock ~70min.
 
 **Prevention**: LA 单图 prompt ~970 token, chunk_size 必须 ≥1024. 多图 (双图 1884,
 三图 2816) 超 cache_len 2048 跑不了, 后续要动态分 chunk 或更大 cache_len.
+
+---
+
+## #025 quant_input_embeds 量化 text embed 到 0 导致 decode 全 0 (2026-07-13)
+
+**Symptom**: prefill 有真实 logits(row 17~939  argmax 真实 token id val 14~18),
+但 decode 始终全 0. 随机 embed(mean=1.0) + 真实 KV 跑 decode 能正常产出 logits
+(min=-15 max=11), 证明 decode 图本身没问题.
+
+**Trigger**: decode 用真实 text embed(mean abs=0.02) 输入, hbm 内部
+`quant_input_embeds`(QuantStub) 将其量化到接近 0, 导致后续 attention 全 0.
+
+**Root cause**: leap DSL 编译时 `quant_input_embeds = QuantStub()` 用 mmstar
+calibration 数据(视觉+文本混合) 决定量化 scale. 但 mmstar 的 vision embed 大
+(mean=0.5), 校准出的 scale 对纯 text embed(mean=0.02) 太粗, 量化后为 0.
+Prefill 能跑因为有 vision embed 激活 attention.
+
+**Fix**: 将 `quant_input_embeds` 设为 None, 让 embed 保持 fp16 精度进入第一层.
+内部 DynamicQuantLinear 有自己的量化, 不依赖输入量化.
+- 文件: `toolchain/leap_llm/models/locateanything/text_model_leap.py`
+- 改动: `self.quant_input_embeds = QuantStub()` → `self.quant_input_embeds = None`
+- 编译中: PID 3278771, chunk_1024, ~3-4h
+
+**Alternatives considered**:
+- stock SDK attention(qwen3_vl) — 编译失败(Illegal b30 fusion, sv_matmul shape
+  (1,2,8192,128) 超限)
+- 阈值 1024→2048 — 没解决 decode, 且 prefill 走 reshape 分支效果一样
+- query_states reshape 在 >=1024 分支 — 编译失败(shape inference error)
+- 绕过 quant_input_embeds → 当前方案, 编译中
+
+**Prevention**: 纯文本模型的 calibration 数据必须包含足够多的文本样本, 确保
+text embed 范围的量化 scale 不会被 vision 数据主导. 或者直接 bypass 输入量化
+(内部层已有量化).
+
