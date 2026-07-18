@@ -771,3 +771,28 @@ Prefill 能跑因为有 vision embed 激活 attention.
 text embed 范围的量化 scale 不会被 vision 数据主导. 或者直接 bypass 输入量化
 (内部层已有量化).
 
+---
+
+## #024 真实视觉特征使部分 prefill logits 非零，但语义仍未闭环 (2026-07-11)
+
+**现象**: `chunk_size=1024, cache_len=2048` 的旧 LA Language HBM 使用常数
+视觉特征时 logits 全零；改用 4090 PyTorch 导出的 `(925, 2048)` 真实视觉特征后，
+S600 上 row 17-939 出现有限值 logits，72 组 KV 输出也不再全零。
+
+**已验证**:
+- HBM 图确实执行了计算，输入视觉特征会显著改变 logits 和 KV；
+- prefill 输入为 `(1,1024,2048)`，mask 为 `(1,1024,2048)`，模型包含 72 个 KV
+  输入和输出；
+- S600 运行该图时需要在同一 shell 中设置足够的 L2M，例如
+  `HB_DNN_USER_DEFINED_L2M_SIZES=8:8:8:8`。
+
+**尚未验证**:
+- row 0-16 和 940-1023 仍为零，真实文本尾部也没有得到可信 logits；
+- 当时使用的 925 个视觉 token 来自上游动态分辨率路径，而当前固定 448x448
+  MoonViT HBM 输出 256 个 token，两者不能直接混用；
+- 非零 logits 只能证明计算链路被激活，不能证明 Language HBM 数值正确或 LA
+  语义已经跑通。
+
+**结论**: 该实验保留为旧 M2 HBM 的部分运行证据。后续验证必须使用同一隐藏域、
+同一视觉 token 数、同一 mask/position 语义，并与 PyTorch logits 做受控对比。
+
