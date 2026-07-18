@@ -99,7 +99,7 @@ EXPORT_ONLY=1 ./main/scripts/compile_locateanything_language.sh
 | Vision BC (MoonViT + projector) | — | — | Fix #011 export passed |
 | Language prefill BC (chunk 1024) | — | — | Fix #011 export passed |
 | Language decode PBD BC (q=6) | — | — | Fix #011 export passed |
-| Language decode AR BC (q=1) | — | — | Fix #011 export pending recheck |
+| Language decode AR BC (q=1) | — | — | Fix #011 export passed |
 | Fresh Fix #011 HBMs | TBA | TBA | compiling / pending validation |
 
 ## Roadmap

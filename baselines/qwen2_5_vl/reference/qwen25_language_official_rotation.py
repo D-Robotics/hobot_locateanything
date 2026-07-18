@@ -72,4 +72,3 @@ def rotate_qwen25_language_to_official_domain(text_model, rotation, device="cuda
 def rotate_vision_output_to_official_domain(vision_model, rotation, device="cuda:0"):
     rotation = rotation.detach().float().to(device)
     _rotate_projection_output(vision_model.merger.mlp.proj1, rotation, device)
-

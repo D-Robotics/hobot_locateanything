@@ -827,7 +827,7 @@ Vision projector 或仅替换 lm_head 都会破坏跨模态契约。
 **证据**:
 - FP32 Language logits cosine `0.999999999986`；KV max diff `6.109476e-05`；
 - FP16 Vision output cosine `0.999999927`；
-- Language prefill/decode 与 Vision BC 均导出成功。
+- Language prefill/PBD decode/AR decode 与 Vision BC 均导出成功。
 
 **未完成**: Fresh Fix #011 HBM 的板端数值和 grounding 语义仍需验证。
 

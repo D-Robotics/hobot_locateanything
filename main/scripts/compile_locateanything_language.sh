@@ -71,7 +71,7 @@ if [[ "$EXPORT_ONLY" == "1" ]]; then
   EXTRA_ARGS+=(--export_only)
 fi
 
-setsid nohup oellm_build \
+setsid nohup env PYTHONUNBUFFERED=1 oellm_build \
   --model_name "$MODEL_NAME" \
   --march "$MARCH" \
   --input_model_path "$INPUT_MODEL_PATH" \

@@ -487,4 +487,3 @@ Fix #009 的成功不是因为 HBM 文件接近官方文件，也不是通过复
 因此可以做出以下工程结论：
 
 > Qwen2.5-VL-3B Vision 已经具备从 HF checkpoint 经自定义 Leap/HBDK 编译后替换官方 Vision HBM 的能力；在官方 Language 和官方 embed 条件下，板端数值与语义均验证通过。
-
