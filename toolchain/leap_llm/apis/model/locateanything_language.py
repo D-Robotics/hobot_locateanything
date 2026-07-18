@@ -193,11 +193,10 @@ class LocateAnythingLanguageApi:
             dtype=torch.float16,
         ).cpu().numpy()
         out = self.token_embeddings_file_name
-        if not os.path.exists(out):
-            emb.tofile(out)
-            print(f"[save_embed_tokens] wrote {emb.nbytes/1e6:.1f} MB -> {out}")
-        else:
-            print(f"[save_embed_tokens] already present at {out}")
+        temporary = f"{out}.tmp"
+        emb.tofile(temporary)
+        os.replace(temporary, out)
+        print(f"[save_embed_tokens] wrote {emb.nbytes/1e6:.1f} MB -> {out}")
 
     def compile(self, vit_kwargs: Optional[dict] = None,
                 llm_kwargs: Optional[dict] = None) -> None:
@@ -222,17 +221,21 @@ class LocateAnythingLanguageApi:
         }
 
         # ---- Stage 1: export .bc ----
+        stage_inputs = {
+            "prefill": self.text_model.get_leap_input_types_text_model(
+                num_layers, chunk_size, cache_len, batch_size,
+            ),
+            "decode": self.text_model.get_leap_input_types_decode_model(
+                num_layers, self.decode_seq_len, cache_len, batch_size,
+            ),
+            "decode_ar": self.text_model.get_leap_input_types_decode_model(
+                num_layers, 1, cache_len, batch_size,
+            ),
+        }
+        stage_core_map["decode_ar"] = self.decode_core_num[0]
         bc_modules = []
-        for stage_name in ("prefill", "decode"):
+        for stage_name, inputs in stage_inputs.items():
             print(f"[LocateAnythingLanguageApi] export {stage_name}...")
-            if stage_name == "prefill":
-                inputs = self.text_model.get_leap_input_types_text_model(
-                    num_layers, chunk_size, cache_len, batch_size,
-                )
-            else:
-                inputs = self.text_model.get_leap_input_types_decode_model(
-                    num_layers, self.decode_seq_len, cache_len, batch_size,
-                )
             bc_path = str(Path(self.output_lm_model_path).with_suffix(f".{stage_name}.bc"))
             bc = self.text_model.export_module(
                 inputs, stage_name, bc_path, high_precision_qpp=True,

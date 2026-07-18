@@ -26,8 +26,14 @@ Design choices:
 
 - Vendored MoonViT-SO-400M vision encoder (27 layers, 2D RoPE) rather than substituting Qwen2.5-VL's ViT.
 - Full 152,681-token vocabulary, including the `<0>`–`<1000>` coordinate tokens and `<ref>`/`<box>` structural anchors.
-- PBD block size 6 exposed to the compile CLI as `--decode_seq_len 6`, producing both AR (q=1) and PBD (q=6) decode graphs for Fast/Hybrid/Slow runtime modes.
+- PBD block size 6 exposed to the compile CLI as `--decode_seq_len 6`; the Language HBM exports `decode` (PBD q=6) and `decode_ar` (q=1) for Fast/Hybrid/Slow runtime modes.
 - Independent `locateanything-3b` model family under `toolchain/leap_llm/models/locateanything/`, registered in `model_factory.py` alongside the upstream builders. Runtime imports do not touch `qwen2_5_vl`.
+
+Current status (2026-07-18): the self-compiled Qwen2.5-VL-3B baseline is
+validated on S600. LocateAnything Fix #011 has passed checkpoint loading,
+hidden-domain equivalence, and Language/Vision BC export. Fresh HBM compilation
+and board-side semantic validation are the next gates; older LA HBMs are RCA
+artifacts, not release models.
 
 ## Architecture
 
@@ -44,8 +50,8 @@ flowchart LR
     subgraph LM[Language HBM · Qwen2.5-3B]
         MERGER --> EMBED[merge visual embeds<br/>into inputs_embeds]
         TOKENIZER --> EMBED
-        EMBED --> PREFILL[Prefill<br/>chunk=256]
-        PREFILL --> KV[(KV cache<br/>cache_len=1024, fp16)]
+        EMBED --> PREFILL[Prefill<br/>chunk=1024]
+        PREFILL --> KV[(KV cache<br/>cache_len=2048)]
         KV --> AR[AR Decode q=1]
         KV --> PBD[PBD Decode q=6]
     end
@@ -57,7 +63,7 @@ flowchart LR
 
 ## Quickstart
 
-Full step-by-step guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Current compiler guide: [docs/tutorials/LOCATEANYTHING_COMPILATION.md](docs/tutorials/LOCATEANYTHING_COMPILATION.md).
 
 ```bash
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
@@ -68,14 +74,10 @@ git clone https://github.com/NVlabs/Eagle.git eagle
 #   conda env: locateanything (PyTorch baseline)
 #   conda env: oellm          (OELLM S600 compile toolchain)
 
-# Language HBM compile (~3-4 h on 16-core CPU + 1x RTX 4090)
-oellm_build \
-  --model_name locateanything-lm-3b \
-  --march nash-p \
-  --input_model_path eagle/Embodied/LocateAnything-3B \
-  --output_model_path main/language/baseline_outputs/locateanything-lm-3b_nash-p_w4 \
-  --w_bits 4 --chunk_size 256 --cache_len 1024 --decode_seq_len 6 \
-  --device cuda:0 --prefill_core_num 4 --decode_core_num 4 --jobs 16
+# Validate BC first, then launch detached HBM compiles.
+EXPORT_ONLY=1 ./main/scripts/compile_locateanything_language.sh
+./main/scripts/compile_locateanything_language.sh
+./main/scripts/compile_locateanything_vit.sh
 ```
 
 ## Model Specification
@@ -94,18 +96,20 @@ oellm_build \
 
 | Stage | HBM size | S600 latency | Status |
 |---|---|---|---|
-| Vision (MoonViT + projector) | TBA | TBA | M3-β |
-| Language prefill (chunk 256) | TBA | TBA | M2 |
-| Language decode AR (q=1) | TBA | TBA | M2 |
-| Language decode PBD (q=6) | TBA | TBA | M2 |
+| Vision BC (MoonViT + projector) | — | — | Fix #011 export passed |
+| Language prefill BC (chunk 1024) | — | — | Fix #011 export passed |
+| Language decode PBD BC (q=6) | — | — | Fix #011 export passed |
+| Language decode AR BC (q=1) | — | — | Fix #011 export pending recheck |
+| Fresh Fix #011 HBMs | TBA | TBA | compiling / pending validation |
 
 ## Roadmap
 
 - [x] M0 — OELLM baseline dry-run (`qwen2_5-vl-3b`)
 - [x] M1 — PBD `decode_seq_len=6` wired through the compile CLI
-- [x] M2 — LocateAnything language HBM (independent leap DSL, PBD-aware)
+- [x] M2 — LocateAnything language Leap graph (independent, PBD-aware)
 - [x] M3-α — MoonViT vision leap DSL vendored and sanity-verified
-- [ ] M3-β — Vision HBM compile
+- [x] M3-β — Vision and Language BC export with shared hidden domain
+- [ ] M3-γ — Fresh Fix #011 HBM compile and numerical validation
 - [ ] M4 — Unified `locateanything-3b` builder (vision + language in one run)
 - [ ] M5 — Host runtime: visual embed merge + PBD/Hybrid sampling + box parser
 - [ ] M6 — Precision alignment (HBM ↔ PyTorch baseline logits)
@@ -117,6 +121,10 @@ oellm_build \
 |---|---|---|
 | Deployment guide | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | [docs/DEPLOYMENT.zh-CN.md](docs/DEPLOYMENT.zh-CN.md) |
 | Runtime architecture (host + BPU split) | [docs/RUNTIME_ARCHITECTURE.md](docs/RUNTIME_ARCHITECTURE.md) | — |
+| Upstream source review | [docs/SOURCE_REVIEW.md](docs/SOURCE_REVIEW.md) | — |
+| LA compilation | [docs/tutorials/LOCATEANYTHING_COMPILATION.md](docs/tutorials/LOCATEANYTHING_COMPILATION.md) | — |
+| Qwen baseline | [docs/tutorials/QWEN2_5_VL_BASELINE.md](docs/tutorials/QWEN2_5_VL_BASELINE.md) | — |
+| S600 runtime and sync | [docs/tutorials/S600_RUNTIME.md](docs/tutorials/S600_RUNTIME.md) | — |
 | Deployment workspace layout | [main/README.md](main/README.md) | — |
 | D-Robotics S600 SDK placement | [oellm/README.md](oellm/README.md) | — |
 
@@ -125,6 +133,7 @@ oellm_build \
 ```
 oe_locateanything/
 ├── assets/                     visual assets
+├── baselines/qwen2_5_vl/       validated Qwen compiler baseline and RCA inputs
 ├── docs/                       user-facing documentation (EN / 中文)
 ├── main/                       deployment artifacts
 │   ├── examples/               PyTorch baseline & HBM verification

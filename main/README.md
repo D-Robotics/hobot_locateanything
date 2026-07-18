@@ -1,18 +1,31 @@
-# main
+# Deployment Workspace
 
-LocateAnything-3B 在 D-Robotics S600 上的部署工作目录。
+`main/` contains LocateAnything compilation entrypoints, runtime code, and
+generated-artifact locations. Model weights, HBM/BC/HBO files, logs, and local
+build products are intentionally excluded from Git.
 
-## 子目录
-
-| 目录 | 说明 |
+| Directory | Ownership |
 |---|---|
-| `examples/` | 基线与集成示例（PyTorch baseline、HBM 对齐脚本等） |
-| `vision/` | MoonViT + MLP Vision Module，编译为 Vision HBM |
-| `language/` | Qwen Prefill / PBD Decode / AR Decode Language Module |
-| `runtime/` | Host 侧 runtime：tokenizer、visual embedding 插入、KV cache、PBD / Hybrid 采样 |
-| `configs/` | 编译与运行时配置 |
-| `scripts/` | 构建、验证、benchmark 脚本 |
-| `golden/` | 校准数据与 golden 输出 |
-| `benchmarks/` | benchmark 输入与结果 |
-| `outputs/` | 编译产物（HBM、bin），不入 Git |
-| `logs/` | 编译与验证日志，不入 Git |
+| `scripts/` | BC validation, detached HBM compilation, artifact checks |
+| `vision/` | MoonViT + projector generated artifacts |
+| `language/` | Qwen2.5/PBD generated artifacts and tokenizer staging |
+| `runtime/` | Custom S600 host runtime and focused C++ probes |
+| `configs/` | Versioned runtime/compiler configuration templates |
+| `examples/` | PyTorch and HBM validation utilities |
+| `golden/` | Generated PyTorch reference tensors; ignored |
+| `outputs/` | Generated BC/HBO/HBM/embed outputs; ignored |
+| `logs/` | Compiler and board-validation logs; ignored |
+| `benchmarks/` | Generated benchmark results; ignored |
+
+The Qwen2.5-VL compiler baseline is kept separately under
+`baselines/qwen2_5_vl/`. Do not place Qwen artifacts in LA output directories.
+
+Recommended order:
+
+1. Run `scripts/validate_locateanything_rotation.py`.
+2. Export Language and Vision with `--export_only`.
+3. Launch `compile_locateanything_language.sh` and
+   `compile_locateanything_vit.sh`.
+4. Record SHA256 and graph contracts.
+5. Transfer to a versioned S600 model directory.
+6. Validate numerical agreement before semantic/PBD tests.

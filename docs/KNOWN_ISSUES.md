@@ -796,3 +796,51 @@ S600 上 row 17-939 出现有限值 logits，72 组 KV 输出也不再全零。
 **结论**: 该实验保留为旧 M2 HBM 的部分运行证据。后续验证必须使用同一隐藏域、
 同一视觉 token 数、同一 mask/position 语义，并与 PyTorch logits 做受控对比。
 
+---
+
+## #026 LA lm_head 改为 nn.Linear 后 BC 导出失败 (2026-07-18)
+
+**现象**: Language 导出在最终输出投影报错：`linear(): argument 'input' must be
+Tensor, not hbdk4 ... OpResult`。
+
+**根因**: `nn.Linear` 的 eager forward 不能消费 HBDK `OpResult`。此前把
+`DynamicQuantLinear` 全零问题归因于 `mmaAlpha=1024` 并改成 `nn.Linear`，只修复了
+PyTorch 路径，却破坏了 Leap `build()` 路径；该归因也缺少受控证据。
+
+**修复**: 恢复可导出的 `DynamicQuantLinear` lm_head，并通过 #027 的隐藏域旋转
+改善量化输入分布。Fix #011 的 prefill/decode BC 已成功导出。
+
+---
+
+## #027 LA Vision/Language/Embed 隐藏域不一致 (2026-07-18)
+
+**现象**: 旧自编译 LA HBM 能加载，部分真实视觉输入可产生非零 logits，但输出未
+形成可信语义；单独替换 embed 或修改输入量化不能闭环。
+
+**根因**: 量化后的残差流需要统一且稳定的 2048 维隐藏域。仅旋转 embed、仅旋转
+Vision projector 或仅替换 lm_head 都会破坏跨模态契约。
+
+**修复**: Fix #011 使用 Qwen Fix #009/#010 已验证的 signed Walsh-Hadamard 变换，
+离线折叠到 embedding、每层 Attention/MLP、final norm/lm_head 和 MoonViT projector。
+内置矩阵与参考矩阵逐元素 `max_diff=0`。
+
+**证据**:
+- FP32 Language logits cosine `0.999999999986`；KV max diff `6.109476e-05`；
+- FP16 Vision output cosine `0.999999927`；
+- Language prefill/decode 与 Vision BC 均导出成功。
+
+**未完成**: Fresh Fix #011 HBM 的板端数值和 grounding 语义仍需验证。
+
+---
+
+## #028 nn.Sequential 未传播 compile_mode(False) (2026-07-18)
+
+**现象**: Vision PyTorch 对比时，merger 内 `DynamicQuantLinear` 仍调用 HBDK
+`build()`，报 `Invalid 'inputs' property for block_quantized_matmul`。
+
+**根因**: SDK `Module.compile_mode()` 只递归自定义 `Module` 和 `ModuleList`，不会
+进入普通 `torch.nn.Sequential`。
+
+**修复**: `LocateAnythingVisionPatchMerger.compile_mode()` 显式将模式传播给
+`mlp1` 内的 Leap 模块。修复后 eager Vision 等价性验证通过。
+
