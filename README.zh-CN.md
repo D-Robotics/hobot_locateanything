@@ -2,9 +2,10 @@
 
 <img src="assets/LocateAnything.jpg" alt="LocateAnything on D-Robotics S600" width="820">
 
-# LocateAnything-3B 部署到 D-Robotics S600
+# LocateAnything-3B on D-Robotics S600
 
-面向 D-Robotics S600 BPU 的 LocateAnything-3B 编译与运行时适配工程。
+面向 D-Robotics S600 BPU 的架构保真部署方案，覆盖模型编译、量化适配、
+HBM 构建、运行时集成与分层验证。
 
 [![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-D--Robotics%20S600-35a853)](https://developer.d-robotics.cc/)
@@ -18,27 +19,27 @@
 
 ## 项目简介
 
-LocateAnything-3B 由 MoonViT 视觉编码器、Qwen2.5 语言解码器和 Parallel
-Block Decoding（PBD）组成，面向目标定位、区域理解和结构化坐标生成。本项目实现
-该模型在 D-Robotics S600 上运行所需的模型编译适配、量化域变换、HBM 构建流程
-和 Host 侧运行时组件。
+LocateAnything-3B 面向开放词汇目标定位、区域理解与结构化坐标生成，由 MoonViT
+视觉编码器、Qwen2.5 语言解码器和 Parallel Block Decoding（PBD）共同构成。本项目
+围绕模型原生接口构建 S600 编译与运行时栈，并提供从 checkpoint、BC/HBM 到板端
+执行的可复现工程链路。
 
-项目首先以 Qwen2.5-VL-3B 验证 OELLM/HBDK 编译器与 HBRT 板端运行链路，建立
-静态图像 patch embedding、隐藏域对齐、Language 编译和板端验证方法，再将这些
-工程结论应用到 LocateAnything 的 MoonViT、Qwen decoder 和 PBD 部署中。
+为建立可独立验证的编译参考，项目先完成 Qwen2.5-VL-3B 在 OELLM/HBDK 与 HBRT
+链路上的端到端验证，再将静态图像 patch embedding、隐藏域对齐、Language 编译
+和板端数值验证方法应用于 LocateAnything 的 MoonViT、Qwen decoder 与 PBD 图。
 
-## 核心能力
+## 项目特性
 
-- **面向真实架构的适配**：显式保留 MoonViT、1D RoPE、152,681 词表、坐标
-  token 与 6-token PBD 语义。
-- **完整图接口**：分别导出 Vision、prefill、PBD decode（`q=6`）和 AR decode
-  （`q=1`），每个阶段都可以独立验证。
-- **统一量化隐藏域**：将 signed Walsh-Hadamard 变换离线折叠到 embedding、
-  Attention/MLP、lm_head 和 MoonViT projector，不增加运行时矩阵乘。
-- **可复现编译**：BC 预检、后台 HBM 编译、版本化产物、checksum 和 S600
-  单变量验证均有脚本和文档支持。
-- **可审计工程记录**：上游源码审计、关键修改、数值证据、已知问题与实验快照
-  均随代码版本管理。
+- **架构保真**：完整保留 MoonViT、1D RoPE、152,681 词表、坐标 token 与
+  6-token PBD 语义。
+- **分层图合同**：独立导出 Vision、prefill、PBD decode（`q=6`）和 AR decode
+  （`q=1`），支持逐阶段检查与验证。
+- **零额外算子的隐藏域对齐**：将 signed Walsh-Hadamard 变换离线折叠到
+  embedding、Attention/MLP、lm_head 与 MoonViT projector。
+- **可复现构建**：提供数值预检、BC 导出、后台 HBM 编译、版本化产物与
+  checksum 管理流程。
+- **证据驱动验证**：以源码合同、张量接口、数值对齐和 S600 板端结果作为各阶段
+  的验收依据。
 
 ## 系统架构
 

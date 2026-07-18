@@ -84,8 +84,7 @@ Q.T @ Q = I
 ```
 
 该矩阵可以精确表示为 2048 阶归一化 Walsh-Hadamard 矩阵与确定性的行符号。
-Fix #009/#010 使用恢复出的精确矩阵完成 Vision、Language 和 embedding table 的
-统一隐藏域变换。
+恢复出的精确矩阵用于完成 Vision、Language 和 embedding table 的统一隐藏域变换。
 
 ### 3.4 Vision 端折叠
 

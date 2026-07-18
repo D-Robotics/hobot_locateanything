@@ -4,7 +4,9 @@
 
 # LocateAnything on D-Robotics S600
 
-Compiler and runtime adaptation of LocateAnything-3B for the D-Robotics S600 BPU.
+An architecture-preserving deployment stack for LocateAnything-3B on the
+D-Robotics S600 BPU, covering compilation, quantization, HBM packaging,
+runtime integration, and staged validation.
 
 [![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-D--Robotics%20S600-35a853)](https://developer.d-robotics.cc/)
@@ -18,31 +20,32 @@ Compiler and runtime adaptation of LocateAnything-3B for the D-Robotics S600 BPU
 
 ## Overview
 
-LocateAnything-3B combines a MoonViT vision encoder, a Qwen2.5 language
-decoder, and Parallel Block Decoding (PBD) for visual grounding. This project
-implements the model-specific compiler adapters, quantization transforms,
-reproducible HBM build workflow, and S600 host runtime components required to
-run that architecture on D-Robotics hardware.
+LocateAnything-3B targets open-vocabulary grounding, region understanding, and
+structured coordinate generation through a MoonViT vision encoder, a Qwen2.5
+language decoder, and Parallel Block Decoding (PBD). This project builds an
+S600 compiler and runtime stack around the model's native interfaces, with a
+reproducible path from checkpoint weights and BC/HBM artifacts to board-side
+execution.
 
-Qwen2.5-VL-3B is used as the reference path for validating the OELLM/HBDK
-compiler and HBRT runtime chain. The resulting findings on static-image patch
-embedding, hidden-domain alignment, Language compilation, and board-side
-verification are then applied to the LocateAnything deployment.
+The project first establishes Qwen2.5-VL-3B as an independently validated
+reference for the OELLM/HBDK compiler and HBRT runtime chain. Its methods for
+static-image patch embedding, hidden-domain alignment, Language compilation,
+and numerical verification are then applied to LocateAnything's MoonViT,
+Qwen decoder, and PBD graphs.
 
 ## Highlights
 
-- **Architecture-aware port**: MoonViT, 1D RoPE, the 152,681-token vocabulary,
-  coordinate tokens, and six-token PBD semantics are represented explicitly.
-- **Complete graph contract**: Vision, prefill, PBD decode (`q=6`), and AR
+- **Architecture preservation**: MoonViT, 1D RoPE, the 152,681-token
+  vocabulary, coordinate tokens, and six-token PBD semantics remain explicit.
+- **Staged graph contracts**: Vision, prefill, PBD decode (`q=6`), and AR
   decode (`q=1`) are exported as independently verifiable BPU graphs.
-- **Quantization-domain alignment**: a reproducible signed Walsh-Hadamard
-  transform is folded into embeddings, Attention/MLP projections, lm_head,
-  and the MoonViT projector without adding runtime matrix multiplications.
-- **Reproducible builds**: BC preflight, detached HBM compilation, artifact
-  isolation, checksums, and controlled S600 validation are part of the normal
-  workflow.
-- **Auditable engineering**: source review, compiler changes, numerical
-  evidence, known issues, and experiment snapshots are versioned with code.
+- **Zero-overhead hidden-domain alignment**: a signed Walsh-Hadamard transform
+  is folded into embeddings, Attention/MLP projections, lm_head, and the
+  MoonViT projector without adding runtime matrix multiplications.
+- **Reproducible builds**: numerical preflight, BC export, detached HBM
+  compilation, versioned artifacts, and checksum management are documented.
+- **Evidence-driven validation**: source contracts, tensor interfaces,
+  numerical alignment, and S600 results define each acceptance gate.
 
 ## Architecture
 

@@ -7,10 +7,10 @@ and text/image semantic verification.
 
 ## Verified Baseline
 
-- Fix #009: self-compiled Vision HBM aligned to the 2048-dimensional S600
+- The self-compiled Vision HBM is aligned to the 2048-dimensional S600
   reference hidden domain.
-- Fix #010: self-compiled Language HBM and self-generated embedding table in
-  the same hidden domain.
+- The self-compiled Language HBM and generated embedding table use the same
+  hidden domain.
 - S600 text test: `hi?` produced a normal assistant response.
 - S600 image test: `image1.jpg` was correctly described as a red panda on a
   wooden platform.
@@ -24,7 +24,8 @@ from this repository's code and artifacts.
 
 ## Contents
 
-- `configs/test_fix010_full_self.json`: validated S600 runtime configuration.
+- `configs/test_fix010_full_self.json`: validated S600 runtime configuration;
+  the filename is retained to preserve experiment provenance.
 - `reference/`: exact host-side experiment snapshots. These retain the paths
   from the original 4090 RCA and can be configured for another build host.
 - `../../docs/rca/sdk_compiler_rca_review.md`: complete investigation log.
