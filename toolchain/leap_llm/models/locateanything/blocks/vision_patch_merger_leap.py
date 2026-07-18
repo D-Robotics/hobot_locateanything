@@ -69,6 +69,15 @@ class LocateAnythingVisionPatchMerger(Module):
         x = leap.reshape(x, [1, self.merged_seq, self.merged_dim])
         return x
 
+    def compile_mode(self, mode: bool = True):
+        super().compile_mode(mode)
+        # Module.compile_mode() does not recurse through torch.nn.Sequential.
+        # Propagate explicitly so eager calibration uses each Leap module's
+        # forward() instead of trying to build HBDK ops from torch tensors.
+        for child in self.mlp1:
+            if isinstance(child, Module):
+                child.compile_mode(mode)
+
     def _merge_2x2_torch(self, x):
         x = x.view(1, self.new_h, self.merge_kh, self.new_w, self.merge_kw, self.vit_hidden)
         x = x.permute(0, 1, 3, 2, 4, 5).contiguous()
