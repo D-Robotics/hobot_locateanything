@@ -110,9 +110,6 @@ class Qwen2_5_VisionPatchEmbed(Module):
                 self.patch_size,
                 self.patch_size,
             )
-            weight_2d = self.proj.weight.data.sum(2)
-            self.proj_2d.weight.data = weight_2d
-
             hidden_states = self.proj_2d(hidden_states.to(dtype=target_dtype)).view(
                 -1, self.embed_dim
             )

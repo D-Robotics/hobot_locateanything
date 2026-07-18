@@ -115,13 +115,21 @@ class LocateAnythingTextModel(Model):
             for i in range(config.num_hidden_layers)
         ])
 
-        # lm_head. Always use nn.Linear (plain float matmul).
-        # DynamicQuantLinear's block_quantized_matmul with mmaAlpha=1024
-        # divides int32 output by 1024 => fp16 collapses to 0.
-        # Baseline Qwen2.5-VL uses nn.Linear and it works.
-        self.lm_head = nn.Linear(
-            config.hidden_size, config.vocab_size, bias=False,
-        )
+        # The Leap export path requires a Module with build() support. The
+        # hidden-domain rotation keeps DynamicQuantLinear's activation range
+        # stable; nn.Linear cannot consume an HBDK OpResult during BC export.
+        if self.use_plugin:
+            self.lm_head = nn.Linear(
+                config.hidden_size, config.vocab_size, bias=False,
+            )
+        else:
+            self.lm_head = DynamicQuantLinear(
+                config.hidden_size,
+                config.vocab_size,
+                bias=False,
+                w_bits=config.w_bits,
+                has_scale=config.has_scale,
+            )
 
         # Rotary precompute — cache full max_lm_tokens table.
         rope = LocateAnythingRotaryEmbedding(config)

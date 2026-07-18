@@ -902,6 +902,19 @@ class Qwen2_5_VL:
         new_state_dict = remap_state_dict(
             state_dict, input_model_format=input_model_format
         )
+
+        # Static images duplicate the temporal patch before Conv3d. Folding
+        # the two temporal slices by summation preserves that Conv3d result in
+        # the compiler's Conv2d path.
+        proj_src_key = "model.visual.patch_embed.proj.weight"
+        proj_dst_key = "model.visual.patch_embed.proj_2d.weight"
+        if proj_src_key in new_state_dict:
+            weight_5d = new_state_dict[proj_src_key]
+            new_state_dict[proj_dst_key] = weight_5d.sum(dim=2)
+            print(
+                "[QWEN VISION] folded temporal patch weights: "
+                f"{list(weight_5d.shape)} -> {list(new_state_dict[proj_dst_key].shape)}"
+            )
         miss_key, unexpected_key = model.load_state_dict(new_state_dict, False)
         print(f"miss_key: {miss_key}")
         print(f"unexpected_key: {unexpected_key}")

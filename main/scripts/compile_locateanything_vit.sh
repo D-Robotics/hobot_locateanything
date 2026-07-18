@@ -17,7 +17,10 @@ IMAGE_WIDTH="${IMAGE_WIDTH:-448}"
 IMAGE_HEIGHT="${IMAGE_HEIGHT:-448}"
 DEVICE="${DEVICE:-cuda:0}"
 VIT_CORE_NUM="${VIT_CORE_NUM:-4}"
-JOBS="${JOBS:-32}"
+JOBS="${JOBS:-16}"
+HIDDEN_ROTATION_PATH="${HIDDEN_ROTATION_PATH:-}"
+DISABLE_HIDDEN_ROTATION="${DISABLE_HIDDEN_ROTATION:-0}"
+EXPORT_ONLY="${EXPORT_ONLY:-0}"
 
 INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/eagle/Embodied/LocateAnything-3B}"
 OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/main/vision/outputs/${MODEL_NAME}_${MARCH}_w${W_BITS}}"
@@ -60,7 +63,18 @@ echo "image_wh:      ${IMAGE_WIDTH}x${IMAGE_HEIGHT}"
 echo "log:           $LOG_FILE"
 echo
 
-nohup oellm_build \
+EXTRA_ARGS=()
+if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
+  EXTRA_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
+fi
+if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
+  EXTRA_ARGS+=(--disable_hidden_rotation)
+fi
+if [[ "$EXPORT_ONLY" == "1" ]]; then
+  EXTRA_ARGS+=(--export_only)
+fi
+
+setsid nohup oellm_build \
   --model_name "$MODEL_NAME" \
   --march "$MARCH" \
   --input_model_path "$INPUT_MODEL_PATH" \
@@ -73,14 +87,14 @@ nohup oellm_build \
   --device "$DEVICE" \
   --vit_core_num "$VIT_CORE_NUM" \
   --jobs "$JOBS" \
-  >"$LOG_FILE" 2>&1 &
+  "${EXTRA_ARGS[@]}" \
+  >"$LOG_FILE" 2>&1 </dev/null &
 
 PID=$!
-disown
 
 echo "PID=$PID"
 echo "tail -f $LOG_FILE   # to follow"
-echo "kill $PID           # to stop"
+echo "kill -- -$PID        # to stop the detached process group"
 
 sleep 8
 if kill -0 "$PID" 2>/dev/null; then

@@ -32,6 +32,10 @@ from leap_llm.models.locateanything.config.locateanything_3b import (
     load_config_from_json,
 )
 from leap_llm.models.locateanything.text_model_leap import LocateAnythingTextModel
+from leap_llm.models.locateanything.hidden_rotation import (
+    load_hidden_rotation,
+    rotate_language_to_hidden_domain,
+)
 
 
 def remap_language_state_dict(raw_sd: dict) -> dict:
@@ -83,6 +87,9 @@ class LocateAnythingLanguageApi:
         prefill_core_num: Optional[list[int]] = None,
         decode_core_num: Optional[list[int]] = None,
         march: str = "nash-p",
+        hidden_rotation_path: Optional[str] = None,
+        apply_hidden_rotation: bool = True,
+        export_only: bool = False,
     ) -> None:
         self.input_model_path = input_model_path
         self.output_model_path = output_model_path
@@ -96,6 +103,9 @@ class LocateAnythingLanguageApi:
         self.prefill_core_num = prefill_core_num or [1]
         self.decode_core_num = decode_core_num or [1]
         self.march = march
+        self.hidden_rotation_path = hidden_rotation_path
+        self.apply_hidden_rotation = apply_hidden_rotation
+        self.export_only = export_only
 
         os.makedirs(output_model_path, exist_ok=True)
         self.output_lm_model_path = standard_lm_name(
@@ -157,6 +167,24 @@ class LocateAnythingLanguageApi:
             self.text_model.tie_lm_head_to_embeddings()
             print("  lm_head tied to embed_tokens.weight")
 
+        if self.apply_hidden_rotation:
+            rotation, source = load_hidden_rotation(
+                self.hidden_rotation_path,
+                tc.hidden_size,
+            )
+            rotation_device = (
+                self.device
+                if self.device.startswith("cuda") and torch.cuda.is_available()
+                else "cpu"
+            )
+            orthogonal_error = rotate_language_to_hidden_domain(
+                self.text_model,
+                rotation,
+                device=rotation_device,
+            )
+            print(f"  hidden rotation     = {source}")
+            print(f"  orthogonal max err  = {orthogonal_error:.9g}")
+
         # Save embed_tokens.bin
         self._save_embed_tokens()
 
@@ -211,6 +239,10 @@ class LocateAnythingLanguageApi:
             )
             bc_modules.append(bc)
 
+        if self.export_only:
+            print("[LocateAnythingLanguageApi] export-only validation passed")
+            return
+
         # ---- Stage 2/3/4: convert -> compile_hbo -> link ----
         hbos = []
         for bc in bc_modules:
@@ -235,6 +267,8 @@ class LocateAnythingLanguageApi:
                 "advice": 0.0,
                 "balance": 100,
                 "enable_hpc": True,
+                "input_no_padding": True,
+                "output_no_padding": True,
                 "core_num": stage_core_map[func_name],
             }
             if kwargs["core_num"] > 1:

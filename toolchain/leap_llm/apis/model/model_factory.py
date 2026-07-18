@@ -368,6 +368,9 @@ def _build_locateanything_lm_3b(args):
         prefill_core_num=args.prefill_core_num,
         decode_core_num=args.decode_core_num,
         march=args.march,
+        hidden_rotation_path=args.hidden_rotation_path,
+        apply_hidden_rotation=not args.disable_hidden_rotation,
+        export_only=args.export_only,
     )
 
 
@@ -388,6 +391,9 @@ def _build_locateanything_vit_3b(args):
         w_bits=args.w_bits,
         vit_core_num=args.vit_core_num,
         march=args.march,
+        hidden_rotation_path=args.hidden_rotation_path,
+        apply_hidden_rotation=not args.disable_hidden_rotation,
+        export_only=args.export_only,
     )
 
 

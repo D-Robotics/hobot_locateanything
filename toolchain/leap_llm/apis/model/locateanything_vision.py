@@ -24,6 +24,10 @@ from leap_llm.models.locateanything.config.locateanything_3b import (
     load_config_from_json,
 )
 from leap_llm.models.locateanything.vision_model_leap import LocateAnythingVisionModel
+from leap_llm.models.locateanything.hidden_rotation import (
+    load_hidden_rotation,
+    rotate_vision_output_to_hidden_domain,
+)
 
 
 def remap_vision_state_dict(raw_sd: dict, num_patches: int, patch_size: int,
@@ -96,6 +100,9 @@ class LocateAnythingVisionApi:
         w_bits: int = 8,
         vit_core_num: Optional[list[int]] = None,
         march: str = "nash-p",
+        hidden_rotation_path: Optional[str] = None,
+        apply_hidden_rotation: bool = True,
+        export_only: bool = False,
     ) -> None:
         self.input_model_path = input_model_path
         self.output_model_path = output_model_path
@@ -105,6 +112,9 @@ class LocateAnythingVisionApi:
         self.w_bits = w_bits
         self.vit_core_num = vit_core_num or [1]
         self.march = march
+        self.hidden_rotation_path = hidden_rotation_path
+        self.apply_hidden_rotation = apply_hidden_rotation
+        self.export_only = export_only
 
         os.makedirs(output_model_path, exist_ok=True)
         self.output_vit_model_path = standard_vit_name(
@@ -165,6 +175,23 @@ class LocateAnythingVisionApi:
         else:
             print("  load_state_dict: clean")
 
+        if self.apply_hidden_rotation:
+            rotation, source = load_hidden_rotation(
+                self.hidden_rotation_path,
+                la_cfg.text_config.hidden_size,
+            )
+            rotation_device = (
+                self.device
+                if self.device.startswith("cuda") and torch.cuda.is_available()
+                else "cpu"
+            )
+            rotate_vision_output_to_hidden_domain(
+                self.model,
+                rotation,
+                device=rotation_device,
+            )
+            print(f"  hidden rotation     = {source}")
+
     def compile(self, vit_kwargs: Optional[dict] = None,
                 llm_kwargs: Optional[dict] = None) -> None:
         """Compile the vision HBM.
@@ -180,6 +207,10 @@ class LocateAnythingVisionApi:
         inputs = self.model.get_leap_input_types()
         bc_path = str(Path(self.output_vit_model_path).with_suffix(".visual.bc"))
         bc = self.model.export_module(inputs, "visual", bc_path, high_precision_qpp=True)
+
+        if self.export_only:
+            print("[LocateAnythingVisionApi] export-only validation passed")
+            return
 
         print("[LocateAnythingVisionApi] convert_mlir visual...")
         convert_bc_path = str(Path(self.output_vit_model_path).with_suffix(".visual_convert.bc"))

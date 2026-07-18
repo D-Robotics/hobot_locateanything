@@ -435,6 +435,25 @@ def main():
         default=32,
         help="Number of threads to use during compilation.",
     )
+    parser.add_argument(
+        "--hidden_rotation_path",
+        type=validated_path(check_exists=True),
+        default=None,
+        help=(
+            "Optional .pt hidden rotation for LocateAnything. When omitted, "
+            "the validated 2048-d S600 reference Hadamard is used."
+        ),
+    )
+    parser.add_argument(
+        "--disable_hidden_rotation",
+        action="store_true",
+        help="Disable LocateAnything hidden-domain folding for controlled RCA only.",
+    )
+    parser.add_argument(
+        "--export_only",
+        action="store_true",
+        help="Export LocateAnything BC graphs and stop before convert/HBO compile.",
+    )
 
     # ============ EAGLE3 Speculative Decoding Parameters ============
     parser.add_argument(
