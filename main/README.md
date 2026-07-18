@@ -17,8 +17,9 @@ build products are intentionally excluded from Git.
 | `logs/` | Compiler and board-validation logs; ignored |
 | `benchmarks/` | Generated benchmark results; ignored |
 
-The Qwen2.5-VL compiler baseline is kept separately under
-`baselines/qwen2_5_vl/`. Do not place Qwen artifacts in LA output directories.
+The Qwen2.5-VL compiler-chain validation is organized under
+`baselines/qwen2_5_vl/`; LocateAnything artifacts remain under `main/` so both
+sets can be compared without path or checksum ambiguity.
 
 Recommended order:
 

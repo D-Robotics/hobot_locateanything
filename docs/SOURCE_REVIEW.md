@@ -43,16 +43,19 @@ differ.
 
 ## Deployment Consequences
 
-- The stock Qwen2.5-VL VLM runtime cannot be treated as a LocateAnything
-  runtime. LA needs its own tokenizer, image-token insertion, 1D position IDs,
-  PBD mask, six-token sampler, and box parser.
+- The Qwen2.5-VL reference path validates the common OELLM compiler, HBM,
+  embedding-table, and HBRT execution chain. LocateAnything extends the Host
+  runtime with its tokenizer, image-token insertion, 1D position IDs, PBD
+  mask, six-token sampler, and box parser.
 - Hybrid decoding needs both q=6 PBD and q=1 AR graphs. Fix #011 exports them
   as `decode` and `decode_ar` in the same Language HBM.
 - The current fixed 448x448 Vision graph accepts `(1,1024,588)` and emits 256
   visual tokens. An upstream dynamic-resolution example emitted 925 tokens.
-  These prompt layouts cannot be mixed.
+  The Host prompt selects the token count associated with the compiled Vision
+  profile.
 - The same hidden-domain transform must be folded into the Language stack,
   embedding table, and MoonViT projector. Shape compatibility alone is not
   sufficient.
-- Qwen Fix #009/#010 proves the compiler strategy, not LocateAnything model
-  accuracy. LA still requires HBM-to-PyTorch and S600 semantic validation.
+- Qwen Fix #009/#010 establishes the compiler and hidden-domain strategy.
+  LocateAnything then applies the same validation method to its own HBM,
+  PyTorch reference, PBD flow, and S600 grounding output.

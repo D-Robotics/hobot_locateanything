@@ -41,10 +41,11 @@ Never overwrite the Qwen baseline or an older LA artifact set in place.
 - Prefill uses chunk 1024 and cache 2048.
 - PBD decode uses six inputs with LA's diagonal-block mask and shifted
   position IDs.
-- The stock Qwen `vlm` binary is only for the Qwen baseline. LA uses the custom
-  runtime under `main/runtime`.
+- The SDK `vlm` binary runs the Qwen2.5-VL reference path. LocateAnything's
+  tokenizer, PBD, and box-generation flow are implemented under `main/runtime`.
 
-For the old chunk-1024 graph, use sufficient L2M in the same shell:
+For the current chunk-1024 profile, provide the required L2M allocation in the
+same shell:
 
 ```bash
 export HB_DNN_USER_DEFINED_L2M_SIZES=8:8:8:8

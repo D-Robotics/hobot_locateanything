@@ -64,7 +64,7 @@ Format for each entry:
 
 **Alternatives considered**: `HF_HUB_DISABLE_XET=1` env var — worked, but still slow (~4 MB/s from hf-mirror because `hf_transfer` was deprecated in 1.22). Downgrade unlocks `hf_transfer` acceleration too.
 
-**Prevention**: Pin `huggingface_hub<0.30` in the LocateAnything conda env; document in `docs/DEPLOYMENT.md` if we ever revise the download flow.
+**Prevention**: Pin `huggingface_hub<0.30` in the LocateAnything conda env and keep the download flow synchronized with `docs/COMPILER_PORTING_GUIDE.zh-CN.md`.
 
 ---
 

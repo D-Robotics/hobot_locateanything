@@ -82,8 +82,8 @@ tail -f ~/oe_locateanything/main/logs/locateanything_language_compile.log
 tail -f ~/oe_locateanything/main/logs/locateanything_vit_compile.log
 ```
 
-Do not launch a replacement compile until the previous process group and its
-HBDK children have been identified and stopped.
+Before replacing a compile, record and stop the previous process group and its
+HBDK children so the new run has an isolated resource profile.
 
 ## 5. Required Validation Order
 
@@ -94,4 +94,5 @@ HBDK children have been identified and stopped.
 5. Run fixed-resolution image-token insertion with exactly 256 visual tokens.
 6. Validate AR first, then PBD q=6, Hybrid fallback, and box parsing.
 
-Nonzero logits are not sufficient evidence of semantic correctness.
+Nonzero logits establish graph execution. Numerical comparison and grounding
+output establish model correctness at the following validation levels.

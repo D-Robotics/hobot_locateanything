@@ -2,9 +2,11 @@
 
 ## Purpose
 
-The Qwen2.5-VL work establishes a known-good OELLM/HBDK compiler and S600
-runtime baseline before compiling LocateAnything. It is not a substitute for
-LA validation.
+Qwen2.5-VL is the first validation stage for the OELLM/HBDK compiler and S600
+runtime chain. It provides a controlled reference for checkpoint loading,
+Vision/Language compilation, embedding export, hidden-domain analysis, and
+board-side text/image verification. LocateAnything reuses this workflow with
+its MoonViT, vocabulary, PBD, and runtime contracts.
 
 ## Root Cause and Fixes
 
@@ -16,8 +18,9 @@ LA validation.
 4. Fix #010 folds it into embeddings, every Attention/MLP residual boundary,
    final norm/lm_head, and the calibration Vision output.
 
-The transform was inferred from artifact comparison; D-Robotics did not
-publish a from-zero Qwen2.5-VL compilation implementation.
+The SDK provides the compiler/runtime components and precompiled reference
+artifacts. This project reconstructs and validates the checkpoint-to-HBM steps
+through controlled artifact comparisons.
 
 ## Reproduction Material
 
@@ -32,7 +35,7 @@ docs/rca/sdk_compiler_rca_review.md
 ```
 
 The reference Python files are exact experiment snapshots and contain the
-original 4090 paths. Review and parameterize them before using another host.
+original 4090 paths. Configure those paths for the target build host.
 
 ## Validated S600 Command
 
