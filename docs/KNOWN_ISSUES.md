@@ -893,6 +893,8 @@ Vision projector 或仅替换 lm_head 都会破坏跨模态契约。
 
 完整规范见 `docs/CALIBRATION.md`。
 
-**当前处置**: `la_fix011_hidden_domain_language` 只可保留为无校准结构对照，不能
-标记为 release candidate。是否提前终止该长编译需要操作前确认。
+**当前处置**: `la_fix011_hidden_domain_language` 已于 2026-07-18 16:58 CST 完成
+link，HBM 大小 1,825,443,280 bytes，SHA256 为
+`6e16fffc943167fb9dab6d4c4c5e8921c4f1bd49dc6bb3c54109c427ae5716ce`。该产物只
+保留为无校准结构对照，不能标记为 release candidate，也不触发后续 Vision 长编译。
 

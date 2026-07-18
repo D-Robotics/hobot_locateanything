@@ -12,9 +12,16 @@ Last updated: 2026-07-18 (Asia/Shanghai)
 | Output | `/home/kangjie.xu/oellm_clean/output/la_fix011_hidden_domain_language` |
 | Log | `/home/kangjie.xu/oellm_clean/output/la_fix011_hidden_domain_language/compile.jobs16.log` |
 | Profile | chunk 1024, cache 2048, PBD q=6, AR q=1, W4, 4 cores, jobs 16 |
-| State | detached HBM compilation started; completion not yet claimed |
+| State | HBM linked successfully at 2026-07-18 16:58 CST |
 | Calibration | none; `calib_json_path` is not consumed by the independent Language API |
 | Classification | compiler-structure control only; not a release candidate |
+
+Artifacts:
+
+| File | Bytes | SHA256 |
+|---|---:|---|
+| Language HBM | 1,825,443,280 | `6e16fffc943167fb9dab6d4c4c5e8921c4f1bd49dc6bb3c54109c427ae5716ce` |
+| Embedding table | 625,381,376 | `8668944fcb527faf3bbcd1c03a88d9da69f400b0700028f51ac6abe700e04011` |
 
 Preflight evidence:
 
@@ -31,15 +38,16 @@ Calibration audit (2026-07-18):
 - HBM completion, if reached, remains useful only for the uncalibrated control
   in the next single-variable comparison.
 
-Monitor without attaching to the compiler process:
+Inspect the completed control artifact without modifying it:
 
 ```bash
-ps -o pid,ppid,sid,etime,pcpu,pmem,rss,args -p 2094764
-tail -f /home/kangjie.xu/oellm_clean/output/la_fix011_hidden_domain_language/compile.jobs16.log
+cd /home/kangjie.xu/oellm_clean/output/la_fix011_hidden_domain_language
+sha256sum LocateAnything-3B_language_*.hbm LocateAnything-3B_embed_tokens.bin
+tail -n 20 compile.jobs16.log
 ```
 
 ## Fix #011 Vision
 
-The Vision BC export and hidden-domain equivalence test passed. Fresh Vision
-HBM compilation is intentionally queued after Language to avoid resource
-contention.
+The Vision BC export and hidden-domain equivalence test passed. A release
+Vision HBM build is paused until the task-specific calibration path in #029 is
+implemented and scale-audited.

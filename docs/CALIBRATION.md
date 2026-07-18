@@ -119,6 +119,7 @@ A calibrated build must satisfy all of the following:
 ## 8. Current Artifact Classification
 
 The Language build started on 2026-07-18 under
-`la_fix011_hidden_domain_language` did not execute a calibration forward. It is
-useful only as a compiler-structure control if retained. It must not be marked
-as a release candidate regardless of whether HBM linking succeeds.
+`la_fix011_hidden_domain_language` did not execute a calibration forward. It
+linked successfully at 16:58 CST and is retained only as a compiler-structure
+control. It must not be marked as a release candidate or used to trigger the
+release Vision build.
