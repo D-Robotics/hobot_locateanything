@@ -238,6 +238,11 @@ projector 使用 `torch.nn.Sequential`，因此 `LocateAnythingVisionPatchMerger
 
 ## 6. 从零构建
 
+正式 HBM 构建前必须先完成 LocateAnything 专用校准。通用 VLM 问答数据不能自动
+覆盖 grounding、坐标 token、PBD q=6 与 AR q=1 的激活分布；同时，日志中出现
+`calib_json_path` 也不等于模型 API 已消费该数据。数据组成、隔离策略、scale audit
+和验收门槛见 [LocateAnything Calibration Strategy](CALIBRATION.md)。
+
 ### 6.1 获取代码和权重
 
 ```bash

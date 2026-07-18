@@ -7,6 +7,7 @@
 | [Compiler porting guide](COMPILER_PORTING_GUIDE.zh-CN.md) | Complete path from environment setup and Qwen2.5-VL chain validation to LocateAnything BC/HBM compilation |
 | [Source review](SOURCE_REVIEW.md) | Authoritative checkpoint contract, upstream source paths, and PBD generation semantics |
 | [Runtime architecture](RUNTIME_ARCHITECTURE.md) | Host/BPU responsibilities, runtime modules, and graph invocation |
+| [Calibration strategy](CALIBRATION.md) | Task-specific data contract, scale collection, data isolation, and acceptance gates |
 | [Known issues](KNOWN_ISSUES.md) | Reproducible symptoms, evidence, fixes, and prevention |
 
 ## Focused Guides

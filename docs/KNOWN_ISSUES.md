@@ -771,6 +771,12 @@ Prefill 能跑因为有 vision embed 激活 attention.
 text embed 范围的量化 scale 不会被 vision 数据主导. 或者直接 bypass 输入量化
 (内部层已有量化).
 
+**Correction (2026-07-18)**: 上述 mmstar 归因不适用于当前独立
+`locateanything-lm-3b` 编译入口。源码审计确认该入口没有接收或执行
+`calib_json_path`，且当前 `quant_input_embeds=None`。因此历史现象仍保留，但
+“mmstar 决定当前输入 scale”不能继续作为现行链路的已证实根因；当前校准缺失见
+#029。
+
 ---
 
 ## #024 真实视觉特征使部分 prefill logits 非零，但语义仍未闭环 (2026-07-11)
@@ -843,4 +849,50 @@ Vision projector 或仅替换 lm_head 都会破坏跨模态契约。
 
 **修复**: `LocateAnythingVisionPatchMerger.compile_mode()` 显式将模式传播给
 `mlp1` 内的 Leap 模块。修复后 eager Vision 等价性验证通过。
+
+---
+
+## #029 LocateAnything 独立编译入口未执行任务校准 (2026-07-18)
+
+**现象**: `compile_locateanything_language.sh` 和
+`compile_locateanything_vit.sh` 都传入 mmstar `calib_json_path`，但当前 Language
+编译日志没有 sample、calibration 或数据集记录；模型加载后直接导出 BC。
+
+**根因**:
+
+- `model_factory.py` 的 `locateanything-lm-3b` 与 `locateanything-vit-3b` 分支没有
+  将 `calib_json_path`/`calib_image_path` 传给对应 API；
+- 两个独立 API 的构造函数也没有校准参数，`compile()` 直接切换
+  `compile_mode(True)`；
+- 统一 `locateanything-3b` 分支虽然保存校准路径，但仍是旧 skeleton，没有执行
+  数据校准或生成当前使用的独立 HBM。
+
+**影响**:
+
+- `ConstFakeQuant.absmax` 初始为 0，只在 eager `forward()` 中更新；
+- Language `RMSNorm.i_scale`/`i_scale_pow` 初始为 1，也依赖 eager forward；
+- Vision/Language 的 fake-quantized QK/WV 与 cache 路径可能携带默认范围进入 BC；
+- 当前正在编译的 HBM 即使成功 link，也不能仅凭编译完成进入发布验证。
+
+**证据**:
+
+- 运行日志从 checkpoint load 直接进入 `export prefill/decode/decode_ar`；
+- 日志中没有 calibration marker；
+- `ConstFakeQuant.forward()` 是更新 `absmax` 的唯一位置；
+- `RMSNorm.forward()` 是更新 hidden-energy scale 的位置；
+- Qwen2.5-VL API 存在显式 `_calibrate_forward()`，当前 LA 独立 API 没有对应阶段。
+
+**修复计划**:
+
+1. 使用 LocateAnything 原生 JSONL 构建独立校准 manifest；
+2. 覆盖检测、指代、GUI、OCR、布局、长尾、point 与 no-object；
+3. 在隐藏域折叠后依次执行 Vision、prefill、PBD q=6、AR q=1 eager forward；
+4. 输出 sample/task 计数、manifest SHA256、fake-quant absmax 与 RMSNorm scale；
+5. scale audit 通过后再导出 BC/HBM；
+6. 与当前无校准产物做单变量数值和板端对比。
+
+完整规范见 `docs/CALIBRATION.md`。
+
+**当前处置**: `la_fix011_hidden_domain_language` 只可保留为无校准结构对照，不能
+标记为 release candidate。是否提前终止该长编译需要操作前确认。
 
