@@ -116,7 +116,7 @@ thresholds with any published result.
 
 The project keeps a balanced 120-record evaluation set under
 `workspace/evaluation/current`: 20 records per domain. Before a release result
-is reported, this set must be checked against the current 620-record
+is reported, this set must be checked against the current 1,200-record
 calibration manifest by exact image SHA256, source sample ID, and cross-set
 dHash distance `<= 4`. Leakage evidence produced for an older 820-record
 manifest is historical and cannot satisfy this gate. The current evaluation

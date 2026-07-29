@@ -25,7 +25,7 @@ model:
   vocab_size: 152681
 
 calibration:
-  sample_count: 620
+  sample_count: 1200
   checkpoint_samples: 512
   device: cuda:0
   prepare_dtype: bfloat16

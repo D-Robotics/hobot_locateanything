@@ -44,9 +44,9 @@ LocateAnything-3B 面向开放词汇目标定位、区域理解与结构化坐�
   的验收依据。
 
 当前发布配置固定为 MoonViT 672x672、Vision W8、Language 与 `lm_head` W8/W8、
-Prefill 1024、KV cache 4096、PBD q=6 和 AR q=1。校准集共 620 条，由 500 条
-COCO Detection 与 120 条保留样本组成；512 条仅用于检查 Scale 收敛。Grounding
-发布评测使用 IoU 0.90。
+Prefill 1024、KV cache 4096、PBD q=6 和 AR q=1。校准集共 1200 条，其中
+Detection 620 条，其余 580 条覆盖 GUI、Referring、OCR、Layout 和 Pointing；
+512 条仅用于检查 Scale 收敛。Grounding 发布评测使用 IoU 0.90。
 
 ## 系统架构
 

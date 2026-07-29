@@ -30,7 +30,7 @@ def test_calibrate_help_exposes_current_defaults_only():
         [_bash(), WRAPPER.as_posix(), "--help"], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
-    assert "MAX_SAMPLES         620" in result.stdout
+    assert "MAX_SAMPLES         1200" in result.stdout
     assert "CACHE_LEN           4096" in result.stdout
     assert "LM_HEAD_W_BITS      8" in result.stdout
     assert "V6" not in result.stdout

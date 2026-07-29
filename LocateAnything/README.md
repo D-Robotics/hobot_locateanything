@@ -52,9 +52,10 @@ Qwen decoder, and PBD graphs.
 
 The release profile is fixed to MoonViT 672x672 with Vision W8, Language and
 lm_head W8/W8, prefill 1024, KV cache 4096, PBD q=6, and AR q=1. Calibration
-uses 620 samples: 500 COCO detection records plus 120 retained records. The
-512-sample snapshot is used only to check scale convergence. Grounding release
-comparisons use an IoU threshold of 0.90.
+uses 1,200 samples: 620 Detection records and 580 records covering GUI,
+Referring, OCR, Layout, and Pointing. The 512-sample snapshot is used only to
+check scale convergence. Grounding release comparisons use an IoU threshold
+of 0.90.
 
 ## Architecture
 

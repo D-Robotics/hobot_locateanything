@@ -252,8 +252,9 @@ projector 使用 `torch.nn.Sequential`，因此 `LocateAnythingVisionPatchMerger
 `calib_json_path` 也不等于模型 API 已消费该数据。数据组成、隔离策略、scale audit
 和验收门槛见 [LocateAnything Calibration Strategy](CALIBRATION.md)。
 
-当前发布校准集固定为 620 条：500 条 COCO Detection 与 120 条保留样本。512 条
-仅作为 Scale 收敛检查点，最终 BC/HBM 使用完整 620 条产生的 Scale。
+当前发布校准集固定为 1200 条：Detection 620 条，其余 580 条覆盖 GUI、Referring、
+OCR、Layout 和 Pointing。512 条仅作为 Scale 收敛检查点，最终 BC/HBM 使用完整
+1200 条产生的 Scale。
 
 ### 6.1 获取代码和权重
 

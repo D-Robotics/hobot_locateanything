@@ -11,7 +11,7 @@ of reusing a generic VLM question-answering corpus by default.
 The release build consumes the frozen Scale manifest and graph-coverage record
 produced by `compiler/quantize.py calibrate`. Merely passing a dataset path to a
 compiler process is not evidence that calibration occurred. A valid build must
-bind the selected manifest, its SHA256, the 620-sample count, and the graph
+bind the selected manifest, its SHA256, the 1,200-sample count, and the graph
 coverage record to the exported artifacts.
 
 ## 2. Why Calibration Is Required
@@ -54,16 +54,21 @@ reconstructed from prose.
 
 ### Current detection-primary release profile
 
-The release calibration set contains exactly 620 records:
+The release calibration set contains exactly 1,200 records:
 
 | Source group | Records | Purpose |
 |---|---:|---|
 | COCO 2017 train Detection | 500 | Single-category, multi-category, and multi-instance detection |
-| Retained six-task calibration records | 120 | Non-detection formats, null outputs, PBD and AR path coverage |
+| SKU110K train Detection | 120 | Dense retail scenes and long box sequences |
+| GroundCUA train GUI | 180 | Interface-element grounding |
+| RefCOCOg train Referring | 120 | Free-form referring expressions |
+| HierText train OCR | 120 | Text-region localization |
+| DocLayNet train Layout | 100 | Document layout categories |
+| PixMo-Points train Pointing | 60 | Point prediction and short structured outputs |
 
 The 512-record prefix is not another release dataset. It is a deterministic
-checkpoint used to compare Scale values against the complete 620-record run.
-All BC and HBM builds consume the Scale manifest produced after all 620 records.
+checkpoint used to compare Scale values against the complete 1,200-record run.
+All BC and HBM builds consume the Scale manifest produced after all 1,200 records.
 
 The 500 COCO records use 200 single-category images, 220 two-category images, and 80
 images containing three to five requested categories. Images are unique across
@@ -176,7 +181,7 @@ source data before the release workflow begins.
 
 First collect pinned training subsets. The collector uses streaming datasets
 and downloads only accepted images. Source capacities should remain larger than
-620 so hashing, invalid rows, and selection have headroom. For a fixed SKU110K shard,
+1,200 so hashing, invalid rows, and selection have headroom. For a fixed SKU110K shard,
 pass `--local-parquet detection=/path/to/train-00000-of-00019.parquet` to avoid
 remote streaming.
 
@@ -234,7 +239,7 @@ parsing the model log:
 ```bash
 python compiler/scripts/common/monitor.py \
   --progress-jsonl workspace/calibration/current/generated/generation_progress.jsonl \
-  --total 620 \
+  --total 1200 \
   --pid-file workspace/logs/calibration_prepare.pid \
   --exit-file workspace/logs/calibration_prepare.exit.txt
 ```
@@ -300,7 +305,7 @@ Calibration must run before `compile_mode(True)` and BC export:
 7. Freeze and print all `ConstFakeQuant.absmax` and `RMSNorm` scale statistics.
 8. Export BC only after the scale audit passes.
 
-The unified calibration stage fixes the release sample count at 620 and
+The unified calibration stage fixes the release sample count at 1,200 and
 compares the deterministic 512-sample checkpoint with the complete Scale
 snapshot. It refuses a zero-exit run whose durable artifacts disagree:
 
@@ -309,7 +314,7 @@ python compiler/quantize.py calibrate --component all \
   --generated-jsonl workspace/calibration/current/generated/generated.jsonl \
   --model-path workspace/models/LocateAnything-3B \
   --output-dir workspace/calibration/current/statistics \
-  --max-samples 620 --checkpoint-samples 512 --resume
+  --max-samples 1200 --checkpoint-samples 512 --resume
 ```
 
 Use `--dry-run` to print resolved paths and commands without running observers.
@@ -320,8 +325,8 @@ A dry run is never recorded as a completed calibration.
 A calibrated build must satisfy all of the following:
 
 - calibration parameters are consumed by the selected model factory;
-- the log records manifest SHA256, 620 samples, task counts, and both the
-  512-sample and 620-sample Scale summaries;
+- the log records manifest SHA256, 1,200 samples, task counts, and both the
+  512-sample and 1,200-sample Scale summaries;
 - graph coverage contains `visual` and the complete 13-graph Language family:
   `prefill`, `decode`, `decode_ar`, `decode_pbd_q7..q12`, and
   `decode_ar_q2..q5`;

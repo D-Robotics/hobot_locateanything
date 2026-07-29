@@ -7,7 +7,7 @@ Chronological log of deployment issues encountered while shipping LocateAnything
 > probes, or earlier three-graph artifacts describe the configuration under
 > investigation at that date. The active release compiler contract is 672x672,
 > Vision W8, Language/lm_head W8/W8, prefill 1024, cache 4096, base PBD/AR
-> q=6/q=1, 620 calibration samples, and a 13-graph candidate family.
+> q=6/q=1, 1,200 calibration samples, and a 13-graph candidate family.
 
 Format for each entry:
 
