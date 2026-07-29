@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oe-locateanything"
+version = "0.4.0"
+description = "Evidence-driven LocateAnything-3B deployment and validation on D-Robotics S600"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "oe_locateanything contributors" }]
+dependencies = [
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "compiler", "src"]
+addopts = "-ra"
+
+[tool.oe-locateanything]
+compiler-package-root = "compiler"
+compiler-scripts-root = "compiler/scripts"
+deploy-root = "deploy"
+workspace-root = "workspace"
+calibration-root = "workspace/calibration"
+evaluation-root = "workspace/evaluation"
+artifact-root = "workspace/artifacts"

@@ -1,0 +1,81 @@
+schema_version: 1
+
+# Paths are resolved from the LocateAnything project root. "current" is the
+# active calibration profile; replacing that directory switches datasets
+# without changing compiler code.
+paths:
+  model: workspace/models/LocateAnything-3B
+  upstream_source: workspace/upstream/Embodied
+  selected_jsonl: workspace/calibration/current/selected.jsonl
+  generated_dir: workspace/calibration/current/generated
+  generated_jsonl: workspace/calibration/current/generated/generated.jsonl
+  calibration_dir: workspace/calibration/current/statistics
+  scale_manifest: workspace/calibration/current/statistics/calibration_scale_manifest.json
+  coverage_json: workspace/calibration/current/statistics/calibration_graph_coverage.json
+  artifact_root: workspace/builds/release_candidate
+  log_root: workspace/logs
+  verification_root: workspace/evaluation/release_candidate
+
+model:
+  image_width: 672
+  image_height: 672
+  patch_size: 14
+  spatial_merge: 2
+  hidden_size: 2048
+  vocab_size: 152681
+
+calibration:
+  sample_count: 620
+  checkpoint_samples: 512
+  device: cuda:0
+  prepare_dtype: bfloat16
+  calibrate_dtype: float16
+  slow_samples: 128
+  max_new_tokens: 512
+  seed: 20260729
+  image_token_id: 151665
+  hidden_rotation_path: null
+
+language:
+  chunk_size: 1024
+  cache_len: 4096
+  pbd_query_len: 6
+  ar_query_len: 1
+  decoder_w_bits: 8
+  lm_head_w_bits: 8
+  fused_pbd: true
+  graphs:
+    - prefill
+    - decode
+    - decode_ar
+    - decode_pbd_q7
+    - decode_pbd_q8
+    - decode_pbd_q9
+    - decode_pbd_q10
+    - decode_pbd_q11
+    - decode_pbd_q12
+    - decode_ar_q2
+    - decode_ar_q3
+    - decode_ar_q4
+    - decode_ar_q5
+
+vision:
+  w_bits: 8
+
+build:
+  march: nash-p
+  jobs: 16
+  device: cuda:0
+  conda_env: oellm_clean
+  python: python3
+  bash: bash
+  cores:
+    vision: 4
+    prefill: 4
+    pbd: 4
+    ar: 4
+
+verification:
+  iou_threshold: 0.9
+  reference_jsonl: workspace/evaluation/current/selected.jsonl
+  predictions_jsonl: workspace/evaluation/release_candidate/predictions.jsonl

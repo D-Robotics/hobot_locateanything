@@ -1,0 +1,9 @@
+image_name,x1,y1,x2,y2,class,image_width,image_height
+train_0.jpg,10,15,40,50,object,100,80
+train_0.jpg,50,20,80,60,object,100,80
+train_0.jpg,5,55,35,75,object,100,80
+train_1.jpg,20,10,60,40,object,100,80
+train_1.jpg,30,50,70,70,object,100,80
+train_2.jpg,0,0,100,80,object,100,80
+train_3.jpg,10,10,90,70,object,100,80
+train_4.jpg,5,5,50,40,object,100,80

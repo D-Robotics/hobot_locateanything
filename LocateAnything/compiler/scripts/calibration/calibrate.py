@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""Collect LocateAnything activation statistics from prepared calibration tensors."""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import math
+import os
+import random
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import torch
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+COMPILER_ROOT = REPO_ROOT / "compiler"
+sys.path.insert(0, str(COMPILER_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
+    ActivationTracker,
+    build_decode_inputs,
+    build_prefill_inputs,
+    build_right_aligned_caches,
+    compare_snapshots,
+    load_tensor_payload,
+    read_generated_manifest,
+    select_decode_tokens,
+    select_pbd_tokens,
+    select_replay_prefix_tokens,
+    sha256_file,
+)
+from leap_llm.models.locateanything.hidden_rotation import load_hidden_rotation  # noqa: E402
+from report import generate_activation_report  # noqa: E402
+
+
+STANDARD_CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
+
+
+def atomic_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def torch_dtype(name: str) -> torch.dtype:
+    return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[name]
+
+
+def activation_statistics_audit(snapshot: dict[str, Any]) -> dict[str, Any]:
+    unexecuted = [name for name, value in snapshot.items() if not value.get("executions")]
+    zero_absmax = [
+        name for name, value in snapshot.items()
+        if value.get("kind") == "ConstFakeQuant"
+        and (
+            not isinstance(value.get("absmax"), (int, float))
+            or not math.isfinite(float(value["absmax"]))
+            or float(value["absmax"]) <= 0
+        )
+    ]
+    invalid_norm = [
+        name for name, value in snapshot.items()
+        if value.get("kind") != "ConstFakeQuant"
+        and (
+            not isinstance(value.get("summax_hidden"), (int, float))
+            or not math.isfinite(float(value["summax_hidden"]))
+            or not isinstance(value.get("scale"), (int, float))
+            or not math.isfinite(float(value["scale"]))
+            or float(value["scale"]) <= 0
+        )
+    ]
+    nonfinite = [
+        name for name, value in snapshot.items() if value.get("nonfinite_count", 0) > 0
+    ]
+    return {
+        "activation_point_count": len(snapshot),
+        # Deprecated compatibility field for existing deployment validators.
+        "observer_count": len(snapshot),
+        "unexecuted": unexecuted,
+        "zero_absmax": zero_absmax,
+        "invalid_norm": invalid_norm,
+        "nonfinite": nonfinite,
+        "passed": bool(snapshot) and not (
+            unexecuted or zero_absmax or invalid_norm or nonfinite
+        ),
+    }
+
+
+def resolve_convergence_checkpoints(
+    specification: Any, total_samples: int
+) -> tuple[list[int], list[int], list[int], int]:
+    """Return configured, evaluated, skipped, and legacy checkpoint values."""
+
+    if isinstance(specification, int):
+        requested = [specification]
+        saw_full = False
+    else:
+        values = specification if isinstance(specification, (list, tuple)) else [specification]
+        requested = []
+        saw_full = False
+        for value in values:
+            for token in str(value).split(","):
+                token = token.strip().lower()
+                if token == "full":
+                    saw_full = True
+                    continue
+                if not token:
+                    continue
+                requested.append(int(token))
+    if not requested and saw_full:
+        return [], [], [], total_samples
+    if not requested or any(value <= 0 for value in requested):
+        raise ValueError("checkpoint_samples must contain positive integers")
+
+    legacy_checkpoint = max(requested)
+    if len(requested) == 1:
+        requested.extend(
+            value
+            for value in STANDARD_CONVERGENCE_CHECKPOINTS
+            if value <= legacy_checkpoint
+        )
+    configured = sorted(set(requested))
+    evaluated = [value for value in configured if value <= total_samples]
+    skipped = [value for value in configured if value > total_samples]
+    return configured, evaluated, skipped, legacy_checkpoint
+
+
+def progress(records: list[dict[str, Any]], description: str):
+    try:
+        from tqdm import tqdm
+
+        return tqdm(records, desc=description, unit="sample")
+    except ImportError:
+        return records
+
+
+def run(args: argparse.Namespace) -> int:
+    from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
+
+    manifest = args.generated_jsonl.resolve()
+    records = read_generated_manifest(manifest, args.max_samples)
+    random.Random(args.replay_seed).shuffle(records)
+    (
+        configured_checkpoints,
+        evaluated_checkpoints,
+        skipped_checkpoints,
+        legacy_checkpoint,
+    ) = resolve_convergence_checkpoints(args.checkpoint_samples, len(records))
+    snapshot_samples = sorted(set([*evaluated_checkpoints, len(records)]))
+    device = torch.device(args.device)
+    dtype = torch_dtype(args.dtype)
+    rotation, rotation_source = load_hidden_rotation(args.hidden_rotation_path, 2048)
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    task_counts = dict(Counter(record["task"] for record in records))
+
+    vision_snapshots = {}
+    vision_cosines = []
+    language_snapshots = {}
+    stage_counts = Counter()
+    activation_rows: list[dict[str, Any]] = []
+
+    if args.stage in {"all", "vision"}:
+        from leap_llm.apis.model.locateanything_vision import LocateAnythingVisionApi
+
+        print("\n================== VISION ACTIVATION STATISTICS ==================", flush=True)
+        vision_api = LocateAnythingVisionApi(
+            str(args.model_path.resolve()), str(output_dir / "vision_api"),
+            image_width=672, image_height=672, device=args.device, w_bits=8,
+            hidden_rotation_path=args.hidden_rotation_path, apply_hidden_rotation=True,
+            export_only=True,
+        )
+        vision = vision_api.model.to(device=device, dtype=dtype).eval()
+        vision.compile_mode(False)
+        vision_tracker = ActivationTracker(vision, component="vision")
+        with torch.no_grad():
+            for index, record in enumerate(progress(records, "Vision activation statistics"), 1):
+                payload = load_tensor_payload(record)
+                vision_tracker.stage = "vision"
+                actual = vision(payload["vision_input"].to(device=device, dtype=dtype))
+                expected = (payload["projected_visual_features"].float() @ rotation).to(
+                    device=device, dtype=dtype
+                )
+                vision_cosines.append(float(torch.nn.functional.cosine_similarity(
+                    actual.float().reshape(1, -1), expected.float().reshape(1, -1)
+                ).item()))
+                if index in snapshot_samples:
+                    vision_snapshots[str(index)] = vision_tracker.snapshot(vision)
+        activation_rows.extend(vision_tracker.activation_statistics(vision))
+        vision_tracker.close()
+        del vision, vision_api
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if args.stage in {"all", "language"}:
+        print("\n================== LANGUAGE ACTIVATION STATISTICS ==================", flush=True)
+        language_api = LocateAnythingLanguageApi(
+            str(args.model_path.resolve()), str(output_dir / "language_api"),
+            chunk_size=args.chunk_size, cache_len=args.cache_len, decode_seq_len=6,
+            device=args.device, w_bits=8, lm_head_w_bits=args.lm_head_w_bits,
+            hidden_rotation_path=args.hidden_rotation_path,
+            apply_hidden_rotation=True, export_only=True,
+        )
+        language = language_api.text_model.to(device=device, dtype=dtype).eval()
+        language.compile_mode(False)
+        language_tracker = ActivationTracker(language, component="language")
+        num_layers = language.config.num_hidden_layers
+        num_kv = language.config.num_key_value_heads
+        head_dim = language.config.hidden_size // language.config.num_attention_heads
+        zero_caches = [torch.zeros(
+            (1, args.cache_len, num_kv, head_dim), device=device, dtype=dtype
+        ) for _ in range(num_layers * 2)]
+        with torch.no_grad():
+            for index, record in enumerate(progress(records, "Language activation statistics"), 1):
+                payload = load_tensor_payload(record)
+                language_tracker.stage = "prefill"
+                embeds, positions, mask, active_len = build_prefill_inputs(
+                    language, payload, rotation, chunk_size=args.chunk_size,
+                    cache_len=args.cache_len, image_token_id=args.image_token_id,
+                    device=device, dtype=dtype,
+                )
+                logits, new_keys, new_values = language(embeds, positions, mask, *zero_caches)
+                stage_counts["prefill"] += 1
+                del logits
+                cache_keys, cache_values = build_right_aligned_caches(
+                    new_keys, new_values, active_len=active_len, cache_len=args.cache_len
+                )
+
+                pbd_tokens = select_pbd_tokens(
+                    payload, 6, int(language.config.text_mask_token_id)
+                )
+                language_tracker.stage = "pbd_q6"
+                pbd_embeds, pbd_pos, pbd_mask = build_decode_inputs(
+                    language, pbd_tokens, q_len=6, past_len=active_len,
+                    cache_len=args.cache_len, is_pbd=True, device=device, dtype=dtype,
+                )
+                pbd_out = language(pbd_embeds, pbd_pos, pbd_mask, *(cache_keys + cache_values))
+                stage_counts["pbd_q6"] += 1
+                del pbd_out, pbd_embeds, pbd_pos, pbd_mask
+
+                for prefix_len in range(1, 7):
+                    prefix = select_replay_prefix_tokens(payload, prefix_len)
+                    fused_tokens = [
+                        *prefix,
+                        prefix[-1],
+                        *([int(language.config.text_mask_token_id)] * 5),
+                    ]
+                    q_len = prefix_len + 6
+                    stage = f"pbd_q{q_len}"
+                    language_tracker.stage = stage
+                    fused_embeds, fused_pos, fused_mask = build_decode_inputs(
+                        language, fused_tokens, q_len=q_len, past_len=active_len,
+                        cache_len=args.cache_len, is_pbd=True,
+                        pbd_prefix_len=prefix_len, device=device, dtype=dtype,
+                    )
+                    fused_out = language(
+                        fused_embeds, fused_pos, fused_mask,
+                        *(cache_keys + cache_values),
+                    )
+                    stage_counts[stage] += 1
+                    del fused_out, fused_embeds, fused_pos, fused_mask
+
+                for q_len in range(1, 6):
+                    ar_tokens = select_replay_prefix_tokens(payload, q_len)
+                    stage = f"ar_q{q_len}"
+                    language_tracker.stage = stage
+                    ar_embeds, ar_pos, ar_mask = build_decode_inputs(
+                        language, ar_tokens, q_len=q_len, past_len=active_len,
+                        cache_len=args.cache_len, is_pbd=False, device=device, dtype=dtype,
+                    )
+                    ar_out = language(ar_embeds, ar_pos, ar_mask, *(cache_keys + cache_values))
+                    stage_counts[stage] += 1
+                    del ar_out, ar_embeds, ar_pos, ar_mask
+                del cache_keys, cache_values, new_keys, new_values, embeds, positions, mask
+                if index in snapshot_samples:
+                    language_snapshots[str(index)] = language_tracker.snapshot(language)
+        activation_rows.extend(language_tracker.activation_statistics(language))
+        language_tracker.close()
+        del zero_caches, language, language_api
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    full_samples = len(records)
+    full = str(full_samples)
+    audits = {}
+    if vision_snapshots:
+        audits["vision"] = activation_statistics_audit(vision_snapshots[full])
+    if language_snapshots:
+        audits["language"] = activation_statistics_audit(language_snapshots[full])
+    scale_manifest = {
+        "schema_version": 2,
+        "generated_manifest": str(manifest),
+        "generated_manifest_sha256": sha256_file(manifest),
+        "rotation_source": rotation_source,
+        "rotation_file_sha256": (
+            sha256_file(Path(args.hidden_rotation_path).resolve())
+            if args.hidden_rotation_path else None
+        ),
+        "sample_count": full_samples,
+        "checkpoint_samples": legacy_checkpoint,
+        "convergence_checkpoints": configured_checkpoints,
+        "recorded_snapshot_samples": snapshot_samples,
+        "skipped_convergence_checkpoints": skipped_checkpoints,
+        "replay_order": "deterministic_shuffle",
+        "replay_seed": args.replay_seed,
+        "task_counts": task_counts,
+        "profile": {
+            "stage": args.stage,
+            "chunk_size": args.chunk_size,
+            "cache_len": args.cache_len,
+            "pbd_query_len": 6,
+            "ar_query_len": 1,
+        },
+    }
+    if vision_snapshots:
+        scale_manifest["vision"] = vision_snapshots
+    if language_snapshots:
+        scale_manifest["language"] = language_snapshots
+        scale_manifest["profile"].update({
+            "language_decoder_weight_bits": 8,
+            "language_lm_head_weight_bits": args.lm_head_w_bits,
+            "text_mask_token_id": 151676,
+            "pbd_block_size": 6,
+            "pbd_total_query_lengths": list(range(6, 13)),
+            "ar_total_query_lengths": list(range(1, 6)),
+            "pbd_q6_role": "post_prefill_bootstrap_only",
+            "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
+        })
+    expected_stages = []
+    stage_sample_counts = {}
+    if vision_snapshots:
+        expected_stages.append("vision")
+        stage_sample_counts["vision"] = full_samples
+    if language_snapshots:
+        expected_stages.extend([
+            "prefill",
+            *(f"pbd_q{q_len}" for q_len in range(6, 13)),
+            *(f"ar_q{q_len}" for q_len in range(1, 6)),
+        ])
+        stage_sample_counts.update(stage_counts)
+    coverage = {
+        "schema_version": 2,
+        "generated_manifest_sha256": sha256_file(manifest),
+        "sample_count": full_samples,
+        "checkpoint_samples": legacy_checkpoint,
+        "convergence_checkpoints": configured_checkpoints,
+        "recorded_snapshot_samples": snapshot_samples,
+        "skipped_convergence_checkpoints": skipped_checkpoints,
+        "task_counts": task_counts,
+        "profile": scale_manifest["profile"],
+        "stage_sample_counts": stage_sample_counts,
+        "expected_stages": expected_stages,
+        "all_stages_executed": all(
+            stage_sample_counts.get(name, 0) > 0 for name in expected_stages
+        ),
+        "activation_statistics_audit": audits,
+        "activation_statistics_audit_passed": all(
+            audit["passed"] for audit in audits.values()
+        ),
+    }
+    if vision_cosines:
+        coverage["vision_cosine_min"] = min(vision_cosines)
+        coverage["vision_cosine_mean"] = sum(vision_cosines) / len(vision_cosines)
+    convergence = {
+        "schema_version": 2,
+        "configured_checkpoints": configured_checkpoints,
+        "evaluated_checkpoints": snapshot_samples,
+        "skipped_checkpoints": skipped_checkpoints,
+        "full_samples": full_samples,
+        "comparison_basis": "each checkpoint and each adjacent pair",
+        "components": {},
+    }
+    component_snapshots = {
+        name: snapshots
+        for name, snapshots in (
+            ("vision", vision_snapshots),
+            ("language", language_snapshots),
+        )
+        if snapshots
+    }
+    for component, snapshots in component_snapshots.items():
+        points = sorted(int(value) for value in snapshots)
+        vs_full = [
+            compare_snapshots(
+                snapshots[str(value)],
+                snapshots[full],
+                first_samples=value,
+                second_samples=full_samples,
+            )
+            for value in points
+            if value != full_samples
+        ]
+        adjacent = [
+            compare_snapshots(
+                snapshots[str(before)],
+                snapshots[str(after)],
+                first_samples=before,
+                second_samples=after,
+            )
+            for before, after in zip(points, points[1:])
+        ]
+        convergence["components"][component] = {
+            "snapshot_samples": points,
+            "vs_full": vs_full,
+            "adjacent": adjacent,
+        }
+    atomic_json(output_dir / "calibration_scale_manifest.json", scale_manifest)
+    atomic_json(output_dir / "calibration_graph_coverage.json", coverage)
+    atomic_json(output_dir / "scale_convergence.json", convergence)
+    if str(legacy_checkpoint) in vision_snapshots or str(legacy_checkpoint) in language_snapshots:
+        legacy_convergence = {
+            "schema_version": 1,
+            "checkpoint_samples": legacy_checkpoint,
+            "full_samples": full_samples,
+        }
+        for component, snapshots in component_snapshots.items():
+            if str(legacy_checkpoint) in snapshots:
+                legacy_convergence[component] = compare_snapshots(
+                    snapshots[str(legacy_checkpoint)],
+                    snapshots[full],
+                    first_samples=legacy_checkpoint,
+                    second_samples=full_samples,
+                )
+        atomic_json(
+            output_dir / f"scale_convergence_{legacy_checkpoint}_vs_{full_samples}.json",
+            legacy_convergence,
+        )
+    generate_activation_report(
+        output_dir,
+        activation_rows,
+        convergence,
+        coverage,
+        metadata={
+            "generated_manifest": str(manifest),
+            "generated_manifest_sha256": sha256_file(manifest),
+            "sample_count": full_samples,
+            "task_counts": task_counts,
+        },
+    )
+    print(json.dumps(coverage, sort_keys=True), flush=True)
+    if not coverage["all_stages_executed"]:
+        raise RuntimeError("not all D4 graph stages executed")
+    if not coverage["activation_statistics_audit_passed"]:
+        raise RuntimeError(
+            "activation statistics audit found unexecuted, non-finite, or invalid scales"
+        )
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("--generated-jsonl", type=Path, required=True)
+    result.add_argument("--model-path", type=Path, required=True)
+    result.add_argument("--output-dir", type=Path, required=True)
+    result.add_argument("--device", default="cuda:0")
+    result.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
+    result.add_argument("--stage", choices=["all", "vision", "language"], default="all")
+    result.add_argument("--chunk-size", type=int, default=1024)
+    result.add_argument("--cache-len", type=int, default=4096)
+    result.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
+    result.add_argument("--max-samples", type=int)
+    result.add_argument(
+        "--checkpoint-samples",
+        default="64,128,256,512",
+        help="comma-separated convergence checkpoints; full is always included",
+    )
+    result.add_argument("--image-token-id", type=int, default=151665)
+    result.add_argument("--hidden-rotation-path")
+    result.add_argument("--replay-seed", type=int, default=20260729)
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(run(parser().parse_args()))

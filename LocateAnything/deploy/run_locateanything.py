@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""Run LocateAnything end to end on an S600 from one image and prompt."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+
+IMAGE_SIZE = 672
+PATCH_SIZE = 14
+GRID_SIZE = IMAGE_SIZE // PATCH_SIZE
+IMAGE_TOKENS = (GRID_SIZE * GRID_SIZE) // 4
+IMAGE_TOKEN = "<IMG_CONTEXT>"
+
+TASK_COMMANDS = (
+    "/box <task command>              Save an annotated image",
+    "/detect <category>[,<category>...]  Object Detection",
+    "/ground <phrase>                 Referring Comprehension",
+    "/gui <element>                   GUI Grounding (point)",
+    "/text                            Text OCR",
+    "/layout <category>[,<category>...] Layout Grounding",
+    "/point <target>                  Point Localization",
+    "/ground_single <phrase>          Single-instance grounding",
+    "/gui_box <element>               GUI Grounding (box)",
+    "/ground_text <text>              Text grounding",
+)
+
+BOX_COMMAND = "/box"
+DEFAULT_GENERATION_MODE = "hybrid"
+DEFAULT_NMS_IOU = 0.90
+
+ARTIFACT_ROOT = Path(os.environ.get("LA_ARTIFACT_ROOT", "workspace/artifacts/release"))
+VISION_MODEL = str(
+    ARTIFACT_ROOT / "LocateAnything-3B_vision.hbm"
+)
+LANGUAGE_MODEL = str(ARTIFACT_ROOT / "LocateAnything-3B_language.hbm")
+EMBEDDINGS = str(ARTIFACT_ROOT / "LocateAnything-3B_embed_tokens.bin")
+
+
+def resolve_repo_path(repo_root: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else repo_root / path
+
+
+def prepare_image(image_path: Path) -> tuple[np.ndarray, dict[str, object]]:
+    with Image.open(image_path) as handle:
+        source = handle.convert("RGB")
+    source_width, source_height = source.size
+    scale = min(IMAGE_SIZE / source_width, IMAGE_SIZE / source_height)
+    resized_width = min(IMAGE_SIZE, max(1, int(round(source_width * scale))))
+    resized_height = min(IMAGE_SIZE, max(1, int(round(source_height * scale))))
+    left = (IMAGE_SIZE - resized_width) // 2
+    top = (IMAGE_SIZE - resized_height) // 2
+    right = IMAGE_SIZE - resized_width - left
+    bottom = IMAGE_SIZE - resized_height - top
+
+    resized = source.resize((resized_width, resized_height), Image.Resampling.BICUBIC)
+    profile = Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), (128, 128, 128))
+    profile.paste(resized, (left, top))
+
+    values = np.asarray(profile, dtype=np.float32) / 255.0
+    values = (values - 0.5) / 0.5
+    chw = values.transpose(2, 0, 1)
+    patches = chw.reshape(3, GRID_SIZE, PATCH_SIZE, GRID_SIZE, PATCH_SIZE)
+    patches = patches.transpose(1, 3, 0, 2, 4).reshape(1, GRID_SIZE * GRID_SIZE, -1)
+    vision_input = np.ascontiguousarray(patches, dtype=np.float16)
+
+    transform = {
+        "source_size": [source_width, source_height],
+        "target_size": [IMAGE_SIZE, IMAGE_SIZE],
+        "resized_size": [resized_width, resized_height],
+        "scale_xy": [resized_width / source_width, resized_height / source_height],
+        "padding_ltrb": [left, top, right, bottom],
+    }
+    return vision_input, transform
+
+
+def _require_task_argument(raw: str, command: str) -> str:
+    value = raw[len(command):].strip()
+    if not value:
+        raise ValueError(f"{command} requires an argument")
+    return value.rstrip(".").strip()
+
+
+def unwrap_box_command(prompt: str) -> tuple[str, bool]:
+    """Return the wrapped task command and whether visualization was requested."""
+    raw = prompt.strip()
+    if raw == BOX_COMMAND:
+        raise ValueError("usage: /box <task command>, for example /box /detect cat")
+    if raw.startswith(BOX_COMMAND + " "):
+        task_prompt = raw[len(BOX_COMMAND):].strip()
+        if not task_prompt.startswith("/"):
+            raise ValueError("/box must wrap a task command, for example /box /detect cat")
+        return task_prompt, True
+    return raw, False
+
+
+def normalize_prompt(prompt: str) -> tuple[str, str]:
+    """Map task commands to the prompt templates used by LocateAnything."""
+    raw = prompt.strip()
+    if not raw:
+        raise ValueError("prompt must not be empty")
+
+    if raw == "/text":
+        return "Detect all the text in box format.", "text_ocr"
+    if raw == "/detect" or raw.startswith("/detect "):
+        categories = _require_task_argument(raw, "/detect")
+        categories = "</c>".join(
+            part.strip() for part in categories.split(",") if part.strip()
+        )
+        if not categories:
+            raise ValueError("/detect requires at least one category")
+        return (
+            "Locate all the instances that matches the following description: "
+            f"{categories}.",
+            "object_detection",
+        )
+    if raw == "/layout" or raw.startswith("/layout "):
+        categories = _require_task_argument(raw, "/layout")
+        categories = "</c>".join(
+            part.strip() for part in categories.split(",") if part.strip()
+        )
+        if not categories:
+            raise ValueError("/layout requires at least one category")
+        return (
+            "Detect all the objects in the image that belong to the category set: "
+            f"{categories}.",
+            "layout_grounding",
+        )
+    if raw == "/ground" or raw.startswith("/ground "):
+        phrase = _require_task_argument(raw, "/ground")
+        return (
+            f"Locate all the instances that match the following description: {phrase}.",
+            "referring_comprehension",
+        )
+    if raw == "/ground_single" or raw.startswith("/ground_single "):
+        phrase = _require_task_argument(raw, "/ground_single")
+        return (
+            f"Locate a single instance that matches the following description: {phrase}.",
+            "referring_comprehension_single",
+        )
+    if raw == "/ground_text" or raw.startswith("/ground_text "):
+        phrase = _require_task_argument(raw, "/ground_text")
+        return f"Please locate the text referred as {phrase}.", "text_ocr_grounding"
+    if raw == "/gui" or raw.startswith("/gui "):
+        phrase = _require_task_argument(raw, "/gui")
+        return f"Point to: {phrase}.", "gui_grounding"
+    if raw == "/gui_box" or raw.startswith("/gui_box "):
+        phrase = _require_task_argument(raw, "/gui_box")
+        return (
+            f"Locate the region that matches the following description: {phrase}.",
+            "gui_grounding_box",
+        )
+    if raw == "/point" or raw.startswith("/point "):
+        phrase = _require_task_argument(raw, "/point")
+        return f"Point to: {phrase}.", "point_localization"
+    commands = "; ".join(TASK_COMMANDS)
+    if raw.startswith("/"):
+        raise ValueError(f"unknown task command {raw.split()[0]!r}; available: {commands}")
+    raise ValueError(f"use a task command; available: {commands}")
+
+
+def build_prompt(prompt: str) -> str:
+    normalized_prompt, _ = normalize_prompt(prompt)
+    template = (
+        "<|im_start|>system\n"
+        "You are a helpful assistant.\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "<image-1>"
+        f"{normalized_prompt}"
+        "<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    image_placeholder = (
+        "<image 1><img>" + IMAGE_TOKEN * IMAGE_TOKENS + "</img>"
+    )
+    return template.replace("<image-1>", image_placeholder)
+
+
+def load_tokenizer(tokenizer_dir: Path):
+    from tokenizers import Tokenizer
+
+    return Tokenizer.from_file(str(tokenizer_dir / "tokenizer.json"))
+
+
+def tokenize_prompt(tokenizer_dir: Path, prompt: str, tokenizer=None) -> np.ndarray:
+    tokenizer = tokenizer or load_tokenizer(tokenizer_dir)
+    token_ids = tokenizer.encode(build_prompt(prompt), add_special_tokens=True).ids
+    values = np.asarray(token_ids, dtype=np.int32)
+    image_token_id = int(tokenizer.token_to_id(IMAGE_TOKEN))
+    if values.size > 1024:
+        raise ValueError(f"prompt has {values.size} tokens; compiled prefill limit is 1024")
+    if int(np.count_nonzero(values == image_token_id)) != IMAGE_TOKENS:
+        raise ValueError("tokenized prompt does not contain exactly 576 image tokens")
+    return np.ascontiguousarray(values)
+
+
+def run_command(command: list[str], log_path: Path, env: dict[str, str]) -> tuple[str, float]:
+    started = time.monotonic()
+    process = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    log_path.write_text(process.stdout + f"\nelapsed_seconds={elapsed:.3f}\n", encoding="utf-8")
+    if process.returncode != 0:
+        sys.stderr.write(process.stdout)
+        raise RuntimeError(
+            f"command failed with exit code {process.returncode}; log: {log_path}"
+        )
+    return process.stdout, elapsed
+
+
+def read_generation(path: Path) -> tuple[str, list[int]]:
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            fields[key] = value
+    if "token_ids" not in fields or "stop_reason" not in fields:
+        raise ValueError(f"invalid Language output: {path}")
+    token_ids = [int(value) for value in fields["token_ids"].split(",") if value]
+    return fields["stop_reason"], token_ids
+
+
+def decode_tokens(tokenizer_dir: Path, token_ids: list[int], tokenizer=None) -> str:
+    tokenizer = tokenizer or load_tokenizer(tokenizer_dir)
+    return tokenizer.decode(token_ids, skip_special_tokens=False)
+
+
+def invert_coordinate(value: int, axis: int, transform: dict[str, object]) -> float:
+    source_size = transform["source_size"]
+    scale_xy = transform["scale_xy"]
+    padding = transform["padding_ltrb"]
+    source_limit = float(source_size[axis])
+    target_pixel = value / 1000.0 * IMAGE_SIZE
+    source_pixel = (target_pixel - float(padding[axis])) / float(scale_xy[axis])
+    return min(source_limit, max(0.0, source_pixel))
+
+
+def parse_detections(text: str, transform: dict[str, object]) -> list[dict[str, object]]:
+    pattern = re.compile(r"<ref>(.*?)</ref>|<box>((?:<\d{1,4}>)+)</box>")
+    coordinate_pattern = re.compile(r"<(\d{1,4})>")
+    label = ""
+    detections: list[dict[str, object]] = []
+    for match in pattern.finditer(text):
+        if match.group(1) is not None:
+            label = match.group(1)
+            continue
+        coordinates = [int(value) for value in coordinate_pattern.findall(match.group(2))]
+        if (
+            len(coordinates) != 4
+            or any(value > 1000 for value in coordinates)
+            or coordinates[0] >= coordinates[2]
+            or coordinates[1] >= coordinates[3]
+        ):
+            continue
+        xyxy = [
+            invert_coordinate(value, index % 2, transform)
+            for index, value in enumerate(coordinates)
+        ]
+        if xyxy[0] >= xyxy[2] or xyxy[1] >= xyxy[3]:
+            continue
+        detections.append(
+            {
+                "label": label,
+                "bbox_profile_1000": coordinates,
+                "bbox_xyxy": [round(value, 2) for value in xyxy],
+            }
+        )
+    return detections
+
+
+def box_iou_xyxy(left: list[float], right: list[float]) -> float:
+    x1 = max(float(left[0]), float(right[0]))
+    y1 = max(float(left[1]), float(right[1]))
+    x2 = min(float(left[2]), float(right[2]))
+    y2 = min(float(left[3]), float(right[3]))
+    intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    left_area = max(0.0, float(left[2]) - float(left[0])) * max(
+        0.0, float(left[3]) - float(left[1])
+    )
+    right_area = max(0.0, float(right[2]) - float(right[0])) * max(
+        0.0, float(right[3]) - float(right[1])
+    )
+    union = left_area + right_area - intersection
+    return intersection / union if union > 0.0 else 0.0
+
+
+def class_aware_nms(
+    detections: list[dict[str, object]],
+    iou_threshold: float = DEFAULT_NMS_IOU,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Remove near-identical boxes within a label while preserving generation order."""
+    if not 0.0 <= iou_threshold <= 1.0:
+        raise ValueError("NMS IoU threshold must be between 0 and 1")
+
+    kept: list[dict[str, object]] = []
+    suppressed: list[dict[str, object]] = []
+    for detection in detections:
+        label = " ".join(str(detection.get("label") or "").split()).casefold()
+        box = detection.get("bbox_xyxy")
+        if not isinstance(box, list) or len(box) != 4:
+            kept.append(detection)
+            continue
+
+        duplicate: tuple[int, float] | None = None
+        for kept_index, candidate in enumerate(kept):
+            candidate_label = " ".join(
+                str(candidate.get("label") or "").split()
+            ).casefold()
+            candidate_box = candidate.get("bbox_xyxy")
+            if candidate_label != label or not isinstance(candidate_box, list):
+                continue
+            overlap = box_iou_xyxy(box, candidate_box)
+            if overlap >= iou_threshold:
+                duplicate = (kept_index, overlap)
+                break
+
+        if duplicate is None:
+            kept.append(detection)
+            continue
+        rejected = dict(detection)
+        rejected["nms_iou"] = round(duplicate[1], 6)
+        rejected["suppressed_by"] = duplicate[0] + 1
+        suppressed.append(rejected)
+    return kept, suppressed
+
+
+def postprocess_detections(
+    detections: list[dict[str, object]],
+    task: str,
+    iou_threshold: float = DEFAULT_NMS_IOU,
+    enabled: bool = True,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if not enabled or task != "object_detection":
+        return list(detections), []
+    return class_aware_nms(detections, iou_threshold)
+
+
+def parse_points(text: str, transform: dict[str, object]) -> list[dict[str, object]]:
+    pattern = re.compile(r"<ref>(.*?)</ref>|<box>((?:<\d{1,4}>)+)</box>")
+    coordinate_pattern = re.compile(r"<(\d{1,4})>")
+    label = ""
+    points: list[dict[str, object]] = []
+    for match in pattern.finditer(text):
+        if match.group(1) is not None:
+            label = match.group(1)
+            continue
+        coordinates = [int(value) for value in coordinate_pattern.findall(match.group(2))]
+        if len(coordinates) != 2 or any(value > 1000 for value in coordinates):
+            continue
+        xy = [
+            invert_coordinate(value, index, transform)
+            for index, value in enumerate(coordinates)
+        ]
+        points.append(
+            {
+                "label": label,
+                "point_profile_1000": coordinates,
+                "point_xy": [round(value, 2) for value in xy],
+            }
+        )
+    return points
+
+
+def annotated_output_path(image_path: Path, task: str, output_dir: Path | None = None) -> Path:
+    directory = (output_dir or (Path.cwd() / "output")).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    image_name = re.sub(r"[^A-Za-z0-9._-]+", "_", image_path.stem).strip("._") or "image"
+    task_name = re.sub(r"[^A-Za-z0-9._-]+", "_", task).strip("._") or "localization"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp += f"_{uuid.uuid4().hex[:12]}"
+    return directory / f"{image_name}_{task_name}_{timestamp}.png"
+
+
+def save_annotated_image(
+    image_path: Path,
+    detections: list[dict[str, object]],
+    points: list[dict[str, object]],
+    output_path: Path,
+) -> None:
+    """Draw parsed predictions in original-image coordinates and save a PNG."""
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    line_width = max(2, int(round(min(width, height) * 0.004)))
+    point_radius = max(5, line_width * 2)
+    palette = (
+        (0, 220, 120),
+        (0, 145, 255),
+        (255, 90, 75),
+        (255, 190, 0),
+        (175, 95, 255),
+        (0, 205, 205),
+    )
+
+    def caption(index: int, label: object) -> str:
+        value = str(label or "").strip()
+        return f"{index}: {value}" if value else str(index)
+
+    def draw_caption(position: tuple[int, int], text: str, color: tuple[int, int, int]) -> None:
+        try:
+            measured = draw.textbbox((0, 0), text)
+        except UnicodeEncodeError:
+            text = text.encode("ascii", "replace").decode("ascii")
+            measured = draw.textbbox((0, 0), text)
+        padding = max(2, line_width // 2)
+        text_width = max(1, measured[2] - measured[0])
+        text_height = max(1, measured[3] - measured[1])
+        x = max(0, min(int(position[0]), max(0, width - text_width - padding)))
+        y = max(0, min(int(position[1]), max(0, height - text_height - padding)))
+        bounds = draw.textbbox((x, y), text)
+        background = (
+            max(0, bounds[0] - padding),
+            max(0, bounds[1] - padding),
+            min(width - 1, bounds[2] + padding),
+            min(height - 1, bounds[3] + padding),
+        )
+        if background[0] <= background[2] and background[1] <= background[3]:
+            draw.rectangle(background, fill=color)
+        draw.text((x, y), text, fill=(0, 0, 0))
+
+    for index, item in enumerate(detections, 1):
+        raw = item.get("bbox_xyxy")
+        if not isinstance(raw, list) or len(raw) != 4:
+            continue
+        x1, y1, x2, y2 = (float(value) for value in raw)
+        left = max(0, min(width - 1, int(round(min(x1, x2)))))
+        top = max(0, min(height - 1, int(round(min(y1, y2)))))
+        right = max(0, min(width - 1, int(round(max(x1, x2)))))
+        bottom = max(0, min(height - 1, int(round(max(y1, y2)))))
+        color = palette[(index - 1) % len(palette)]
+        draw.rectangle((left, top, right, bottom), outline=color, width=line_width)
+        draw_caption((left + line_width, top + line_width), caption(index, item.get("label")), color)
+
+    point_offset = len(detections)
+    for point_index, item in enumerate(points, 1):
+        raw = item.get("point_xy")
+        if not isinstance(raw, list) or len(raw) != 2:
+            continue
+        x = max(0, min(width - 1, int(round(float(raw[0])))))
+        y = max(0, min(height - 1, int(round(float(raw[1])))))
+        display_index = point_offset + point_index
+        color = palette[(display_index - 1) % len(palette)]
+        draw.ellipse(
+            (x - point_radius, y - point_radius, x + point_radius, y + point_radius),
+            outline=color,
+            width=line_width,
+        )
+        draw.line((x - point_radius, y, x + point_radius, y), fill=color, width=line_width)
+        draw.line((x, y - point_radius, x, y + point_radius), fill=color, width=line_width)
+        label_x = min(width - 1, x + point_radius + line_width)
+        label_y = max(0, y - point_radius)
+        draw_caption((label_x, label_y), caption(display_index, item.get("label")), color)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path, format="PNG")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run an image and prompt through LocateAnything Vision and Language HBM.",
+        epilog="Task commands:\n  " + "\n  ".join(TASK_COMMANDS),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("image_positional", type=Path, nargs="?")
+    parser.add_argument("prompt_positional", nargs="?")
+    parser.add_argument("-i", "--image", type=Path)
+    parser.add_argument("-p", "--prompt")
+    parser.add_argument("-o", "--output", type=Path)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--generation-mode",
+        choices=("hybrid", "slow"),
+        default=DEFAULT_GENERATION_MODE,
+        help="hybrid=q6 PBD with q1 fallback; slow=q1 AR (default: hybrid)",
+    )
+    parser.add_argument(
+        "--nms-iou",
+        type=float,
+        default=DEFAULT_NMS_IOU,
+        help="same-label Detection NMS threshold (default: 0.90)",
+    )
+    parser.add_argument(
+        "--no-nms",
+        action="store_true",
+        help="disable Detection NMS while retaining raw model boxes",
+    )
+    args = parser.parse_args()
+    args.image = args.image or args.image_positional
+    args.prompt = args.prompt or args.prompt_positional
+    if args.image is None or args.prompt is None:
+        parser.error("provide IMAGE and PROMPT, either positionally or with --image/--prompt")
+    return args
+
+
+def main() -> int:
+    # Keep the primary entry point compatible with an older wrapper copied to
+    # a board.  The interactive frontend owns its own argument parser.
+    if "--interactive" in sys.argv[1:]:
+        sys.argv.remove("--interactive")
+        from run_locateanything_interactive import main as interactive_main
+
+        return interactive_main()
+    args = parse_args()
+    if not args.image.is_file():
+        raise FileNotFoundError(args.image)
+    if args.max_new_tokens <= 0:
+        raise ValueError("--max-new-tokens must be positive")
+
+    runtime_dir = Path(__file__).resolve().parent
+    repo_root = runtime_dir.parent
+    tokenizer_dir = runtime_dir / "tokenizer"
+    vision_runner = runtime_dir / "build" / "vision_hbm_runner"
+    language_runner = runtime_dir / "build" / "language_hbm_runner"
+    vision_model = resolve_repo_path(repo_root, os.environ.get("LA_VISION_MODEL", VISION_MODEL))
+    language_model = resolve_repo_path(
+        repo_root, os.environ.get("LA_LANGUAGE_MODEL", LANGUAGE_MODEL)
+    )
+    embeddings = resolve_repo_path(repo_root, os.environ.get("LA_EMBEDDINGS", EMBEDDINGS))
+    for required in (tokenizer_dir, vision_runner, language_runner, vision_model, language_model, embeddings):
+        if not required.exists():
+            raise FileNotFoundError(required)
+
+    output_path = args.output or args.image.with_suffix(".locateanything.json")
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_log = output_path.with_suffix(".runtime.log")
+    env = os.environ.copy()
+    env.setdefault("HB_DNN_USER_DEFINED_L2M_SIZES", "6:6:6:6")
+
+    task_prompt, annotate = unwrap_box_command(args.prompt)
+    normalized_prompt, task = normalize_prompt(task_prompt)
+    started = time.monotonic()
+    vision_input, transform = prepare_image(args.image)
+    prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
+    with tempfile.TemporaryDirectory(prefix="locateanything-") as temporary:
+        work_dir = Path(temporary)
+        vision_input_path = work_dir / "vision_input.f16.bin"
+        visual_features_path = work_dir / "visual_features.f16.bin"
+        prompt_tokens_path = work_dir / "prompt_tokens.i32.bin"
+        generation_path = work_dir / "generation.txt"
+        vision_input.tofile(vision_input_path)
+        prompt_tokens.tofile(prompt_tokens_path)
+
+        vision_output, vision_elapsed = run_command(
+            [
+                str(vision_runner),
+                "--model",
+                str(vision_model),
+                "--input",
+                str(vision_input_path),
+                "--output",
+                str(visual_features_path),
+            ],
+            runtime_log,
+            env,
+        )
+        vision_log = runtime_log.read_text(encoding="utf-8")
+        language_output, language_elapsed = run_command(
+            [
+                str(language_runner),
+                "--model",
+                str(language_model),
+                "--embed",
+                str(embeddings),
+                "--mode",
+                "all",
+                "--tokens",
+                str(prompt_tokens_path),
+                "--visual",
+                str(visual_features_path),
+                "--generation-mode",
+                args.generation_mode,
+                "--max-new-tokens",
+                str(args.max_new_tokens),
+                "--output",
+                str(generation_path),
+            ],
+            runtime_log,
+            env,
+        )
+        language_log = runtime_log.read_text(encoding="utf-8")
+        runtime_log.write_text(
+            "================== VISION ==================\n"
+            + vision_log
+            + "\n================== LANGUAGE ==================\n"
+            + language_log,
+            encoding="utf-8",
+        )
+        stop_reason, token_ids = read_generation(generation_path)
+
+    text = decode_tokens(tokenizer_dir, token_ids)
+    raw_detections = parse_detections(text, transform)
+    detections, suppressed_detections = postprocess_detections(
+        raw_detections,
+        task,
+        iou_threshold=args.nms_iou,
+        enabled=not args.no_nms,
+    )
+    points = parse_points(text, transform)
+    annotated_image = None
+    if annotate:
+        annotated_image = annotated_output_path(args.image, task)
+        save_annotated_image(args.image, detections, points, annotated_image)
+    result = {
+        "schema_version": 1,
+        "image": str(args.image.resolve()),
+        "prompt": args.prompt,
+        "normalized_prompt": normalized_prompt,
+        "task": task,
+        "text": text,
+        "raw_detections": raw_detections,
+        "detections": detections,
+        "suppressed_detections": suppressed_detections,
+        "points": points,
+        "annotated_image": str(annotated_image) if annotated_image else None,
+        "generation": {
+            "mode": args.generation_mode,
+            "stop_reason": stop_reason,
+            "complete": stop_reason == "im_end",
+            "token_count": len(token_ids),
+            "max_new_tokens": args.max_new_tokens,
+        },
+        "image_transform": transform,
+        "postprocess": {
+            "method": "class_aware_nms"
+            if task == "object_detection" and not args.no_nms
+            else "none",
+            "iou_threshold": args.nms_iou,
+            "raw_detection_count": len(raw_detections),
+            "kept_detection_count": len(detections),
+            "suppressed_detection_count": len(suppressed_detections),
+        },
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "runtime_log": str(runtime_log),
+    }
+    output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    labels = list(dict.fromkeys(
+        str(detection["label"]) for detection in detections if detection["label"]
+    ))
+    display_text = ", ".join(labels) if labels else text
+    total_elapsed = time.monotonic() - started
+    print("================== LOCATEANYTHING S600 ==================")
+    print("模型类别：图像、文本定位")
+    print(f"加载图像：{args.image}")
+    print(f"[User] <<< {args.prompt}")
+    if normalized_prompt != args.prompt:
+        print(f"[LocateAnything] task={task}")
+        print(f"[LocateAnything] prompt={normalized_prompt}")
+    print(f"[Assistant] >>> {text}")
+    print(
+        f"[perf] vision={vision_elapsed * 1000.0:.3f}ms "
+        f"language={language_elapsed * 1000.0:.3f}ms "
+        f"e2e={total_elapsed * 1000.0:.3f}ms"
+    )
+    print("================== PARSED GROUNDING ==================")
+    print(f"TEXT: {display_text}")
+    print(f"BBOX_COUNT: {len(detections)}")
+    if suppressed_detections:
+        print(
+            f"NMS: suppressed={len(suppressed_detections)} "
+            f"same-label boxes at IoU>={args.nms_iou:.2f}"
+        )
+    for index, detection in enumerate(detections[:20], 1):
+        print(
+            f"BBOX[{index}]: label={detection['label']!r} "
+            f"xyxy={detection['bbox_xyxy']}"
+        )
+    if len(detections) > 20:
+        print(f"BBOX_MORE: {len(detections) - 20}")
+    print(f"POINT_COUNT: {len(points)}")
+    for index, point in enumerate(points[:20], 1):
+        print(
+            f"POINT[{index}]: label={point['label']!r} "
+            f"xy={point['point_xy']}"
+        )
+    if len(points) > 20:
+        print(f"POINT_MORE: {len(points) - 20}")
+    if annotated_image:
+        print(f"ANNOTATED_IMAGE: {annotated_image}")
+    print(f"STATUS: {'COMPLETE' if stop_reason == 'im_end' else 'TRUNCATED'}")
+    print(f"STOP_REASON: {stop_reason}")
+    print(f"OUTPUT: {output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(f"[FAIL] {type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(1)

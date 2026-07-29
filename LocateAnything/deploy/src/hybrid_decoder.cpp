@@ -1,0 +1,373 @@
+#include "locateanything_runtime/hybrid_decoder.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <limits>
+#include <sstream>
+#include <utility>
+
+namespace locateanything_runtime {
+namespace {
+
+constexpr int32_t kVocab = 152681;
+constexpr int32_t kBoxStart = 151668;
+constexpr int32_t kBoxEnd = 151669;
+constexpr int32_t kRefStart = 151672;
+constexpr int32_t kRefEnd = 151673;
+constexpr int32_t kCoordStart = 151677;
+constexpr int32_t kCoordEnd = 152677;
+constexpr int32_t kTextMask = 151676;
+constexpr int32_t kNull = 152678;
+constexpr int32_t kImEnd = 151645;
+constexpr int32_t kNone = 4064;
+constexpr int32_t kNucleusInitialWidth = 256;
+constexpr int32_t kNucleusMaximumWidth = 8192;
+
+float Fp16ToFloat(uint16_t bits) {
+  const uint32_t sign = (bits >> 15) & 1u;
+  const uint32_t exponent = (bits >> 10) & 0x1fu;
+  const uint32_t mantissa = bits & 0x3ffu;
+  if (exponent == 0) {
+    if (mantissa == 0) return sign ? -0.0f : 0.0f;
+    const float value = (mantissa / 1024.0f) * 0.00006103515625f;
+    return sign ? -value : value;
+  }
+  if (exponent == 31) return std::numeric_limits<float>::quiet_NaN();
+  const float value = std::ldexp(1.0f + mantissa / 1024.0f,
+                                 static_cast<int>(exponent) - 15);
+  return sign ? -value : value;
+}
+
+std::vector<float> Row(const Tensor &logits, int32_t row,
+                       const std::vector<uint8_t> &history,
+                       float repetition_penalty) {
+  const auto *raw = reinterpret_cast<const uint16_t *>(logits.data.data());
+  std::vector<float> values(kVocab);
+  const size_t offset = static_cast<size_t>(row) * kVocab;
+  for (int32_t token = 0; token < kVocab; ++token) {
+    float value = Fp16ToFloat(raw[offset + static_cast<size_t>(token)]);
+    if (history[static_cast<size_t>(token)] != 0 &&
+        repetition_penalty != 1.0f) {
+      value = value > 0 ? value / repetition_penalty
+                        : value * repetition_penalty;
+    }
+    values[static_cast<size_t>(token)] = value;
+  }
+  return values;
+}
+
+struct NucleusDistribution {
+  std::vector<float> probabilities;
+  int32_t retained = 0;
+};
+
+std::vector<float> Softmax(const std::vector<float> &logits);
+
+NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
+                                    float temperature, float top_p) {
+  std::vector<float> adjusted(logits.size());
+  const float inverse_temperature = 1.0f / temperature;
+  for (size_t index = 0; index < logits.size(); ++index) {
+    adjusted[index] = logits[index] * inverse_temperature;
+  }
+
+  std::vector<float> raw = Softmax(adjusted);
+  if (top_p >= 1.0f) {
+    return {std::move(raw), static_cast<int32_t>(logits.size())};
+  }
+
+  const auto maximum = std::max_element(raw.begin(), raw.end());
+  if (maximum != raw.end() && *maximum > top_p) {
+    const size_t token = static_cast<size_t>(maximum - raw.begin());
+    std::vector<float> probabilities(logits.size(), 0.0f);
+    probabilities[token] = 1.0f;
+    return {std::move(probabilities), 1};
+  }
+
+  std::vector<int32_t> indices(logits.size());
+  std::iota(indices.begin(), indices.end(), 0);
+  auto greater = [&](int32_t left, int32_t right) {
+    return adjusted[static_cast<size_t>(left)] >
+           adjusted[static_cast<size_t>(right)];
+  };
+  double cumulative = 0.0;
+  size_t retained = 0;
+  size_t width = std::min<size_t>(kNucleusInitialWidth, indices.size());
+  size_t partitioned = 0;
+  while (true) {
+    if (width < indices.size()) {
+      std::nth_element(indices.begin() + partitioned,
+                       indices.begin() + width, indices.end(), greater);
+      std::sort(indices.begin(), indices.begin() + width, greater);
+    } else {
+      std::sort(indices.begin() + partitioned, indices.end(), greater);
+    }
+    cumulative = 0.0;
+    retained = 0;
+    for (; retained < width; ++retained) {
+      cumulative += raw[static_cast<size_t>(indices[retained])];
+      if (cumulative >= top_p) {
+        ++retained;
+        break;
+      }
+    }
+    if (cumulative >= top_p || width == indices.size()) break;
+    partitioned = width;
+    if (width >= static_cast<size_t>(kNucleusMaximumWidth)) {
+      width = indices.size();
+    } else {
+      width = std::min({width * 2, indices.size(),
+                        static_cast<size_t>(kNucleusMaximumWidth)});
+    }
+  }
+
+  std::vector<float> probabilities(logits.size(), 0.0f);
+  if (retained == 0 || cumulative <= 0.0 || !std::isfinite(cumulative)) {
+    return {std::move(probabilities), 0};
+  }
+  for (size_t index = 0; index < retained; ++index) {
+    const size_t token = static_cast<size_t>(indices[index]);
+    probabilities[token] = static_cast<float>(raw[token] / cumulative);
+  }
+  return {std::move(probabilities), static_cast<int32_t>(retained)};
+}
+
+std::vector<float> Softmax(const std::vector<float> &logits) {
+  const float maximum = *std::max_element(logits.begin(), logits.end());
+  std::vector<float> probabilities(logits.size());
+  double total = 0.0;
+  for (size_t index = 0; index < logits.size(); ++index) {
+    probabilities[index] = std::exp(logits[index] - maximum);
+    total += probabilities[index];
+  }
+  if (total <= 0.0 || !std::isfinite(total)) return probabilities;
+  for (float &value : probabilities) value = static_cast<float>(value / total);
+  return probabilities;
+}
+
+std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
+  count = std::min<int32_t>(count, static_cast<int32_t>(values.size()));
+  if (count <= 0) return {};
+  auto better = [&](int32_t left, int32_t right) {
+    const float lhs = values[static_cast<size_t>(left)];
+    const float rhs = values[static_cast<size_t>(right)];
+    return lhs > rhs || (lhs == rhs && left < right);
+  };
+  std::vector<int32_t> top;
+  top.reserve(static_cast<size_t>(count));
+  for (int32_t token = 0; token < static_cast<int32_t>(values.size()); ++token) {
+    if (static_cast<int32_t>(top.size()) < count) {
+      top.push_back(token);
+    } else if (!better(token, top.back())) {
+      continue;
+    } else {
+      top.back() = token;
+    }
+    for (size_t index = top.size() - 1;
+         index > 0 && better(top[index], top[index - 1]); --index) {
+      std::swap(top[index], top[index - 1]);
+    }
+  }
+  return top;
+}
+
+std::vector<uint8_t> BuildHistoryMask(
+    const std::vector<int32_t> &generated) {
+  std::vector<uint8_t> history(static_cast<size_t>(kVocab), 0);
+  for (int32_t token : generated) {
+    if (token >= 0 && token < kVocab) {
+      history[static_cast<size_t>(token)] = 1;
+    }
+  }
+  return history;
+}
+
+int32_t Argmax(const std::vector<float> &values) {
+  return static_cast<int32_t>(
+      std::max_element(values.begin(), values.end()) - values.begin());
+}
+
+float EndScore(const std::vector<std::vector<float>> &probabilities) {
+  return probabilities[5][kBoxEnd] + probabilities[5][kNull] +
+         probabilities[5][kImEnd];
+}
+
+float TopCoordinateProbability(const std::vector<float> &probabilities) {
+  return *std::max_element(probabilities.begin() + kCoordStart,
+                           probabilities.begin() + kCoordEnd + 1);
+}
+
+bool DecodeBox(const std::vector<std::vector<float>> &probabilities,
+               std::vector<int32_t> *tokens) {
+  const float start = probabilities[0][kBoxStart];
+  if (start >= 0.6f && probabilities[1][kNone] > 0.2f &&
+      probabilities[2][kBoxEnd] > 0.2f &&
+      probabilities[3][kNull] > 0.1f &&
+      probabilities[4][kNull] > 0.1f) {
+    *tokens = {kBoxStart, kNone, kBoxEnd, kNull, kNull, kNull};
+    return true;
+  }
+  const float end_score = EndScore(probabilities);
+  if (end_score < 0.2f) return false;
+
+  std::vector<int32_t> coordinates;
+  for (int32_t row = 1; row <= 4; ++row) {
+    const auto top = TopK(probabilities[static_cast<size_t>(row)], 4);
+    std::vector<int32_t> valid;
+    for (int32_t token : top) {
+      if (token >= kCoordStart && token <= kCoordEnd) valid.push_back(token);
+    }
+    if (valid.empty()) return false;
+    const int32_t first = valid.front();
+    const auto range = std::minmax_element(valid.begin(), valid.end());
+    const bool abnormal = probabilities[static_cast<size_t>(row)][first] < 0.9f &&
+                          valid.size() > 1 && *range.second - *range.first > 60;
+    coordinates.push_back(abnormal ? 0 : first);
+  }
+  *tokens = {kBoxStart, coordinates[0], coordinates[1], coordinates[2],
+             coordinates[3], kBoxEnd};
+  return true;
+}
+
+bool DecodeRef(const std::vector<std::vector<float>> &probabilities,
+               std::vector<int32_t> *tokens) {
+  if (probabilities[0][kRefStart] < 0.6f) return false;
+  tokens->clear();
+  tokens->push_back(kRefStart);
+  for (int32_t row = 1; row < 6; ++row) {
+    const auto top = TopK(probabilities[static_cast<size_t>(row)], 5);
+    auto found = std::find_if(top.begin(), top.end(), [](int32_t token) {
+      return token < kCoordStart || token > kCoordEnd;
+    });
+    if (found == top.end()) return false;
+    tokens->push_back(*found);
+  }
+  return true;
+}
+
+HybridDecision HandlePattern(std::vector<int32_t> tokens) {
+  if (tokens.empty()) return {"im_end", {kImEnd}, false, true};
+  if (tokens[0] == kNull || tokens[0] == kImEnd) {
+    return {"im_end", {kImEnd}, false, true};
+  }
+  if (tokens.size() >= 2 && tokens[0] == kBoxStart && tokens[1] == kNone) {
+    return {"empty_box", {kBoxStart, kNone, kBoxEnd}, false, false};
+  }
+  if (tokens[0] == kBoxStart) {
+    int32_t coordinate_count = 1;
+    for (size_t index = 1; index < std::min<size_t>(5, tokens.size()); ++index) {
+      if (IsCoordinateToken(tokens[index])) ++coordinate_count;
+      else break;
+    }
+    if (coordinate_count == 5 && tokens.size() >= 6 && tokens[5] == kBoxEnd) {
+      tokens.resize(6);
+      return {"coord_box", std::move(tokens), false, false};
+    }
+    if (coordinate_count == 3 && tokens.size() >= 4 && tokens[3] == kBoxEnd) {
+      tokens.resize(4);
+      return {"point_box", std::move(tokens), false, false};
+    }
+    tokens.resize(static_cast<size_t>(coordinate_count));
+    return {"error_box", std::move(tokens), true, false};
+  }
+  auto null_position = std::find(tokens.begin(), tokens.end(), kNull);
+  tokens.erase(null_position, tokens.end());
+  if (tokens.size() >= 2 && tokens[tokens.size() - 1] == kRefEnd &&
+      tokens[tokens.size() - 2] == kRefEnd) {
+    tokens.pop_back();
+  }
+  return {"ref_object", std::move(tokens), false, false};
+}
+
+}  // namespace
+
+bool IsCoordinateToken(int32_t token) {
+  return token >= kCoordStart && token <= kCoordEnd;
+}
+
+HybridDecision DecodePbd(const Tensor &logits,
+                         const std::vector<int32_t> &generated,
+                         const PbdDecodeConfig &config,
+                         PbdDiagnostics *diagnostics) {
+  if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 6, kVocab}) {
+    return {"im_end", {kImEnd}, false, true};
+  }
+  if (config.temperature <= 0.0f || config.top_p <= 0.0f ||
+      config.top_p > 1.0f || config.repetition_penalty <= 0.0f) {
+    return {"im_end", {kImEnd}, false, true};
+  }
+  const std::vector<uint8_t> history = BuildHistoryMask(generated);
+  std::vector<std::vector<float>> legacy_probabilities;
+  if (diagnostics != nullptr) legacy_probabilities.reserve(6);
+  std::vector<std::vector<float>> probabilities;
+  std::vector<int32_t> greedy;
+  for (int32_t row = 0; row < 6; ++row) {
+    std::vector<float> adjusted = Row(logits, row, history,
+                                      config.repetition_penalty);
+    if (diagnostics != nullptr) {
+      legacy_probabilities.push_back(Softmax(adjusted));
+    }
+    NucleusDistribution nucleus = NucleusSoftmax(
+        adjusted, config.temperature, config.top_p);
+    greedy.push_back(Argmax(nucleus.probabilities));
+    if (diagnostics != nullptr) {
+      diagnostics->retained_tokens[static_cast<size_t>(row)] = nucleus.retained;
+    }
+    probabilities.push_back(std::move(nucleus.probabilities));
+  }
+  if (diagnostics != nullptr) {
+    diagnostics->valid = true;
+    diagnostics->legacy_box_start = legacy_probabilities[0][kBoxStart];
+    diagnostics->official_box_start = probabilities[0][kBoxStart];
+    diagnostics->legacy_ref_start = legacy_probabilities[0][kRefStart];
+    diagnostics->official_ref_start = probabilities[0][kRefStart];
+    diagnostics->legacy_end_score = EndScore(legacy_probabilities);
+    diagnostics->official_end_score = EndScore(probabilities);
+    for (int32_t row = 1; row <= 4; ++row) {
+      diagnostics->legacy_coord_top[static_cast<size_t>(row - 1)] =
+          TopCoordinateProbability(legacy_probabilities[static_cast<size_t>(row)]);
+      diagnostics->official_coord_top[static_cast<size_t>(row - 1)] =
+          TopCoordinateProbability(probabilities[static_cast<size_t>(row)]);
+    }
+  }
+  std::vector<int32_t> decoded;
+  if (!DecodeBox(probabilities, &decoded) &&
+      !DecodeRef(probabilities, &decoded)) {
+    decoded = std::move(greedy);
+  }
+  return HandlePattern(std::move(decoded));
+}
+
+HybridDecision DecodePbdGreedy(const Tensor &logits,
+                               const std::vector<int32_t> &generated) {
+  return DecodePbd(logits, generated);
+}
+
+int32_t DecodeArGreedy(const Tensor &logits,
+                       const std::vector<int32_t> &generated) {
+  if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 1, kVocab}) {
+    return kImEnd;
+  }
+  const std::vector<uint8_t> history = BuildHistoryMask(generated);
+  return Argmax(Row(logits, 0, history, 1.1f));
+}
+
+std::string RenderLocateAnythingTokens(const std::vector<int32_t> &tokens) {
+  std::ostringstream output;
+  for (int32_t token : tokens) {
+    if (token == kBoxStart) output << "<box>";
+    else if (token == kBoxEnd) output << "</box>";
+    else if (token == kRefStart) output << "<ref>";
+    else if (token == kRefEnd) output << "</ref>";
+    else if (token == kNull) output << "<null>";
+    else if (token == kImEnd) output << "<|im_end|>";
+    else if (token == kNone) output << "none";
+    else if (token == kTextMask) output << "<text_mask>";
+    else if (IsCoordinateToken(token)) output << '<' << token - kCoordStart << '>';
+    else output << "<tok:" << token << ">";
+  }
+  return output.str();
+}
+
+}  // namespace locateanything_runtime
