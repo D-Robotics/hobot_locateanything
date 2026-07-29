@@ -197,7 +197,7 @@ def _draw_scale_convergence(plt: Any, convergence: dict[str, Any], path: Path) -
 
 
 def _draw_graph_coverage(plt: Any, coverage: dict[str, Any], path: Path) -> None:
-    counts = coverage.get("stage_sample_counts", {})
+    counts = coverage.get("stage_execution_counts", {})
     stages = list(coverage.get("expected_stages", []))
     values = [int(counts.get(stage, 0)) for stage in stages]
     figure, axis = plt.subplots(figsize=(max(9, len(stages) * 0.7), 5))
@@ -207,7 +207,7 @@ def _draw_graph_coverage(plt: Any, coverage: dict[str, Any], path: Path) -> None
         axis.set_xticks(range(len(stages)), stages, rotation=45, ha="right")
     else:
         axis.text(0.5, 0.5, "No graph-stage coverage", ha="center", va="center")
-    axis.set_ylabel("Executed samples")
+    axis.set_ylabel("Graph executions")
     axis.set_title("Graph-stage coverage")
     figure.tight_layout()
     figure.savefig(path, dpi=160)

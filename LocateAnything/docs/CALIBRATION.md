@@ -347,22 +347,38 @@ Calibration must run before `compile_mode(True)` and BC export:
 7. Freeze and print all `ConstFakeQuant.absmax` and `RMSNorm` scale statistics.
 8. Export BC only after the scale audit passes.
 
-Language Decode calibration does not replay every graph directly after the
-prompt. For each sample, a hash of `bundle_id` selects a stable response-start,
-`<ref>`, or `<box>` boundary from the saved Hybrid prediction or target tokens.
-Tokens before that boundary are appended to Prefill as a teacher-forced suffix,
-so its KV cache and `past_len` represent the selected generation depth. The
-base q6 graph, fused q7-q12 graphs, and AR q1-q5 graphs then share that same
-history and consume prefixes beginning at the same boundary. This selection is
-independent of manifest order and is therefore unchanged by `--resume`.
+Language Decode calibration uses the
+`bundle_hash_base_plus_detection_target_tail_v2` policy. Every generated
+sample contributes exactly one base context. A hash of `bundle_id` selects a
+stable response-start, `<ref>`, or `<box>` boundary from the saved Hybrid
+prediction or target tokens. Tokens before that boundary are appended to
+Prefill as a fixed suffix, so the resulting KV cache and `past_len` represent
+that generation depth.
 
-`calibration_graph_coverage.json` records every sample's `suffix_len`,
-`past_len`, depth bucket, and token source, plus aggregate ranges and a stable
-selection SHA256. A Language calibration fails when these records do not cover
-every sample, contain no prompt-boundary case, contain no nonzero history, or
-contain no suffix of at least 32 tokens. Detection records must independently
-include at least one such deep-history case. Graph invocation counts alone are
-not sufficient Decode calibration evidence.
+Long Detection targets receive bounded additional coverage. When at least 32
+target tokens can be appended before the six-token Decode workspace, the
+calibrator selects the final eligible positive `<ref>`/`<box>` offset. This
+supplemental context is target-only, distinct by
+`SHA256(bundle_id, token_source, offset)`, and capped so a bundle has at most
+two contexts: one base and one target-tail. A base target
+context that already has a required offset satisfies that position without a
+duplicate replay.
+
+For each context, Prefill builds its KV history and the complete Language graph
+family executes once: PBD q6-q12 and AR q1-q5. Vision still executes once per
+sample. Consequently, `sample_count` remains 1,200 while
+`language_context_count` may be larger; `stage_execution_counts` records 1,200
+Vision executions and one execution per Language context for every Language
+stage. Scale convergence checkpoints such as 512 continue to mean 512 complete
+samples, not 512 contexts.
+
+`calibration_graph_coverage.json` records each context's stable ID, role,
+`suffix_len`, `past_len`, token source, eligible target offsets, and required
+target offsets. Calibration fails unless every bundle has exactly one base,
+supplemental contexts are Detection/target only, every deterministic tail
+offset is covered, the two-context cap holds, and prompt-boundary,
+nonzero-history, and deep-history cases remain present. Graph invocation counts
+alone are not sufficient Decode calibration evidence.
 
 The unified calibration stage fixes the release sample count at 1,200 and
 compares the deterministic 512-sample checkpoint with the complete Scale

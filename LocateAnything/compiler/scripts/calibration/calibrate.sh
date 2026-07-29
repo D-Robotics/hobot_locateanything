@@ -361,7 +361,7 @@ if missing:
 coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 convergence = json.loads(convergence_path.read_text(encoding="utf-8"))
-counts = coverage.get("stage_sample_counts", {})
+counts = coverage.get("stage_execution_counts", {})
 errors = []
 
 def nonnegative_count_mapping(value, label):
@@ -386,6 +386,15 @@ if coverage.get("checkpoint_samples") != checkpoint:
     errors.append("coverage checkpoint_samples does not match the requested run")
 if coverage.get("task_counts") != manifest.get("task_counts"):
     errors.append("coverage task_counts does not match the scale manifest")
+language_context_count = coverage.get("language_context_count", 0)
+if isinstance(language_context_count, bool) or not isinstance(language_context_count, int):
+    errors.append("coverage language_context_count is not an integer")
+    language_context_count = 0
+if component in {"all", "language"}:
+    if language_context_count < max_samples or language_context_count > 2 * max_samples:
+        errors.append("coverage language_context_count is outside the one-to-two contexts/sample contract")
+elif language_context_count != 0:
+    errors.append("Vision-only calibration must not report Language contexts")
 language_stages = [
     "prefill",
     *(f"pbd_q{q_len}" for q_len in range(6, 13)),
@@ -397,8 +406,15 @@ if component in {"all", "vision"}:
 if component in {"all", "language"}:
     expected_stages.extend(language_stages)
 for graph_stage in expected_stages:
-    if counts.get(graph_stage) != max_samples:
-        errors.append(f"{graph_stage} count={counts.get(graph_stage)} expected {max_samples}")
+    expected_count = max_samples if graph_stage == "vision" else language_context_count
+    if counts.get(graph_stage) != expected_count:
+        errors.append(f"{graph_stage} count={counts.get(graph_stage)} expected {expected_count}")
+expected_counts = {
+    graph_stage: max_samples if graph_stage == "vision" else language_context_count
+    for graph_stage in expected_stages
+}
+if coverage.get("expected_stage_execution_counts") != expected_counts:
+    errors.append("expected_stage_execution_counts does not match sample/context counts")
 if coverage.get("expected_stages") != expected_stages:
     errors.append("expected_stages does not match the complete graph-family contract")
 if coverage.get("all_stages_executed") is not True:
@@ -411,6 +427,8 @@ if audit_passed is not True:
     errors.append("activation_statistics_audit_passed is not true")
 if manifest.get("sample_count") != max_samples or manifest.get("checkpoint_samples") != checkpoint:
     errors.append("scale manifest sample/checkpoint counts do not match the requested run")
+if manifest.get("language_context_count") != language_context_count:
+    errors.append("scale manifest language_context_count does not match coverage")
 profile = manifest.get("profile", {})
 if profile.get("component") != component:
     errors.append(
@@ -425,17 +443,39 @@ if component in {"all", "language"}:
         context = {}
     if coverage.get("decode_context_coverage_passed") is not True:
         errors.append("decode_context_coverage_passed is not true")
-    if context.get("policy") != "bundle_hash_structural_boundary_v1":
+    if context.get("policy") != "bundle_hash_base_plus_detection_target_tail_v2":
         errors.append("Decode context policy does not match the release contract")
     if context.get("sample_count") != max_samples:
         errors.append("Decode context sample count does not match the requested run")
+    if context.get("language_context_count") != language_context_count:
+        errors.append("Decode context count does not match graph coverage")
+    if context.get("base_context_count") != max_samples:
+        errors.append("Decode context coverage does not contain exactly one base per sample")
+    if context.get("supplemental_context_count") != language_context_count - max_samples:
+        errors.append("Decode supplemental context count is inconsistent")
+    eligible_long = context.get("eligible_long_detection_sample_count")
+    if isinstance(eligible_long, bool) or not isinstance(eligible_long, int) or eligible_long <= 0:
+        errors.append("Decode context coverage has no eligible long Detection target")
+    required_target = context.get("required_target_context_count")
+    covered_target = context.get("covered_required_target_context_count")
+    if (
+        isinstance(required_target, bool)
+        or not isinstance(required_target, int)
+        or required_target <= 0
+        or isinstance(covered_target, bool)
+        or not isinstance(covered_target, int)
+        or covered_target != required_target
+    ):
+        errors.append("Decode required Detection target contexts are incomplete")
+    if context.get("missing_required_target_contexts"):
+        errors.append("Decode context coverage reports missing required target contexts")
     if context.get("passed") is not True or context.get("errors"):
         errors.append("Decode context coverage contains failed gates")
     depth_buckets = nonnegative_count_mapping(
         context.get("depth_buckets"), "Decode context depth_buckets"
     )
-    if sum(depth_buckets.values()) != max_samples:
-        errors.append("Decode context depth buckets do not account for every sample")
+    if sum(depth_buckets.values()) != language_context_count:
+        errors.append("Decode context depth buckets do not account for every Language context")
     if depth_buckets.get("zero", 0) <= 0:
         errors.append("Decode context coverage has no prompt-boundary samples")
     if sum(depth_buckets.get(name, 0) for name in ("1_31", "32_127", "128_plus")) <= 0:
@@ -445,8 +485,18 @@ if component in {"all", "language"}:
     token_sources = nonnegative_count_mapping(
         context.get("token_sources"), "Decode context token_sources"
     )
-    if sum(token_sources.values()) != max_samples:
-        errors.append("Decode context token sources do not account for every sample")
+    if sum(token_sources.values()) != language_context_count:
+        errors.append("Decode context token sources do not account for every Language context")
+    context_roles = nonnegative_count_mapping(
+        context.get("context_roles"), "Decode context roles"
+    )
+    if sum(context_roles.values()) != language_context_count:
+        errors.append("Decode context roles do not account for every Language context")
+    if context_roles.get("base") != max_samples:
+        errors.append("Decode context roles do not contain one base per sample")
+    unexpected_roles = set(context_roles) - {"base", "target_tail"}
+    if unexpected_roles:
+        errors.append("Decode context roles contain unexpected values")
     for metric in ("suffix_len", "past_len"):
         values = context.get(metric)
         if not isinstance(values, dict) or values.get("min") is None or values.get("max") is None:
@@ -470,7 +520,8 @@ if errors:
     raise SystemExit("calibration postflight failed:\n- " + "\n- ".join(errors))
 print(
     f"[calibration postflight] passed: samples={max_samples}, "
-    f"component={component}, stages={len(expected_stages)}, "
+    f"language_contexts={language_context_count}, component={component}, "
+    f"stages={len(expected_stages)}, "
     f"checkpoint={checkpoint}, activation_statistics=passed",
     flush=True,
 )

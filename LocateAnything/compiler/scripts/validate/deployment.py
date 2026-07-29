@@ -49,7 +49,7 @@ PBD_STAGES = tuple(f"pbd_q{q_len}" for q_len in range(6, 13))
 AR_STAGES = tuple(f"ar_q{q_len}" for q_len in range(1, 6))
 LANGUAGE_STAGES = ("prefill", *PBD_STAGES, *AR_STAGES)
 GRAPH_STAGES = ("vision", *LANGUAGE_STAGES)
-DECODE_CONTEXT_POLICY = "bundle_hash_structural_boundary_v1"
+DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
@@ -440,6 +440,18 @@ def main() -> int:
             errors.append("calibration scale manifest sample_count mismatch")
         if scale.get("task_counts") != selected_tasks:
             errors.append("calibration scale manifest task_counts mismatch")
+        scale_language_context_count = scale.get("language_context_count", 0)
+        if (
+            isinstance(scale_language_context_count, bool)
+            or not isinstance(scale_language_context_count, int)
+        ):
+            errors.append("calibration scale manifest language_context_count is invalid")
+        elif "language" in required_groups and not (
+            len(generated) <= scale_language_context_count <= 2 * len(generated)
+        ):
+            errors.append("calibration Language context count is outside release bounds")
+        elif "language" not in required_groups and scale_language_context_count != 0:
+            errors.append("Vision-only calibration declares Language contexts")
         checkpoint = scale.get("checkpoint_samples")
         if type(checkpoint) is not int or not 0 < checkpoint < len(generated):
             errors.append("calibration scale manifest checkpoint_samples is invalid")
@@ -535,6 +547,20 @@ def main() -> int:
             errors.append("calibration coverage/scale checkpoint_samples mismatch")
         if coverage.get("task_counts") != selected_tasks:
             errors.append("calibration graph coverage task_counts mismatch")
+        language_context_count = coverage.get("language_context_count", 0)
+        if isinstance(language_context_count, bool) or not isinstance(
+            language_context_count, int
+        ):
+            errors.append("calibration coverage Language context count is invalid")
+            language_context_count = 0
+        elif "language" in required_groups and not (
+            len(generated) <= language_context_count <= 2 * len(generated)
+        ):
+            errors.append("calibration coverage Language context count is outside release bounds")
+        elif "language" not in required_groups and language_context_count != 0:
+            errors.append("Vision-only graph coverage declares Language contexts")
+        if language_context_count != scale.get("language_context_count", 0):
+            errors.append("calibration coverage/scale Language context count mismatch")
         if "language" in required_groups:
             expected_language_profile = {
                 "language_decoder_weight_bits": 8,
@@ -573,6 +599,35 @@ def main() -> int:
                 errors.append("calibration Decode context policy mismatch")
             if context.get("sample_count") != len(generated):
                 errors.append("calibration Decode context sample_count mismatch")
+            if context.get("language_context_count") != language_context_count:
+                errors.append("calibration Decode context count mismatch")
+            if context.get("base_context_count") != len(generated):
+                errors.append("calibration Decode contexts lack exactly one base per sample")
+            if (
+                context.get("supplemental_context_count")
+                != language_context_count - len(generated)
+            ):
+                errors.append("calibration Decode supplemental context count mismatch")
+            eligible_long = context.get("eligible_long_detection_sample_count")
+            if (
+                isinstance(eligible_long, bool)
+                or not isinstance(eligible_long, int)
+                or eligible_long <= 0
+            ):
+                errors.append("calibration has no eligible long Detection target context")
+            required_target = context.get("required_target_context_count")
+            covered_target = context.get("covered_required_target_context_count")
+            if (
+                isinstance(required_target, bool)
+                or not isinstance(required_target, int)
+                or required_target <= 0
+                or isinstance(covered_target, bool)
+                or not isinstance(covered_target, int)
+                or covered_target != required_target
+            ):
+                errors.append("calibration required Detection target contexts are incomplete")
+            if context.get("missing_required_target_contexts"):
+                errors.append("calibration reports missing Detection target contexts")
             if context.get("passed") is not True or context.get("errors"):
                 errors.append("calibration Decode context evidence contains failed gates")
             depth_buckets = nonnegative_count_mapping(
@@ -580,8 +635,8 @@ def main() -> int:
                 label="calibration Decode context depth_buckets",
                 errors=errors,
             )
-            if sum(depth_buckets.values()) != len(generated):
-                errors.append("calibration Decode depth buckets do not cover all samples")
+            if sum(depth_buckets.values()) != language_context_count:
+                errors.append("calibration Decode depth buckets do not cover all contexts")
             if depth_buckets.get("zero", 0) <= 0:
                 errors.append("calibration Decode context lacks prompt-boundary samples")
             if sum(
@@ -598,8 +653,19 @@ def main() -> int:
                 label="calibration Decode context token_sources",
                 errors=errors,
             )
-            if sum(token_sources.values()) != len(generated):
-                errors.append("calibration Decode token sources do not cover all samples")
+            if sum(token_sources.values()) != language_context_count:
+                errors.append("calibration Decode token sources do not cover all contexts")
+            context_roles = nonnegative_count_mapping(
+                context.get("context_roles"),
+                label="calibration Decode context_roles",
+                errors=errors,
+            )
+            if sum(context_roles.values()) != language_context_count:
+                errors.append("calibration Decode roles do not cover all contexts")
+            if context_roles.get("base") != len(generated):
+                errors.append("calibration Decode roles lack one base per sample")
+            if set(context_roles) - {"base", "target_tail"}:
+                errors.append("calibration Decode roles contain unexpected values")
             for metric in ("suffix_len", "past_len"):
                 values = context.get(metric)
                 if (
@@ -610,15 +676,22 @@ def main() -> int:
                     errors.append(f"calibration Decode context lacks {metric} range")
         if coverage.get("expected_stages") != list(required_stages):
             errors.append("calibration graph coverage expected_stages mismatch")
-        stage_counts = coverage.get("stage_sample_counts")
+        stage_counts = coverage.get("stage_execution_counts")
         if not isinstance(stage_counts, dict):
-            errors.append("calibration graph coverage lacks stage_sample_counts")
+            errors.append("calibration graph coverage lacks stage_execution_counts")
             stage_counts = {}
+        expected_stage_counts = {
+            stage: len(generated) if stage == "vision" else language_context_count
+            for stage in required_stages
+        }
+        if coverage.get("expected_stage_execution_counts") != expected_stage_counts:
+            errors.append("calibration expected stage execution counts mismatch")
         for stage in required_stages:
-            if stage_counts.get(stage) != len(generated):
+            expected_count = expected_stage_counts[stage]
+            if stage_counts.get(stage) != expected_count:
                 errors.append(
                     f"calibration graph coverage {stage} count={stage_counts.get(stage)} "
-                    f"expected={len(generated)}"
+                    f"expected={expected_count}"
                 )
         if coverage.get("all_stages_executed") is not True:
             errors.append("calibration did not execute all required graph paths")

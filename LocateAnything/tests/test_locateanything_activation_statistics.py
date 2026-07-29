@@ -178,7 +178,7 @@ def test_activation_report_writes_json_csv_and_four_png_files(tmp_path):
     }
     coverage = {
         "expected_stages": ["vision"],
-        "stage_sample_counts": {"vision": 64},
+        "stage_execution_counts": {"vision": 64},
     }
 
     result = report.generate_activation_report(
@@ -208,7 +208,7 @@ def test_activation_report_records_explicit_skip_without_matplotlib(tmp_path, mo
         tmp_path,
         [],
         {"components": {}},
-        {"expected_stages": [], "stage_sample_counts": {}},
+        {"expected_stages": [], "stage_execution_counts": {}},
     )
 
     assert result["plots"]["status"] == "skipped"

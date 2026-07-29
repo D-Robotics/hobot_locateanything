@@ -61,10 +61,12 @@ def fixtures(tmp_path):
     write_jsonl(selected_path, selected)
     write_jsonl(generated_path, generated)
     counts = {task: 50 for task in tasks}
+    language_context_count = 301
     scale_path = tmp_path / "scale.json"
     scale_path.write_text(json.dumps({
         "generated_manifest_sha256": deployment.sha256(generated_path),
         "sample_count": 300,
+        "language_context_count": language_context_count,
         "checkpoint_samples": 256,
         "task_counts": counts,
         "rotation_source": deployment.DEFAULT_ROTATION_NAME,
@@ -83,24 +85,40 @@ def fixtures(tmp_path):
     coverage_path.write_text(json.dumps({
         "generated_manifest_sha256": deployment.sha256(generated_path),
         "sample_count": 300,
+        "language_context_count": language_context_count,
         "checkpoint_samples": 256,
         "task_counts": counts,
         "profile": language_profile,
         "expected_stages": list(deployment.GRAPH_STAGES),
-        "stage_sample_counts": {stage: 300 for stage in deployment.GRAPH_STAGES},
+        "stage_execution_counts": {
+            stage: 300 if stage == "vision" else language_context_count
+            for stage in deployment.GRAPH_STAGES
+        },
+        "expected_stage_execution_counts": {
+            stage: 300 if stage == "vision" else language_context_count
+            for stage in deployment.GRAPH_STAGES
+        },
         "all_stages_executed": True,
         "decode_context_coverage_passed": True,
         "decode_context_coverage": {
             "policy": deployment.DECODE_CONTEXT_POLICY,
             "sample_count": 300,
+            "language_context_count": language_context_count,
+            "base_context_count": 300,
+            "supplemental_context_count": 1,
+            "eligible_long_detection_sample_count": 1,
+            "required_target_context_count": 1,
+            "covered_required_target_context_count": 1,
+            "missing_required_target_contexts": [],
             "passed": True,
             "errors": [],
             "suffix_len": {"min": 0, "max": 64},
             "past_len": {"min": 600, "max": 664},
             "depth_buckets": {
-                "zero": 60, "1_31": 60, "32_127": 180, "128_plus": 0,
+                "zero": 60, "1_31": 60, "32_127": 181, "128_plus": 0,
             },
-            "token_sources": {"target": 150, "prediction:hybrid": 150},
+            "token_sources": {"target": 151, "prediction:hybrid": 150},
+            "context_roles": {"base": 300, "target_tail": 1},
         },
         "observer_audit_passed": True,
         "observer_audit": {
@@ -336,7 +354,7 @@ def test_preflight_rejects_wrong_four_path_counts(tmp_path, monkeypatch):
     paths = fixtures(tmp_path)
     coverage_path = paths[3]
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
-    coverage["stage_sample_counts"]["pbd_q6"] = 299
+    coverage["stage_execution_counts"]["pbd_q6"] = 300
     coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
     assert run(monkeypatch, paths) == 2
 
@@ -347,7 +365,7 @@ def test_preflight_rejects_all_zero_decode_history(tmp_path, monkeypatch):
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
     context = coverage["decode_context_coverage"]
     context["depth_buckets"] = {
-        "zero": 300, "1_31": 0, "32_127": 0, "128_plus": 0,
+        "zero": 302, "1_31": 0, "32_127": 0, "128_plus": 0,
     }
     context["suffix_len"] = {"min": 0, "max": 0}
     coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
@@ -368,6 +386,28 @@ def test_preflight_reports_non_numeric_decode_counts(tmp_path, monkeypatch, caps
     output = capsys.readouterr().out
     assert "depth_buckets contains invalid counts" in output
     assert "token_sources contains invalid counts" in output
+
+
+def test_preflight_rejects_missing_required_detection_tail(tmp_path, monkeypatch):
+    paths = fixtures(tmp_path)
+    coverage_path = paths[3]
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    context = coverage["decode_context_coverage"]
+    context["covered_required_target_context_count"] = 0
+    context["missing_required_target_contexts"] = ["sample-0000:target:64"]
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths) == 2
+
+
+def test_preflight_rejects_non_numeric_language_context_count(tmp_path, monkeypatch):
+    paths = fixtures(tmp_path)
+    coverage_path = paths[3]
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["language_context_count"] = "302"
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths) == 2
 
 
 def test_preflight_rejects_stale_language_observer_profile(tmp_path, monkeypatch):

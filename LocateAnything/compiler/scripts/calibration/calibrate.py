@@ -48,7 +48,7 @@ from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     compare_snapshots,
     load_tensor_payload,
     read_generated_manifest,
-    select_decode_replay_context,
+    select_decode_replay_contexts,
     select_pbd_tokens,
     sha256_file,
     summarize_decode_context_coverage,
@@ -370,80 +370,98 @@ def run(args: argparse.Namespace) -> int:
         with torch.no_grad():
             for index, record in enumerate(progress(records, "Language activation statistics"), 1):
                 payload = load_tensor_payload(record)
-                replay_context = select_decode_replay_context(
-                    payload, chunk_size=args.chunk_size
-                )
-                language_tracker.stage = "prefill"
-                embeds, positions, mask, active_len = build_prefill_inputs(
-                    language, payload, rotation, chunk_size=args.chunk_size,
-                    cache_len=args.cache_len, image_token_id=args.image_token_id,
-                    device=device, dtype=dtype,
-                    suffix_token_ids=replay_context.suffix_token_ids,
-                )
-                if active_len != replay_context.past_len:
-                    raise RuntimeError(
-                        f"{replay_context.bundle_id}: Prefill active_len={active_len} "
-                        f"does not match selected past_len={replay_context.past_len}"
-                    )
-                decode_context_records.append(
-                    replay_context.coverage_record(record["task"])
-                )
-                logits, new_keys, new_values = language(embeds, positions, mask, *zero_caches)
-                stage_counts["prefill"] += 1
-                del logits
-                cache_keys, cache_values = build_right_aligned_caches(
-                    new_keys, new_values, active_len=active_len, cache_len=args.cache_len
-                )
-
-                pbd_tokens = select_pbd_tokens(
+                replay_contexts = select_decode_replay_contexts(
                     payload,
-                    6,
-                    int(language.config.text_mask_token_id),
-                    anchor_token_id=replay_context.anchor_token_id,
+                    task=record["task"],
+                    chunk_size=args.chunk_size,
                 )
-                language_tracker.stage = "pbd_q6"
-                pbd_embeds, pbd_pos, pbd_mask = build_decode_inputs(
-                    language, pbd_tokens, q_len=6, past_len=active_len,
-                    cache_len=args.cache_len, is_pbd=True, device=device, dtype=dtype,
-                )
-                pbd_out = language(pbd_embeds, pbd_pos, pbd_mask, *(cache_keys + cache_values))
-                stage_counts["pbd_q6"] += 1
-                del pbd_out, pbd_embeds, pbd_pos, pbd_mask
-
-                for prefix_len in range(1, 7):
-                    prefix = list(replay_context.pending_token_ids[:prefix_len])
-                    fused_tokens = [
-                        *prefix,
-                        prefix[-1],
-                        *([int(language.config.text_mask_token_id)] * 5),
-                    ]
-                    q_len = prefix_len + 6
-                    stage = f"pbd_q{q_len}"
-                    language_tracker.stage = stage
-                    fused_embeds, fused_pos, fused_mask = build_decode_inputs(
-                        language, fused_tokens, q_len=q_len, past_len=active_len,
-                        cache_len=args.cache_len, is_pbd=True,
-                        pbd_prefix_len=prefix_len, device=device, dtype=dtype,
+                for replay_context in replay_contexts:
+                    language_tracker.stage = "prefill"
+                    embeds, positions, mask, active_len = build_prefill_inputs(
+                        language, payload, rotation, chunk_size=args.chunk_size,
+                        cache_len=args.cache_len, image_token_id=args.image_token_id,
+                        device=device, dtype=dtype,
+                        suffix_token_ids=replay_context.suffix_token_ids,
                     )
-                    fused_out = language(
-                        fused_embeds, fused_pos, fused_mask,
+                    if active_len != replay_context.past_len:
+                        raise RuntimeError(
+                            f"{replay_context.context_id}: Prefill active_len={active_len} "
+                            f"does not match selected past_len={replay_context.past_len}"
+                        )
+                    decode_context_records.append(
+                        replay_context.coverage_record(record["task"])
+                    )
+                    logits, new_keys, new_values = language(
+                        embeds, positions, mask, *zero_caches
+                    )
+                    stage_counts["prefill"] += 1
+                    del logits
+                    cache_keys, cache_values = build_right_aligned_caches(
+                        new_keys, new_values,
+                        active_len=active_len,
+                        cache_len=args.cache_len,
+                    )
+
+                    pbd_tokens = select_pbd_tokens(
+                        payload,
+                        6,
+                        int(language.config.text_mask_token_id),
+                        anchor_token_id=replay_context.anchor_token_id,
+                    )
+                    language_tracker.stage = "pbd_q6"
+                    pbd_embeds, pbd_pos, pbd_mask = build_decode_inputs(
+                        language, pbd_tokens, q_len=6, past_len=active_len,
+                        cache_len=args.cache_len, is_pbd=True,
+                        device=device, dtype=dtype,
+                    )
+                    pbd_out = language(
+                        pbd_embeds, pbd_pos, pbd_mask,
                         *(cache_keys + cache_values),
                     )
-                    stage_counts[stage] += 1
-                    del fused_out, fused_embeds, fused_pos, fused_mask
+                    stage_counts["pbd_q6"] += 1
+                    del pbd_out, pbd_embeds, pbd_pos, pbd_mask
 
-                for q_len in range(1, 6):
-                    ar_tokens = list(replay_context.pending_token_ids[:q_len])
-                    stage = f"ar_q{q_len}"
-                    language_tracker.stage = stage
-                    ar_embeds, ar_pos, ar_mask = build_decode_inputs(
-                        language, ar_tokens, q_len=q_len, past_len=active_len,
-                        cache_len=args.cache_len, is_pbd=False, device=device, dtype=dtype,
+                    for prefix_len in range(1, 7):
+                        prefix = list(replay_context.pending_token_ids[:prefix_len])
+                        fused_tokens = [
+                            *prefix,
+                            prefix[-1],
+                            *([int(language.config.text_mask_token_id)] * 5),
+                        ]
+                        q_len = prefix_len + 6
+                        stage = f"pbd_q{q_len}"
+                        language_tracker.stage = stage
+                        fused_embeds, fused_pos, fused_mask = build_decode_inputs(
+                            language, fused_tokens, q_len=q_len, past_len=active_len,
+                            cache_len=args.cache_len, is_pbd=True,
+                            pbd_prefix_len=prefix_len, device=device, dtype=dtype,
+                        )
+                        fused_out = language(
+                            fused_embeds, fused_pos, fused_mask,
+                            *(cache_keys + cache_values),
+                        )
+                        stage_counts[stage] += 1
+                        del fused_out, fused_embeds, fused_pos, fused_mask
+
+                    for q_len in range(1, 6):
+                        ar_tokens = list(replay_context.pending_token_ids[:q_len])
+                        stage = f"ar_q{q_len}"
+                        language_tracker.stage = stage
+                        ar_embeds, ar_pos, ar_mask = build_decode_inputs(
+                            language, ar_tokens, q_len=q_len, past_len=active_len,
+                            cache_len=args.cache_len, is_pbd=False,
+                            device=device, dtype=dtype,
+                        )
+                        ar_out = language(
+                            ar_embeds, ar_pos, ar_mask,
+                            *(cache_keys + cache_values),
+                        )
+                        stage_counts[stage] += 1
+                        del ar_out, ar_embeds, ar_pos, ar_mask
+                    del (
+                        cache_keys, cache_values, new_keys, new_values,
+                        embeds, positions, mask,
                     )
-                    ar_out = language(ar_embeds, ar_pos, ar_mask, *(cache_keys + cache_values))
-                    stage_counts[stage] += 1
-                    del ar_out, ar_embeds, ar_pos, ar_mask
-                del cache_keys, cache_values, new_keys, new_values, embeds, positions, mask
                 if index in snapshot_samples:
                     language_snapshots[str(index)] = language_tracker.snapshot(language)
         activation_rows.extend(language_tracker.activation_statistics(language))
@@ -453,6 +471,7 @@ def run(args: argparse.Namespace) -> int:
         torch.cuda.empty_cache()
 
     full_samples = len(records)
+    language_context_count = len(decode_context_records)
     full = str(full_samples)
     audits = {}
     if vision_snapshots:
@@ -460,7 +479,7 @@ def run(args: argparse.Namespace) -> int:
     if language_snapshots:
         audits["language"] = activation_statistics_audit(language_snapshots[full])
     scale_manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_manifest": str(manifest),
         "generated_manifest_sha256": sha256_file(manifest),
         "rotation_source": rotation_source,
@@ -469,6 +488,7 @@ def run(args: argparse.Namespace) -> int:
             if args.hidden_rotation_path else None
         ),
         "sample_count": full_samples,
+        "language_context_count": language_context_count,
         "checkpoint_samples": legacy_checkpoint,
         "convergence_checkpoints": configured_checkpoints,
         "recorded_snapshot_samples": snapshot_samples,
@@ -501,21 +521,27 @@ def run(args: argparse.Namespace) -> int:
             "decode_context_policy": DECODE_CONTEXT_POLICY,
         })
     expected_stages = []
-    stage_sample_counts = {}
+    stage_execution_counts = {}
+    expected_stage_execution_counts = {}
     if vision_snapshots:
         expected_stages.append("vision")
-        stage_sample_counts["vision"] = full_samples
+        stage_execution_counts["vision"] = full_samples
+        expected_stage_execution_counts["vision"] = full_samples
     if language_snapshots:
         expected_stages.extend([
             "prefill",
             *(f"pbd_q{q_len}" for q_len in range(6, 13)),
             *(f"ar_q{q_len}" for q_len in range(1, 6)),
         ])
-        stage_sample_counts.update(stage_counts)
+        stage_execution_counts.update(stage_counts)
+        expected_stage_execution_counts.update({
+            stage: language_context_count for stage in expected_stages if stage != "vision"
+        })
     coverage = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_manifest_sha256": sha256_file(manifest),
         "sample_count": full_samples,
+        "language_context_count": language_context_count,
         "checkpoint_samples": legacy_checkpoint,
         "convergence_checkpoints": configured_checkpoints,
         "recorded_snapshot_samples": snapshot_samples,
@@ -523,11 +549,10 @@ def run(args: argparse.Namespace) -> int:
         "task_counts": task_counts,
         "calibration_run_identity_sha256": run_identity_sha256,
         "profile": scale_manifest["profile"],
-        "stage_sample_counts": stage_sample_counts,
+        "stage_execution_counts": stage_execution_counts,
+        "expected_stage_execution_counts": expected_stage_execution_counts,
         "expected_stages": expected_stages,
-        "all_stages_executed": all(
-            stage_sample_counts.get(name, 0) > 0 for name in expected_stages
-        ),
+        "all_stages_executed": stage_execution_counts == expected_stage_execution_counts,
         "activation_statistics_audit": audits,
         "activation_statistics_audit_passed": all(
             audit["passed"] for audit in audits.values()
@@ -542,6 +567,11 @@ def run(args: argparse.Namespace) -> int:
         coverage["decode_context_coverage_passed"] = coverage[
             "decode_context_coverage"
         ]["passed"]
+        if (
+            coverage["decode_context_coverage"]["language_context_count"]
+            != language_context_count
+        ):
+            raise RuntimeError("Language context count does not match coverage records")
     if vision_cosines:
         coverage["vision_cosine_min"] = min(vision_cosines)
         coverage["vision_cosine_mean"] = sum(vision_cosines) / len(vision_cosines)

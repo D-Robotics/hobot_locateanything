@@ -266,22 +266,37 @@ language_stages = [
 expected_stages = []
 if a.component in {'all', 'vision'}: expected_stages.append('vision')
 if a.component in {'all', 'language'}: expected_stages.extend(language_stages)
+language_context_count = a.max_samples + 1 if a.component in {'all', 'language'} else 0
+stage_counts = {
+  stage: a.max_samples if stage == 'vision' else language_context_count
+  for stage in expected_stages
+}
 decode_context = {
-  'policy': 'bundle_hash_structural_boundary_v1',
+  'policy': 'bundle_hash_base_plus_detection_target_tail_v2',
   'sample_count': a.max_samples,
+  'language_context_count': language_context_count,
+  'base_context_count': a.max_samples,
+  'supplemental_context_count': 1,
+  'eligible_long_detection_sample_count': 1,
+  'required_target_context_count': 1,
+  'covered_required_target_context_count': 1,
+  'missing_required_target_contexts': [],
   'passed': True,
   'errors': [],
   'suffix_len': {'min': 0, 'max': 64},
   'past_len': {'min': 600, 'max': 664},
-  'depth_buckets': {'zero': 1, '1_31': 0, '32_127': a.max_samples - 1, '128_plus': 0},
-  'token_sources': {'target': a.max_samples},
+  'depth_buckets': {'zero': 1, '1_31': 0, '32_127': language_context_count - 1, '128_plus': 0},
+  'token_sources': {'target': language_context_count},
+  'context_roles': {'base': a.max_samples, 'target_tail': 1},
 }
 coverage = {
   'generated_manifest_sha256': hashlib.sha256(Path(a.generated_jsonl).read_bytes()).hexdigest(),
   'sample_count': a.max_samples,
+  'language_context_count': language_context_count,
   'checkpoint_samples': a.checkpoint_samples,
   'task_counts': {'detection': a.max_samples},
-  'stage_sample_counts': {stage: a.max_samples for stage in expected_stages},
+  'stage_execution_counts': stage_counts,
+  'expected_stage_execution_counts': stage_counts,
   'expected_stages': expected_stages,
   'all_stages_executed': True, 'observer_audit_passed': True,
   'decode_context_coverage': decode_context,
@@ -291,6 +306,7 @@ coverage = {
 generated = Path(a.generated_jsonl)
 (out / 'calibration_scale_manifest.json').write_text(json.dumps({
   'sample_count': a.max_samples, 'checkpoint_samples': a.checkpoint_samples,
+  'language_context_count': language_context_count,
   'task_counts': {'detection': a.max_samples},
   'generated_manifest': str(generated),
   'generated_manifest_sha256': hashlib.sha256(generated.read_bytes()).hexdigest(),
@@ -298,7 +314,7 @@ generated = Path(a.generated_jsonl)
   'profile': {
     'component': a.component,
     'language_lm_head_weight_bits': a.lm_head_w_bits,
-    'decode_context_policy': 'bundle_hash_structural_boundary_v1',
+    'decode_context_policy': 'bundle_hash_base_plus_detection_target_tail_v2',
   }}))
 (out / f'scale_convergence_{a.checkpoint_samples}_vs_{a.max_samples}.json').write_text(
   json.dumps({'checkpoint_samples': a.checkpoint_samples, 'full_samples': a.max_samples}))

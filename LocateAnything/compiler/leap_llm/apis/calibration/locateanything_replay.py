@@ -22,9 +22,11 @@ REQUIRED_TENSOR_FIELDS = {
     "target_token_ids",
 }
 
-DECODE_CONTEXT_POLICY = "bundle_hash_structural_boundary_v1"
+DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
 DECODE_CONTEXT_PENDING_TOKENS = 6
 DECODE_DEPTH_BUCKETS = ("zero", "1_31", "32_127", "128_plus")
+BASE_CONTEXT_ROLE = "base"
+SUPPLEMENTAL_CONTEXT_ROLES = ("target_tail",)
 
 
 def decode_depth_bucket(suffix_len: int) -> str:
@@ -40,8 +42,10 @@ def decode_depth_bucket(suffix_len: int) -> str:
 
 
 class DecodeReplayContext(NamedTuple):
-    """One deterministic, structurally aligned history for every Decode graph."""
+    """One deterministic history used to replay every Language graph variant."""
 
+    context_id: str
+    context_role: str
     bundle_id: str
     token_source: str
     selection_slot: int
@@ -51,6 +55,9 @@ class DecodeReplayContext(NamedTuple):
     suffix_token_ids: tuple[int, ...]
     pending_token_ids: tuple[int, ...]
     anchor_token_id: int
+    target_usable_suffix_len: int
+    eligible_target_offsets: tuple[int, ...]
+    required_target_offsets: tuple[int, ...]
 
     @property
     def suffix_len(self) -> int:
@@ -66,6 +73,8 @@ class DecodeReplayContext(NamedTuple):
 
     def coverage_record(self, task: str) -> dict[str, Any]:
         return {
+            "context_id": self.context_id,
+            "context_role": self.context_role,
             "bundle_id": self.bundle_id,
             "task": str(task),
             "token_source": self.token_source,
@@ -77,6 +86,9 @@ class DecodeReplayContext(NamedTuple):
             "suffix_len": self.suffix_len,
             "past_len": self.past_len,
             "depth_bucket": self.depth_bucket,
+            "target_usable_suffix_len": self.target_usable_suffix_len,
+            "eligible_target_offsets": list(self.eligible_target_offsets),
+            "required_target_offsets": list(self.required_target_offsets),
         }
 
 
@@ -296,13 +308,42 @@ def _structural_offsets(
     return sorted(offsets)
 
 
+def decode_context_id(bundle_id: str, token_source: str, offset: int) -> str:
+    """Return a stable identity keyed only by bundle, token source, and offset."""
+
+    identity = json.dumps(
+        {
+            "bundle_id": str(bundle_id),
+            "offset": int(offset),
+            "token_source": str(token_source),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def required_detection_target_offsets(
+    eligible_positive_offsets: Iterable[int],
+    *,
+    usable_suffix_len: int,
+) -> tuple[int, ...]:
+    """Select one target-tail context for a long Detection output."""
+
+    offsets = sorted({int(offset) for offset in eligible_positive_offsets if int(offset) > 0})
+    if usable_suffix_len < 32 or not offsets:
+        return ()
+    return (offsets[-1],)
+
+
 def select_decode_replay_context(
     payload: dict[str, Any],
     *,
     chunk_size: int,
     pending_tokens: int = DECODE_CONTEXT_PENDING_TOKENS,
+    task: str | None = None,
 ) -> DecodeReplayContext:
-    """Select one stable output boundary shared by all Decode graph variants.
+    """Select the stable base boundary shared by all Decode graph variants.
 
     Slot zero preserves the prompt boundary. The remaining four hash slots pick
     progressively deeper structural boundaries. Prediction and target streams
@@ -324,6 +365,7 @@ def select_decode_replay_context(
         )
 
     bundle_id = str(payload.get("bundle_id") or "")
+    task = str(task if task is not None else payload.get("task") or "")
     digest = hashlib.sha256(bundle_id.encode("utf-8")).digest()
     selection_slot = digest[0] % 5
     special = payload.get("special_token_ids") or {}
@@ -338,6 +380,27 @@ def select_decode_replay_context(
             _flat_token_ids((payload.get("prediction_token_ids") or {}).get("hybrid")),
         ),
     ]
+    target_ids = streams[0][1]
+    target_usable_suffix_len = 0
+    eligible_target_offsets: tuple[int, ...] = ()
+    if task == "detection" and target_ids:
+        target_usable_suffix_len = max(
+            0, min(max_suffix_len, len(target_ids) - pending_tokens)
+        )
+        eligible_target_offsets = tuple(
+            offset
+            for offset in _structural_offsets(
+                target_ids,
+                structural_token_ids=structural_token_ids,
+                max_suffix_len=max_suffix_len,
+                pending_tokens=pending_tokens,
+            )
+            if offset > 0
+        )
+    required_target_offsets = required_detection_target_offsets(
+        eligible_target_offsets,
+        usable_suffix_len=target_usable_suffix_len,
+    )
     streams = [entry for entry in streams if entry[1]]
     if streams:
         pivot = digest[1] % len(streams)
@@ -392,6 +455,8 @@ def select_decode_replay_context(
         )
     anchor_token_id = suffix[-1] if suffix else int(prompt_ids[prompt_len - 1])
     return DecodeReplayContext(
+        context_id=decode_context_id(bundle_id, token_source, offset),
+        context_role=BASE_CONTEXT_ROLE,
         bundle_id=bundle_id,
         token_source=token_source,
         selection_slot=selection_slot,
@@ -401,7 +466,66 @@ def select_decode_replay_context(
         suffix_token_ids=suffix,
         pending_token_ids=pending_tuple,
         anchor_token_id=anchor_token_id,
+        target_usable_suffix_len=target_usable_suffix_len,
+        eligible_target_offsets=eligible_target_offsets,
+        required_target_offsets=required_target_offsets,
     )
+
+
+def select_decode_replay_contexts(
+    payload: dict[str, Any],
+    *,
+    task: str,
+    chunk_size: int,
+    pending_tokens: int = DECODE_CONTEXT_PENDING_TOKENS,
+) -> tuple[DecodeReplayContext, ...]:
+    """Return one base context plus a bounded target-tail Detection context."""
+
+    base = select_decode_replay_context(
+        payload,
+        chunk_size=chunk_size,
+        pending_tokens=pending_tokens,
+        task=task,
+    )
+    contexts = [base]
+    seen = {base.context_id}
+    target_ids = _flat_token_ids(payload.get("target_token_ids"))
+    planned = tuple(zip(SUPPLEMENTAL_CONTEXT_ROLES, base.required_target_offsets))
+
+    for context_role, offset in planned:
+        context_identity = decode_context_id(base.bundle_id, "target", offset)
+        if context_identity in seen:
+            continue
+        pending = tuple(int(token) for token in target_ids[offset : offset + pending_tokens])
+        if len(pending) != pending_tokens:
+            raise ValueError(
+                f"{base.bundle_id}: target context at offset {offset} has "
+                f"{len(pending)} pending tokens"
+            )
+        suffix = tuple(int(token) for token in target_ids[:offset])
+        contexts.append(
+            DecodeReplayContext(
+                context_id=context_identity,
+                context_role=context_role,
+                bundle_id=base.bundle_id,
+                token_source="target",
+                selection_slot=-1,
+                boundary_token_id=int(target_ids[offset]),
+                prompt_len=base.prompt_len,
+                max_suffix_len=base.max_suffix_len,
+                suffix_token_ids=suffix,
+                pending_token_ids=pending,
+                anchor_token_id=int(suffix[-1]),
+                target_usable_suffix_len=base.target_usable_suffix_len,
+                eligible_target_offsets=base.eligible_target_offsets,
+                required_target_offsets=base.required_target_offsets,
+            )
+        )
+        seen.add(context_identity)
+
+    if len(contexts) > 2:
+        raise AssertionError(f"{base.bundle_id}: Decode context cap exceeded")
+    return tuple(contexts)
 
 
 def _numeric_summary(values: list[int]) -> dict[str, int | float | None]:
@@ -431,39 +555,58 @@ def summarize_decode_context_coverage(
 ) -> dict[str, Any]:
     """Summarize and validate the contexts used for Language activation replay."""
 
-    samples = sorted((dict(record) for record in records), key=lambda row: row["bundle_id"])
+    contexts = sorted(
+        (dict(record) for record in records),
+        key=lambda row: (str(row.get("bundle_id") or ""), str(row.get("context_id") or "")),
+    )
     errors: list[str] = []
-    if len(samples) != expected_samples:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for context in contexts:
+        grouped[str(context.get("bundle_id") or "")].append(context)
+    if len(grouped) != expected_samples:
         errors.append(
-            f"Decode context sample_count={len(samples)} expected={expected_samples}"
+            f"Decode context sample_count={len(grouped)} expected={expected_samples}"
         )
-    bundle_ids = [str(sample.get("bundle_id") or "") for sample in samples]
-    if len(set(bundle_ids)) != len(bundle_ids):
-        errors.append("Decode context bundle_id values are not unique")
+    if "" in grouped:
+        errors.append("Decode context has an empty bundle_id")
+
+    context_ids = [str(context.get("context_id") or "") for context in contexts]
+    if not all(context_ids):
+        errors.append("Decode context has an empty context_id")
+    if len(set(context_ids)) != len(context_ids):
+        errors.append("Decode context_id values are not unique")
 
     depth_counts = Counter({bucket: 0 for bucket in DECODE_DEPTH_BUCKETS})
     source_counts: Counter[str] = Counter()
+    role_counts: Counter[str] = Counter()
     task_depth_counts: dict[str, Counter[str]] = defaultdict(Counter)
     suffix_lengths: list[int] = []
     past_lengths: list[int] = []
-    for sample in samples:
-        suffix_len = int(sample.get("suffix_len", -1))
-        prompt_len = int(sample.get("prompt_len", -1))
-        past_len = int(sample.get("past_len", -1))
-        max_suffix_len = int(sample.get("max_suffix_len", -1))
-        bucket = str(sample.get("depth_bucket") or "")
-        source = str(sample.get("token_source") or "")
-        task = str(sample.get("task") or "unknown")
+    for context in contexts:
+        bundle_id = str(context.get("bundle_id") or "")
+        context_id = str(context.get("context_id") or "")
+        context_role = str(context.get("context_role") or "")
+        suffix_len = int(context.get("suffix_len", -1))
+        prompt_len = int(context.get("prompt_len", -1))
+        past_len = int(context.get("past_len", -1))
+        max_suffix_len = int(context.get("max_suffix_len", -1))
+        bucket = str(context.get("depth_bucket") or "")
+        source = str(context.get("token_source") or "")
+        task = str(context.get("task") or "unknown")
+        if context_id != decode_context_id(bundle_id, source, suffix_len):
+            errors.append(f"{bundle_id}: context_id does not match source/offset")
+        if context_role not in {BASE_CONTEXT_ROLE, *SUPPLEMENTAL_CONTEXT_ROLES}:
+            errors.append(f"{bundle_id}: invalid context_role={context_role}")
         if suffix_len < 0 or suffix_len > max_suffix_len:
-            errors.append(f"{sample.get('bundle_id')}: invalid suffix_len={suffix_len}")
+            errors.append(f"{bundle_id}: invalid suffix_len={suffix_len}")
         if past_len != prompt_len + suffix_len:
-            errors.append(f"{sample.get('bundle_id')}: past_len does not match prompt+suffix")
+            errors.append(f"{bundle_id}: past_len does not match prompt+suffix")
         if past_len < 1 or past_len + max_query_len > cache_len:
-            errors.append(f"{sample.get('bundle_id')}: past_len={past_len} exceeds cache profile")
+            errors.append(f"{bundle_id}: past_len={past_len} exceeds cache profile")
         if bucket != decode_depth_bucket(max(suffix_len, 0)):
-            errors.append(f"{sample.get('bundle_id')}: inconsistent depth bucket")
+            errors.append(f"{bundle_id}: inconsistent depth bucket")
         if not source:
-            errors.append(f"{sample.get('bundle_id')}: missing token source")
+            errors.append(f"{bundle_id}: missing token source")
         if suffix_len >= 0:
             suffix_lengths.append(suffix_len)
         if past_len >= 0:
@@ -472,14 +615,112 @@ def summarize_decode_context_coverage(
             depth_counts[bucket] += 1
             task_depth_counts[task][bucket] += 1
         source_counts[source] += 1
+        role_counts[context_role] += 1
+
+    base_context_count = 0
+    supplemental_context_count = 0
+    eligible_long_detection_count = 0
+    required_target_context_count = 0
+    covered_required_target_context_count = 0
+    missing_required_target_contexts: list[str] = []
+    for bundle_id, bundle_contexts in sorted(grouped.items()):
+        if len(bundle_contexts) > 2:
+            errors.append(f"{bundle_id}: has {len(bundle_contexts)} contexts; maximum is 2")
+        bases = [
+            context
+            for context in bundle_contexts
+            if context.get("context_role") == BASE_CONTEXT_ROLE
+        ]
+        base_context_count += len(bases)
+        supplemental_context_count += len(bundle_contexts) - len(bases)
+        if len(bases) != 1:
+            errors.append(f"{bundle_id}: expected exactly one base context, got {len(bases)}")
+            continue
+        base = bases[0]
+        task = str(base.get("task") or "")
+        try:
+            target_usable_suffix_len = int(base["target_usable_suffix_len"])
+            eligible_offsets = tuple(int(value) for value in base["eligible_target_offsets"])
+            required_offsets = tuple(int(value) for value in base["required_target_offsets"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{bundle_id}: invalid target offset metadata")
+            continue
+        if tuple(sorted(set(eligible_offsets))) != eligible_offsets or any(
+            offset <= 0 for offset in eligible_offsets
+        ):
+            errors.append(f"{bundle_id}: eligible_target_offsets are not sorted unique positives")
+        if (
+            target_usable_suffix_len < 0
+            or target_usable_suffix_len > int(base.get("max_suffix_len", -1))
+        ):
+            errors.append(f"{bundle_id}: invalid target_usable_suffix_len")
+        if eligible_offsets and eligible_offsets[-1] > target_usable_suffix_len:
+            errors.append(f"{bundle_id}: eligible target offset exceeds usable suffix")
+        if task != "detection" and target_usable_suffix_len != 0:
+            errors.append(f"{bundle_id}: non-Detection context declares target suffix")
+        if task == "detection" and target_usable_suffix_len >= 32 and not eligible_offsets:
+            errors.append(f"{bundle_id}: long Detection target has no structural boundary")
+        expected_required = (
+            required_detection_target_offsets(
+                eligible_offsets,
+                usable_suffix_len=target_usable_suffix_len,
+            )
+            if task == "detection"
+            else ()
+        )
+        if required_offsets != expected_required:
+            errors.append(
+                f"{bundle_id}: required target offsets {required_offsets} "
+                f"do not match deterministic plan {expected_required}"
+            )
+        if expected_required:
+            eligible_long_detection_count += 1
+        required_target_context_count += len(expected_required)
+        expected_roles = dict(zip(expected_required, SUPPLEMENTAL_CONTEXT_ROLES))
+        for context in bundle_contexts:
+            role = str(context.get("context_role") or "")
+            if context.get("task") != task:
+                errors.append(f"{bundle_id}: context task differs from base context")
+            if tuple(context.get("eligible_target_offsets") or ()) != eligible_offsets:
+                errors.append(f"{bundle_id}: context eligible offsets differ from base")
+            if context.get("target_usable_suffix_len") != target_usable_suffix_len:
+                errors.append(f"{bundle_id}: context usable suffix differs from base")
+            if tuple(context.get("required_target_offsets") or ()) != required_offsets:
+                errors.append(f"{bundle_id}: context required offsets differ from base")
+            if role == BASE_CONTEXT_ROLE:
+                continue
+            offset = int(context.get("offset", -1))
+            if task != "detection" or context.get("token_source") != "target":
+                errors.append(
+                    f"{bundle_id}: supplemental context must be Detection target replay"
+                )
+            if offset not in expected_required:
+                errors.append(f"{bundle_id}: unexpected supplemental offset={offset}")
+            elif role != expected_roles[offset]:
+                errors.append(
+                    f"{bundle_id}: offset {offset} has role={role}, "
+                    f"expected={expected_roles[offset]}"
+                )
+        target_offsets = {
+            int(context.get("offset", -1))
+            for context in bundle_contexts
+            if context.get("token_source") == "target"
+        }
+        for offset in expected_required:
+            if offset in target_offsets:
+                covered_required_target_context_count += 1
+            else:
+                missing = f"{bundle_id}:target:{offset}"
+                missing_required_target_contexts.append(missing)
+                errors.append(f"{bundle_id}: missing required target context offset={offset}")
 
     nonzero_count = sum(value for key, value in depth_counts.items() if key != "zero")
     deep_count = depth_counts["32_127"] + depth_counts["128_plus"]
-    if samples and depth_counts["zero"] == 0:
+    if contexts and depth_counts["zero"] == 0:
         errors.append("Decode context coverage has no prompt-boundary samples")
-    if samples and nonzero_count == 0:
+    if contexts and nonzero_count == 0:
         errors.append("Decode context coverage has no nonzero history suffix")
-    if samples and deep_count == 0:
+    if contexts and deep_count == 0:
         errors.append("Decode context coverage has no suffix of at least 32 tokens")
     detection_depths = task_depth_counts.get("detection", Counter())
     if detection_depths and not (
@@ -488,22 +729,30 @@ def summarize_decode_context_coverage(
         errors.append("Detection Decode coverage has no suffix of at least 32 tokens")
 
     selection_sha256 = hashlib.sha256(
-        json.dumps(samples, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(contexts, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy": DECODE_CONTEXT_POLICY,
-        "sample_count": len(samples),
+        "sample_count": len(grouped),
+        "language_context_count": len(contexts),
+        "base_context_count": base_context_count,
+        "supplemental_context_count": supplemental_context_count,
+        "eligible_long_detection_sample_count": eligible_long_detection_count,
+        "required_target_context_count": required_target_context_count,
+        "covered_required_target_context_count": covered_required_target_context_count,
+        "missing_required_target_contexts": missing_required_target_contexts,
         "selection_sha256": selection_sha256,
         "suffix_len": _numeric_summary(suffix_lengths),
         "past_len": _numeric_summary(past_lengths),
         "depth_buckets": dict(depth_counts),
         "token_sources": dict(sorted(source_counts.items())),
+        "context_roles": dict(sorted(role_counts.items())),
         "task_depth_buckets": {
             task: {bucket: counts.get(bucket, 0) for bucket in DECODE_DEPTH_BUCKETS}
             for task, counts in sorted(task_depth_counts.items())
         },
-        "samples": samples,
+        "contexts": contexts,
         "errors": errors,
         "passed": not errors,
     }

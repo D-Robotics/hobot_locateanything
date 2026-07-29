@@ -256,10 +256,17 @@ def _context_record(
     *,
     suffix_len: int,
     source: str = "target",
+    role: str = "base",
+    task: str = "detection",
+    target_usable_suffix_len: int = 0,
+    eligible_offsets: tuple[int, ...] = (),
+    required_offsets: tuple[int, ...] = (),
 ) -> dict:
     return {
+        "context_id": replay.decode_context_id(bundle_id, source, suffix_len),
+        "context_role": role,
         "bundle_id": bundle_id,
-        "task": "detection",
+        "task": task,
         "token_source": source,
         "selection_slot": 0 if suffix_len == 0 else 4,
         "boundary_token_id": 22,
@@ -269,6 +276,9 @@ def _context_record(
         "suffix_len": suffix_len,
         "past_len": 10 + suffix_len,
         "depth_bucket": replay.decode_depth_bucket(suffix_len),
+        "target_usable_suffix_len": target_usable_suffix_len,
+        "eligible_target_offsets": list(eligible_offsets),
+        "required_target_offsets": list(required_offsets),
     }
 
 
@@ -297,9 +307,133 @@ def test_decode_context_coverage_accepts_shallow_and_deep_histories():
     )
 
     assert first["passed"] is True
+    assert first["sample_count"] == 2
+    assert first["language_context_count"] == 2
+    assert first["base_context_count"] == 2
     assert first["depth_buckets"]["32_127"] == 1
     assert first["token_sources"] == {"prediction:hybrid": 1, "target": 1}
     assert first["selection_sha256"] == second["selection_sha256"]
+
+
+def _long_detection_payload() -> dict:
+    ref_start, ref_end = 20, 21
+    box_start, box_end = 22, 23
+    target = []
+    for index in range(5):
+        target.extend(
+            [ref_start, 100 + index, ref_end, box_start, 1, 2, 3, 4, box_end]
+        )
+    payload = {
+        "prompt_input_ids": torch.tensor([[2, 3, 4]]),
+        "prompt_attention_mask": torch.ones(1, 3, dtype=torch.long),
+        "prediction_token_ids": {"hybrid": torch.tensor([], dtype=torch.long)},
+        "target_token_ids": torch.tensor(target),
+        "special_token_ids": {"<ref>": ref_start, "<box>": box_start},
+    }
+    for index in range(1000):
+        payload["bundle_id"] = f"long-detection-{index}"
+        base = replay.select_decode_replay_context(
+            payload, task="detection", chunk_size=64
+        )
+        if base.selection_slot == 0:
+            return payload
+    raise AssertionError("could not find a prompt-boundary bundle id")
+
+
+def test_long_detection_adds_deterministic_target_tail_context():
+    payload = _long_detection_payload()
+
+    first = replay.select_decode_replay_contexts(
+        payload, task="detection", chunk_size=64
+    )
+    second = replay.select_decode_replay_contexts(
+        payload, task="detection", chunk_size=64
+    )
+
+    assert first == second
+    assert len(first) == 2
+    assert [context.context_role for context in first] == ["base", "target_tail"]
+    assert first[0].suffix_len == 0
+    assert first[1].token_source == "target"
+    assert (first[1].suffix_len,) == first[0].required_target_offsets
+    assert max(first[0].required_target_offsets) >= 32
+    assert len({context.context_id for context in first}) == 2
+    for context in first:
+        assert context.context_id == replay.decode_context_id(
+            context.bundle_id, context.token_source, context.suffix_len
+        )
+
+
+def test_base_target_tail_satisfies_required_context_without_duplicate():
+    payload = _long_detection_payload()
+    for index in range(1000):
+        payload["bundle_id"] = f"base-at-target-tail-{index}"
+        base = replay.select_decode_replay_context(
+            payload, task="detection", chunk_size=64
+        )
+        if (
+            base.selection_slot == 4
+            and base.token_source == "target"
+            and base.required_target_offsets == (base.suffix_len,)
+        ):
+            break
+    else:
+        raise AssertionError("could not find a base context at the required target tail")
+
+    contexts = replay.select_decode_replay_contexts(
+        payload, task="detection", chunk_size=64
+    )
+    records = [context.coverage_record("detection") for context in contexts]
+    records.append(_context_record("prompt-boundary", suffix_len=0, task="gui"))
+    coverage = replay.summarize_decode_context_coverage(
+        records,
+        expected_samples=2,
+        cache_len=128,
+    )
+
+    assert contexts == (base,)
+    assert coverage["passed"] is True
+    assert coverage["supplemental_context_count"] == 0
+    assert coverage["required_target_context_count"] == 1
+    assert coverage["covered_required_target_context_count"] == 1
+
+
+def test_non_detection_keeps_only_the_base_context():
+    payload = _long_detection_payload()
+
+    contexts = replay.select_decode_replay_contexts(
+        payload, task="gui", chunk_size=64
+    )
+
+    assert len(contexts) == 1
+    assert contexts[0].context_role == "base"
+    assert contexts[0].required_target_offsets == ()
+
+
+def test_decode_context_coverage_requires_long_detection_tail():
+    payload = _long_detection_payload()
+    contexts = replay.select_decode_replay_contexts(
+        payload, task="detection", chunk_size=64
+    )
+    rows = [context.coverage_record("detection") for context in contexts]
+
+    complete = replay.summarize_decode_context_coverage(
+        rows, expected_samples=1, cache_len=128
+    )
+    incomplete = replay.summarize_decode_context_coverage(
+        rows[:-1], expected_samples=1, cache_len=128
+    )
+
+    assert complete["passed"] is True
+    assert complete["language_context_count"] == 2
+    assert complete["base_context_count"] == 1
+    assert complete["supplemental_context_count"] == 1
+    assert complete["eligible_long_detection_sample_count"] == 1
+    assert complete["required_target_context_count"] == 1
+    assert complete["covered_required_target_context_count"] == 1
+    assert incomplete["passed"] is False
+    assert incomplete["missing_required_target_contexts"]
+    assert any("missing required target context" in error for error in incomplete["errors"])
 
 
 def test_right_aligned_cache_preserves_only_active_prefill_tokens():
