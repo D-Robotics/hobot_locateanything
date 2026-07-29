@@ -266,6 +266,16 @@ language_stages = [
 expected_stages = []
 if a.component in {'all', 'vision'}: expected_stages.append('vision')
 if a.component in {'all', 'language'}: expected_stages.extend(language_stages)
+decode_context = {
+  'policy': 'bundle_hash_structural_boundary_v1',
+  'sample_count': a.max_samples,
+  'passed': True,
+  'errors': [],
+  'suffix_len': {'min': 0, 'max': 64},
+  'past_len': {'min': 600, 'max': 664},
+  'depth_buckets': {'zero': 1, '1_31': 0, '32_127': a.max_samples - 1, '128_plus': 0},
+  'token_sources': {'target': a.max_samples},
+}
 coverage = {
   'generated_manifest_sha256': hashlib.sha256(Path(a.generated_jsonl).read_bytes()).hexdigest(),
   'sample_count': a.max_samples,
@@ -274,6 +284,8 @@ coverage = {
   'stage_sample_counts': {stage: a.max_samples for stage in expected_stages},
   'expected_stages': expected_stages,
   'all_stages_executed': True, 'observer_audit_passed': True,
+  'decode_context_coverage': decode_context,
+  'decode_context_coverage_passed': True,
 }
 (out / 'calibration_graph_coverage.json').write_text(json.dumps(coverage))
 generated = Path(a.generated_jsonl)
@@ -286,6 +298,7 @@ generated = Path(a.generated_jsonl)
   'profile': {
     'component': a.component,
     'language_lm_head_weight_bits': a.lm_head_w_bits,
+    'decode_context_policy': 'bundle_hash_structural_boundary_v1',
   }}))
 (out / f'scale_convergence_{a.checkpoint_samples}_vs_{a.max_samples}.json').write_text(
   json.dumps({'checkpoint_samples': a.checkpoint_samples, 'full_samples': a.max_samples}))

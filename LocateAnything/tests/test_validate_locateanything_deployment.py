@@ -45,6 +45,7 @@ def fixtures(tmp_path):
         "ar_total_query_lengths": list(range(1, 6)),
         "pbd_q6_role": "post_prefill_bootstrap_only",
         "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
+        "decode_context_policy": deployment.DECODE_CONTEXT_POLICY,
     }
     generated = [
         dict(
@@ -88,6 +89,19 @@ def fixtures(tmp_path):
         "expected_stages": list(deployment.GRAPH_STAGES),
         "stage_sample_counts": {stage: 300 for stage in deployment.GRAPH_STAGES},
         "all_stages_executed": True,
+        "decode_context_coverage_passed": True,
+        "decode_context_coverage": {
+            "policy": deployment.DECODE_CONTEXT_POLICY,
+            "sample_count": 300,
+            "passed": True,
+            "errors": [],
+            "suffix_len": {"min": 0, "max": 64},
+            "past_len": {"min": 600, "max": 664},
+            "depth_buckets": {
+                "zero": 60, "1_31": 60, "32_127": 180, "128_plus": 0,
+            },
+            "token_sources": {"target": 150, "prediction:hybrid": 150},
+        },
         "observer_audit_passed": True,
         "observer_audit": {
             "vision": {
@@ -243,6 +257,24 @@ def test_release_identity_accepts_unchanged_complete_chain(tmp_path):
     assert release_identity_errors(release_identity_fixture(tmp_path)) == []
 
 
+def test_release_identity_enforces_frozen_checkpoint_without_type_error(tmp_path):
+    state = release_identity_fixture(tmp_path)
+    errors = deployment.release_identity_errors(
+        expected_samples=1200,
+        selected_jsonl=state["selected"],
+        generated_jsonl=state["generated"],
+        scale_manifest_path=state["scale_path"],
+        scale=state["scale"],
+        coverage=state["coverage"],
+        generated_sha=state["generated_sha"],
+        model_path=state["model"],
+        compiler_source_root=state["compiler"],
+        prepare_source_path=state["prepare_source"],
+    )
+
+    assert any("checkpoint" in error for error in errors)
+
+
 def test_release_identity_rejects_modified_scale_artifact(tmp_path):
     state = release_identity_fixture(tmp_path)
     state["scale_path"].write_text('{"changed":true}\n', encoding="utf-8")
@@ -309,6 +341,35 @@ def test_preflight_rejects_wrong_four_path_counts(tmp_path, monkeypatch):
     assert run(monkeypatch, paths) == 2
 
 
+def test_preflight_rejects_all_zero_decode_history(tmp_path, monkeypatch):
+    paths = fixtures(tmp_path)
+    coverage_path = paths[3]
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    context = coverage["decode_context_coverage"]
+    context["depth_buckets"] = {
+        "zero": 300, "1_31": 0, "32_127": 0, "128_plus": 0,
+    }
+    context["suffix_len"] = {"min": 0, "max": 0}
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths) == 2
+
+
+def test_preflight_reports_non_numeric_decode_counts(tmp_path, monkeypatch, capsys):
+    paths = fixtures(tmp_path)
+    coverage_path = paths[3]
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    context = coverage["decode_context_coverage"]
+    context["depth_buckets"]["32_127"] = "180"
+    context["token_sources"]["target"] = None
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths) == 2
+    output = capsys.readouterr().out
+    assert "depth_buckets contains invalid counts" in output
+    assert "token_sources contains invalid counts" in output
+
+
 def test_preflight_rejects_stale_language_observer_profile(tmp_path, monkeypatch):
     paths = fixtures(tmp_path)
     scale_path = paths[2]
@@ -363,9 +424,12 @@ def test_non_release_fixture_does_not_inherit_release_distribution_gate():
 
 
 def test_release_checkpoint_gate_requires_512_samples():
-    assert deployment.release_checkpoint_errors(1200, 512) == []
-    assert "expected=512" in deployment.release_checkpoint_errors(1200, 256)[0]
-    assert deployment.release_checkpoint_errors(None, 256) == []
+    assert deployment.release_convergence_checkpoint_errors(1200, 512) == []
+    assert (
+        "expected=512"
+        in deployment.release_convergence_checkpoint_errors(1200, 256)[0]
+    )
+    assert deployment.release_convergence_checkpoint_errors(None, 256) == []
 
 
 def test_release_manifest_gate_requires_and_matches_frozen_sha():

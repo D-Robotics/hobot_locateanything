@@ -24,7 +24,7 @@ from compiler.scripts.common.identity import (  # noqa: E402
     identity_mismatches,
     prepared_bundle_identity_errors,
     read_json as read_identity_json,
-    release_checkpoint_errors,
+    release_checkpoint_errors as frozen_checkpoint_errors,
     sha256_json,
     source_tree_identity,
     tokenizer_identity,
@@ -49,6 +49,7 @@ PBD_STAGES = tuple(f"pbd_q{q_len}" for q_len in range(6, 13))
 AR_STAGES = tuple(f"ar_q{q_len}" for q_len in range(1, 6))
 LANGUAGE_STAGES = ("prefill", *PBD_STAGES, *AR_STAGES)
 GRAPH_STAGES = ("vision", *LANGUAGE_STAGES)
+DECODE_CONTEXT_POLICY = "bundle_hash_structural_boundary_v1"
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
@@ -115,6 +116,30 @@ def record_ids(records: list[dict[str, Any]], label: str, errors: list[str]) -> 
     return values
 
 
+def nonnegative_count_mapping(
+    value: Any,
+    *,
+    label: str,
+    errors: list[str],
+) -> dict[str, int]:
+    """Validate persisted coverage counts without trusting JSON value types."""
+
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object of non-negative integer counts")
+        return {}
+    invalid = [
+        str(key)
+        for key, count in value.items()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0
+    ]
+    if invalid:
+        errors.append(
+            f"{label} contains invalid counts for: {', '.join(sorted(invalid))}"
+        )
+        return {}
+    return {str(key): count for key, count in value.items()}
+
+
 def release_distribution_errors(
     expected_samples: int | None,
     task_counts: dict[str, int],
@@ -137,7 +162,7 @@ def release_distribution_errors(
     return errors
 
 
-def release_checkpoint_errors(
+def release_convergence_checkpoint_errors(
     expected_samples: int | None,
     checkpoint_samples: Any,
 ) -> list[str]:
@@ -196,7 +221,7 @@ def release_identity_errors(
         errors.append("release validation requires --model-path")
     else:
         if enforce_frozen_checkpoint:
-            errors.extend(release_checkpoint_errors(model_path))
+            errors.extend(frozen_checkpoint_errors(model_path))
         source_path = prepare_source_path or (
             PROJECT_ROOT / "compiler" / "scripts" / "calibration" / "prepare.py"
         )
@@ -418,7 +443,9 @@ def main() -> int:
         checkpoint = scale.get("checkpoint_samples")
         if type(checkpoint) is not int or not 0 < checkpoint < len(generated):
             errors.append("calibration scale manifest checkpoint_samples is invalid")
-        errors.extend(release_checkpoint_errors(args.expected_samples, checkpoint))
+        errors.extend(
+            release_convergence_checkpoint_errors(args.expected_samples, checkpoint)
+        )
         for group in required_groups:
             snapshots = scale.get(group)
             if not isinstance(snapshots, dict):
@@ -518,6 +545,7 @@ def main() -> int:
                 "ar_total_query_lengths": list(range(1, 6)),
                 "pbd_q6_role": "post_prefill_bootstrap_only",
                 "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
+                "decode_context_policy": DECODE_CONTEXT_POLICY,
             }
             for source_name, profile in (
                 ("scale", scale.get("profile")),
@@ -535,6 +563,51 @@ def main() -> int:
                     errors.append(
                         f"calibration {source_name} Language profile mismatch: {mismatches}"
                     )
+            context = coverage.get("decode_context_coverage")
+            if not isinstance(context, dict):
+                errors.append("calibration coverage lacks Decode context evidence")
+                context = {}
+            if coverage.get("decode_context_coverage_passed") is not True:
+                errors.append("calibration Decode context coverage did not pass")
+            if context.get("policy") != DECODE_CONTEXT_POLICY:
+                errors.append("calibration Decode context policy mismatch")
+            if context.get("sample_count") != len(generated):
+                errors.append("calibration Decode context sample_count mismatch")
+            if context.get("passed") is not True or context.get("errors"):
+                errors.append("calibration Decode context evidence contains failed gates")
+            depth_buckets = nonnegative_count_mapping(
+                context.get("depth_buckets"),
+                label="calibration Decode context depth_buckets",
+                errors=errors,
+            )
+            if sum(depth_buckets.values()) != len(generated):
+                errors.append("calibration Decode depth buckets do not cover all samples")
+            if depth_buckets.get("zero", 0) <= 0:
+                errors.append("calibration Decode context lacks prompt-boundary samples")
+            if sum(
+                depth_buckets.get(name, 0)
+                for name in ("1_31", "32_127", "128_plus")
+            ) <= 0:
+                errors.append("calibration Decode context lacks nonzero history")
+            if sum(
+                depth_buckets.get(name, 0) for name in ("32_127", "128_plus")
+            ) <= 0:
+                errors.append("calibration Decode context lacks deep history")
+            token_sources = nonnegative_count_mapping(
+                context.get("token_sources"),
+                label="calibration Decode context token_sources",
+                errors=errors,
+            )
+            if sum(token_sources.values()) != len(generated):
+                errors.append("calibration Decode token sources do not cover all samples")
+            for metric in ("suffix_len", "past_len"):
+                values = context.get(metric)
+                if (
+                    not isinstance(values, dict)
+                    or values.get("min") is None
+                    or values.get("max") is None
+                ):
+                    errors.append(f"calibration Decode context lacks {metric} range")
         if coverage.get("expected_stages") != list(required_stages):
             errors.append("calibration graph coverage expected_stages mismatch")
         stage_counts = coverage.get("stage_sample_counts")

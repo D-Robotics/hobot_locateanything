@@ -55,9 +55,10 @@ from a generic VLM corpus:
 The raw percentages describe training frequency, not a deployment calibration
 quota. The current release is intentionally detection-primary because object
 detection is the main board workload. Minority-task records are retained to
-exercise GUI, referring, OCR, layout, pointing, null-output, and AR fallback
-paths; their exact counts are taken from the frozen manifest rather than
-reconstructed from prose.
+exercise GUI, referring, OCR, layout, pointing, and AR fallback paths; their
+exact counts are taken from the frozen manifest rather than reconstructed from
+prose. Null-output coverage is tracked separately and is not present in the
+current 1,200-record manifest.
 
 ### Current detection-primary release profile
 
@@ -260,7 +261,7 @@ After the static gate passes, materialize the PyTorch calibration tensors:
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
-conda activate locateanything
+conda activate oellm_clean
 
 python compiler/quantize.py prepare \
   --selected-jsonl workspace/calibration/current/selected.jsonl \
@@ -306,8 +307,9 @@ the upstream processor and PyTorch `generate()` path, and stores:
 - response token IDs, special-token IDs, artifact SHA256 values, task counts,
   and resume-safe progress records.
 
-The tensor bundle is calibration input, not an HBM artifact. The Leap models
-must still replay these tensors in eager mode so their own observers update.
+The tensor bundle is calibration input, not an HBM artifact. The OELLM PyTorch
+models must replay these tensors so every calibrated activation range is
+measured and frozen before BC export.
 A 448x448 tensor bundle is not valid calibration input for a 672x672 HBM:
 the patch count, visual-token count, prompt placeholder count, and activation
 distribution all differ.
@@ -344,6 +346,23 @@ Calibration must run before `compile_mode(True)` and BC export:
 6. Run representative AR `q=1` fallback windows.
 7. Freeze and print all `ConstFakeQuant.absmax` and `RMSNorm` scale statistics.
 8. Export BC only after the scale audit passes.
+
+Language Decode calibration does not replay every graph directly after the
+prompt. For each sample, a hash of `bundle_id` selects a stable response-start,
+`<ref>`, or `<box>` boundary from the saved Hybrid prediction or target tokens.
+Tokens before that boundary are appended to Prefill as a teacher-forced suffix,
+so its KV cache and `past_len` represent the selected generation depth. The
+base q6 graph, fused q7-q12 graphs, and AR q1-q5 graphs then share that same
+history and consume prefixes beginning at the same boundary. This selection is
+independent of manifest order and is therefore unchanged by `--resume`.
+
+`calibration_graph_coverage.json` records every sample's `suffix_len`,
+`past_len`, depth bucket, and token source, plus aggregate ranges and a stable
+selection SHA256. A Language calibration fails when these records do not cover
+every sample, contain no prompt-boundary case, contain no nonzero history, or
+contain no suffix of at least 32 tokens. Detection records must independently
+include at least one such deep-history case. Graph invocation counts alone are
+not sufficient Decode calibration evidence.
 
 The unified calibration stage fixes the release sample count at 1,200 and
 compares the deterministic 512-sample checkpoint with the complete Scale

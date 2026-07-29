@@ -41,16 +41,17 @@ from compiler.scripts.common.identity import (  # noqa: E402
 
 from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     ActivationTracker,
+    DECODE_CONTEXT_POLICY,
     build_decode_inputs,
     build_prefill_inputs,
     build_right_aligned_caches,
     compare_snapshots,
     load_tensor_payload,
     read_generated_manifest,
-    select_decode_tokens,
+    select_decode_replay_context,
     select_pbd_tokens,
-    select_replay_prefix_tokens,
     sha256_file,
+    summarize_decode_context_coverage,
 )
 from leap_llm.models.locateanything.hidden_rotation import load_hidden_rotation  # noqa: E402
 from report import generate_activation_report  # noqa: E402
@@ -257,6 +258,7 @@ def run(args: argparse.Namespace) -> int:
             "legacy_checkpoint": legacy_checkpoint,
             "image_token_id": args.image_token_id,
             "replay_seed": args.replay_seed,
+            "decode_context_policy": DECODE_CONTEXT_POLICY,
         },
     }
     run_identity_sha256 = sha256_json(run_identity)
@@ -312,6 +314,7 @@ def run(args: argparse.Namespace) -> int:
     vision_cosines = []
     language_snapshots = {}
     stage_counts = Counter()
+    decode_context_records: list[dict[str, Any]] = []
     activation_rows: list[dict[str, Any]] = []
 
     if args.component in {"all", "vision"}:
@@ -367,11 +370,23 @@ def run(args: argparse.Namespace) -> int:
         with torch.no_grad():
             for index, record in enumerate(progress(records, "Language activation statistics"), 1):
                 payload = load_tensor_payload(record)
+                replay_context = select_decode_replay_context(
+                    payload, chunk_size=args.chunk_size
+                )
                 language_tracker.stage = "prefill"
                 embeds, positions, mask, active_len = build_prefill_inputs(
                     language, payload, rotation, chunk_size=args.chunk_size,
                     cache_len=args.cache_len, image_token_id=args.image_token_id,
                     device=device, dtype=dtype,
+                    suffix_token_ids=replay_context.suffix_token_ids,
+                )
+                if active_len != replay_context.past_len:
+                    raise RuntimeError(
+                        f"{replay_context.bundle_id}: Prefill active_len={active_len} "
+                        f"does not match selected past_len={replay_context.past_len}"
+                    )
+                decode_context_records.append(
+                    replay_context.coverage_record(record["task"])
                 )
                 logits, new_keys, new_values = language(embeds, positions, mask, *zero_caches)
                 stage_counts["prefill"] += 1
@@ -381,7 +396,10 @@ def run(args: argparse.Namespace) -> int:
                 )
 
                 pbd_tokens = select_pbd_tokens(
-                    payload, 6, int(language.config.text_mask_token_id)
+                    payload,
+                    6,
+                    int(language.config.text_mask_token_id),
+                    anchor_token_id=replay_context.anchor_token_id,
                 )
                 language_tracker.stage = "pbd_q6"
                 pbd_embeds, pbd_pos, pbd_mask = build_decode_inputs(
@@ -393,7 +411,7 @@ def run(args: argparse.Namespace) -> int:
                 del pbd_out, pbd_embeds, pbd_pos, pbd_mask
 
                 for prefix_len in range(1, 7):
-                    prefix = select_replay_prefix_tokens(payload, prefix_len)
+                    prefix = list(replay_context.pending_token_ids[:prefix_len])
                     fused_tokens = [
                         *prefix,
                         prefix[-1],
@@ -415,7 +433,7 @@ def run(args: argparse.Namespace) -> int:
                     del fused_out, fused_embeds, fused_pos, fused_mask
 
                 for q_len in range(1, 6):
-                    ar_tokens = select_replay_prefix_tokens(payload, q_len)
+                    ar_tokens = list(replay_context.pending_token_ids[:q_len])
                     stage = f"ar_q{q_len}"
                     language_tracker.stage = stage
                     ar_embeds, ar_pos, ar_mask = build_decode_inputs(
@@ -480,6 +498,7 @@ def run(args: argparse.Namespace) -> int:
             "ar_total_query_lengths": list(range(1, 6)),
             "pbd_q6_role": "post_prefill_bootstrap_only",
             "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
+            "decode_context_policy": DECODE_CONTEXT_POLICY,
         })
     expected_stages = []
     stage_sample_counts = {}
@@ -514,6 +533,15 @@ def run(args: argparse.Namespace) -> int:
             audit["passed"] for audit in audits.values()
         ),
     }
+    if language_snapshots:
+        coverage["decode_context_coverage"] = summarize_decode_context_coverage(
+            decode_context_records,
+            expected_samples=full_samples,
+            cache_len=args.cache_len,
+        )
+        coverage["decode_context_coverage_passed"] = coverage[
+            "decode_context_coverage"
+        ]["passed"]
     if vision_cosines:
         coverage["vision_cosine_min"] = min(vision_cosines)
         coverage["vision_cosine_mean"] = sum(vision_cosines) / len(vision_cosines)
@@ -599,6 +627,11 @@ def run(args: argparse.Namespace) -> int:
     if not coverage["activation_statistics_audit_passed"]:
         raise RuntimeError(
             "activation statistics audit found unexecuted, non-finite, or invalid scales"
+        )
+    if language_snapshots and not coverage["decode_context_coverage_passed"]:
+        errors = coverage["decode_context_coverage"]["errors"]
+        raise RuntimeError(
+            "Language Decode context coverage failed: " + "; ".join(errors[:12])
         )
     atomic_identity_json(
         identity_path,

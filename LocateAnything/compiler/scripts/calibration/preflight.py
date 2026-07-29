@@ -345,6 +345,11 @@ def validate_prompt_target(record: Mapping[str, Any], context: str) -> None:
 
 
 def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise PreflightError("Pillow is required to decode calibration images") from exc
+
     path = path.resolve()
     if not path.is_file():
         raise PreflightError(f"selected manifest is not a file: {path}")
@@ -366,6 +371,11 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
     image_hashes: set[str] = set()
     bundle_ids: set[str] = set()
     image_bytes = 0
+    decoded_images = 0
+    image_formats: Counter[str] = Counter()
+    null_output_records = 0
+    multi_box_records = 0
+    max_box_groups = 0
     max_prompt_chars = 0
     for record in records:
         line = record.pop("_line")
@@ -397,9 +407,34 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         actual_hash = sha256_file(image_path)
         if actual_hash != claimed_hash:
             raise PreflightError(f"{context}: image SHA256 mismatch")
+        try:
+            with Image.open(image_path) as source_image:
+                source_image.load()
+                decoded_width, decoded_height = source_image.size
+                image_format = str(source_image.format or "unknown").upper()
+        except (OSError, ValueError) as exc:
+            raise PreflightError(f"{context}: image cannot be decoded: {image_path}") from exc
+        recorded_width = record.get("source_width")
+        recorded_height = record.get("source_height")
+        if recorded_width is None or recorded_height is None:
+            raise PreflightError(f"{context}: source_width/source_height are required")
+        if (int(recorded_width), int(recorded_height)) != (
+            decoded_width,
+            decoded_height,
+        ):
+            raise PreflightError(
+                f"{context}: recorded image size "
+                f"{recorded_width}x{recorded_height} != decoded "
+                f"{decoded_width}x{decoded_height}"
+            )
         record["_preflight_image_path"] = str(image_path)
 
-        validate_target(str(record.get("target_response") or ""), context)
+        target_response = str(record.get("target_response") or "")
+        validate_target(target_response, context)
+        box_groups = target_response.count("<box>")
+        null_output_records += int("<box>None</box>" in target_response)
+        multi_box_records += int(box_groups > 1)
+        max_box_groups = max(max_box_groups, box_groups)
         validate_prompt_target(record, context)
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         role = str(metadata.get("calibration_source_role") or "existing_non_detection")
@@ -411,6 +446,8 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         image_hashes.add(claimed_hash)
         bundle_ids.add(bundle_id)
         image_bytes += image_path.stat().st_size
+        decoded_images += 1
+        image_formats[image_format] += 1
         max_prompt_chars = max(max_prompt_chars, len(prompt))
 
     for label, actual, expected in (
@@ -429,6 +466,11 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         "source_role_counts": dict(roles),
         "coco_stratum_counts": dict(strata),
         "unique_images": len(image_hashes),
+        "decoded_images": decoded_images,
+        "image_formats": dict(sorted(image_formats.items())),
+        "null_output_records": null_output_records,
+        "multi_box_records": multi_box_records,
+        "max_box_groups": max_box_groups,
         "image_bytes": image_bytes,
         "max_prompt_characters": max_prompt_chars,
     }, records)

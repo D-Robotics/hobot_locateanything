@@ -29,9 +29,11 @@ def sha256(path: Path) -> str:
 
 
 def write_manifest(tmp_path: Path) -> tuple[Path, dict]:
+    from PIL import Image
+
     image = tmp_path / "images" / "sample.jpg"
     image.parent.mkdir()
-    image.write_bytes(b"static-image-fixture")
+    Image.new("RGB", (32, 24), (10, 20, 30)).save(image)
     record = {
         "bundle_id": "sample-1",
         "image": "images/sample.jpg",
@@ -41,6 +43,8 @@ def write_manifest(tmp_path: Path) -> tuple[Path, dict]:
             "calibration_stratum": "single",
         },
         "prompt": "Locate all the instances that matches the following description: cat.",
+        "source_height": 24,
+        "source_width": 32,
         "split": "train",
         "target_response": "<ref>cat</ref><box><10><20><30><40></box>",
         "task": "detection",
@@ -63,6 +67,11 @@ def test_manifest_audit_accepts_hash_checked_train_fixture(tmp_path):
     report, records = module.audit_manifest(manifest, profile)
     assert report["passed"] is True
     assert report["unique_images"] == 1
+    assert report["decoded_images"] == 1
+    assert report["image_formats"] == {"JPEG": 1}
+    assert report["null_output_records"] == 0
+    assert report["multi_box_records"] == 0
+    assert report["max_box_groups"] == 1
     assert report["task_counts"] == {"detection": 1}
     assert records[0]["bundle_id"] == "sample-1"
 
@@ -72,6 +81,32 @@ def test_manifest_audit_rejects_a_modified_image(tmp_path):
     manifest, profile = write_manifest(tmp_path)
     (tmp_path / "images" / "sample.jpg").write_bytes(b"modified")
     with pytest.raises(module.PreflightError, match="image SHA256 mismatch"):
+        module.audit_manifest(manifest, profile)
+
+
+def test_manifest_audit_rejects_hash_valid_but_undecodable_image(tmp_path):
+    module = load_module()
+    manifest, profile = write_manifest(tmp_path)
+    image = tmp_path / "images" / "sample.jpg"
+    image.write_bytes(b"not-a-jpeg")
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    record["image_sha256"] = sha256(image)
+    manifest.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    profile["manifest_sha256"] = sha256(manifest)
+
+    with pytest.raises(module.PreflightError, match="image cannot be decoded"):
+        module.audit_manifest(manifest, profile)
+
+
+def test_manifest_audit_rejects_recorded_image_size_mismatch(tmp_path):
+    module = load_module()
+    manifest, profile = write_manifest(tmp_path)
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    record["source_width"] = 31
+    manifest.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    profile["manifest_sha256"] = sha256(manifest)
+
+    with pytest.raises(module.PreflightError, match="recorded image size"):
         module.audit_manifest(manifest, profile)
 
 

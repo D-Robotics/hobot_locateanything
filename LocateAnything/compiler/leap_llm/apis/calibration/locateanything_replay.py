@@ -8,7 +8,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, NamedTuple
 
 import torch
 
@@ -21,6 +21,63 @@ REQUIRED_TENSOR_FIELDS = {
     "prediction_token_ids",
     "target_token_ids",
 }
+
+DECODE_CONTEXT_POLICY = "bundle_hash_structural_boundary_v1"
+DECODE_CONTEXT_PENDING_TOKENS = 6
+DECODE_DEPTH_BUCKETS = ("zero", "1_31", "32_127", "128_plus")
+
+
+def decode_depth_bucket(suffix_len: int) -> str:
+    if suffix_len < 0:
+        raise ValueError("decode suffix length cannot be negative")
+    if suffix_len == 0:
+        return "zero"
+    if suffix_len < 32:
+        return "1_31"
+    if suffix_len < 128:
+        return "32_127"
+    return "128_plus"
+
+
+class DecodeReplayContext(NamedTuple):
+    """One deterministic, structurally aligned history for every Decode graph."""
+
+    bundle_id: str
+    token_source: str
+    selection_slot: int
+    boundary_token_id: int | None
+    prompt_len: int
+    max_suffix_len: int
+    suffix_token_ids: tuple[int, ...]
+    pending_token_ids: tuple[int, ...]
+    anchor_token_id: int
+
+    @property
+    def suffix_len(self) -> int:
+        return len(self.suffix_token_ids)
+
+    @property
+    def past_len(self) -> int:
+        return self.prompt_len + self.suffix_len
+
+    @property
+    def depth_bucket(self) -> str:
+        return decode_depth_bucket(self.suffix_len)
+
+    def coverage_record(self, task: str) -> dict[str, Any]:
+        return {
+            "bundle_id": self.bundle_id,
+            "task": str(task),
+            "token_source": self.token_source,
+            "selection_slot": self.selection_slot,
+            "boundary_token_id": self.boundary_token_id,
+            "prompt_len": self.prompt_len,
+            "max_suffix_len": self.max_suffix_len,
+            "offset": self.suffix_len,
+            "suffix_len": self.suffix_len,
+            "past_len": self.past_len,
+            "depth_bucket": self.depth_bucket,
+        }
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -212,8 +269,252 @@ def select_decode_tokens(payload: dict[str, Any], mode: str, q_len: int) -> list
     return combined[:q_len]
 
 
+def _flat_token_ids(value: Any) -> list[int]:
+    if torch.is_tensor(value):
+        return [int(token) for token in value.reshape(-1).tolist()]
+    if isinstance(value, (list, tuple)):
+        return [int(token) for token in value]
+    return []
+
+
+def _structural_offsets(
+    token_ids: list[int],
+    *,
+    structural_token_ids: set[int],
+    max_suffix_len: int,
+    pending_tokens: int,
+) -> list[int]:
+    latest = min(max_suffix_len, len(token_ids) - pending_tokens)
+    if latest < 0:
+        return []
+    offsets = {0}
+    offsets.update(
+        index
+        for index, token_id in enumerate(token_ids[: latest + 1])
+        if token_id in structural_token_ids
+    )
+    return sorted(offsets)
+
+
+def select_decode_replay_context(
+    payload: dict[str, Any],
+    *,
+    chunk_size: int,
+    pending_tokens: int = DECODE_CONTEXT_PENDING_TOKENS,
+) -> DecodeReplayContext:
+    """Select one stable output boundary shared by all Decode graph variants.
+
+    Slot zero preserves the prompt boundary. The remaining four hash slots pick
+    progressively deeper structural boundaries. Prediction and target streams
+    are both eligible; the bundle hash selects their preference without making
+    replay depend on manifest order or resume position.
+    """
+
+    if pending_tokens < 1:
+        raise ValueError("pending token count must be positive")
+    prompt_ids = _flat_token_ids(payload.get("prompt_input_ids"))
+    attention_mask = _flat_token_ids(payload.get("prompt_attention_mask"))
+    prompt_len = sum(attention_mask)
+    if prompt_len < 1 or prompt_len > len(prompt_ids):
+        raise ValueError(f"invalid prompt length for Decode replay: {prompt_len}")
+    max_suffix_len = chunk_size - prompt_len
+    if max_suffix_len < 0:
+        raise ValueError(
+            f"prompt length {prompt_len} exceeds Prefill chunk size {chunk_size}"
+        )
+
+    bundle_id = str(payload.get("bundle_id") or "")
+    digest = hashlib.sha256(bundle_id.encode("utf-8")).digest()
+    selection_slot = digest[0] % 5
+    special = payload.get("special_token_ids") or {}
+    structural_token_ids = {
+        int(special.get("<ref>", 151672)),
+        int(special.get("<box>", 151668)),
+    }
+    streams = [
+        ("target", _flat_token_ids(payload.get("target_token_ids"))),
+        (
+            "prediction:hybrid",
+            _flat_token_ids((payload.get("prediction_token_ids") or {}).get("hybrid")),
+        ),
+    ]
+    streams = [entry for entry in streams if entry[1]]
+    if streams:
+        pivot = digest[1] % len(streams)
+        streams = streams[pivot:] + streams[:pivot]
+
+    candidates: list[tuple[str, list[int], list[int]]] = []
+    for source, token_ids in streams:
+        offsets = _structural_offsets(
+            token_ids,
+            structural_token_ids=structural_token_ids,
+            max_suffix_len=max_suffix_len,
+            pending_tokens=pending_tokens,
+        )
+        if offsets:
+            candidates.append((source, token_ids, offsets))
+
+    if selection_slot:
+        deep_candidates = [
+            candidate for candidate in candidates if any(candidate[2])
+        ]
+        if deep_candidates:
+            candidates = deep_candidates
+
+    if candidates:
+        token_source, token_ids, offsets = candidates[0]
+        selected_token_ids = token_ids
+        positive_offsets = [offset for offset in offsets if offset > 0]
+        if selection_slot and positive_offsets:
+            if len(positive_offsets) == 1:
+                offset = positive_offsets[0]
+            else:
+                index = round(
+                    (selection_slot - 1) * (len(positive_offsets) - 1) / 3
+                )
+                offset = positive_offsets[min(index, len(positive_offsets) - 1)]
+        else:
+            offset = 0 if 0 in offsets else offsets[0]
+        pending = token_ids[offset : offset + pending_tokens]
+        boundary_token_id = int(token_ids[offset])
+    else:
+        token_source = "fallback:hybrid+target"
+        selected_token_ids = []
+        offset = 0
+        pending = select_decode_tokens(payload, "hybrid", pending_tokens)
+        boundary_token_id = None
+
+    suffix = tuple(int(token) for token in selected_token_ids[:offset])
+    pending_tuple = tuple(int(token) for token in pending)
+    if len(pending_tuple) != pending_tokens:
+        raise ValueError(
+            f"Decode replay needs {pending_tokens} pending tokens, got {len(pending_tuple)}"
+        )
+    anchor_token_id = suffix[-1] if suffix else int(prompt_ids[prompt_len - 1])
+    return DecodeReplayContext(
+        bundle_id=bundle_id,
+        token_source=token_source,
+        selection_slot=selection_slot,
+        boundary_token_id=boundary_token_id,
+        prompt_len=prompt_len,
+        max_suffix_len=max_suffix_len,
+        suffix_token_ids=suffix,
+        pending_token_ids=pending_tuple,
+        anchor_token_id=anchor_token_id,
+    )
+
+
+def _numeric_summary(values: list[int]) -> dict[str, int | float | None]:
+    if not values:
+        return {"min": None, "max": None, "mean": None, "p50": None, "p95": None}
+    ordered = sorted(values)
+
+    def percentile(probability: float) -> int:
+        index = max(0, math.ceil(probability * len(ordered)) - 1)
+        return ordered[index]
+
+    return {
+        "min": ordered[0],
+        "max": ordered[-1],
+        "mean": sum(ordered) / len(ordered),
+        "p50": percentile(0.5),
+        "p95": percentile(0.95),
+    }
+
+
+def summarize_decode_context_coverage(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    expected_samples: int,
+    cache_len: int,
+    max_query_len: int = 12,
+) -> dict[str, Any]:
+    """Summarize and validate the contexts used for Language activation replay."""
+
+    samples = sorted((dict(record) for record in records), key=lambda row: row["bundle_id"])
+    errors: list[str] = []
+    if len(samples) != expected_samples:
+        errors.append(
+            f"Decode context sample_count={len(samples)} expected={expected_samples}"
+        )
+    bundle_ids = [str(sample.get("bundle_id") or "") for sample in samples]
+    if len(set(bundle_ids)) != len(bundle_ids):
+        errors.append("Decode context bundle_id values are not unique")
+
+    depth_counts = Counter({bucket: 0 for bucket in DECODE_DEPTH_BUCKETS})
+    source_counts: Counter[str] = Counter()
+    task_depth_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    suffix_lengths: list[int] = []
+    past_lengths: list[int] = []
+    for sample in samples:
+        suffix_len = int(sample.get("suffix_len", -1))
+        prompt_len = int(sample.get("prompt_len", -1))
+        past_len = int(sample.get("past_len", -1))
+        max_suffix_len = int(sample.get("max_suffix_len", -1))
+        bucket = str(sample.get("depth_bucket") or "")
+        source = str(sample.get("token_source") or "")
+        task = str(sample.get("task") or "unknown")
+        if suffix_len < 0 or suffix_len > max_suffix_len:
+            errors.append(f"{sample.get('bundle_id')}: invalid suffix_len={suffix_len}")
+        if past_len != prompt_len + suffix_len:
+            errors.append(f"{sample.get('bundle_id')}: past_len does not match prompt+suffix")
+        if past_len < 1 or past_len + max_query_len > cache_len:
+            errors.append(f"{sample.get('bundle_id')}: past_len={past_len} exceeds cache profile")
+        if bucket != decode_depth_bucket(max(suffix_len, 0)):
+            errors.append(f"{sample.get('bundle_id')}: inconsistent depth bucket")
+        if not source:
+            errors.append(f"{sample.get('bundle_id')}: missing token source")
+        if suffix_len >= 0:
+            suffix_lengths.append(suffix_len)
+        if past_len >= 0:
+            past_lengths.append(past_len)
+        if bucket in DECODE_DEPTH_BUCKETS:
+            depth_counts[bucket] += 1
+            task_depth_counts[task][bucket] += 1
+        source_counts[source] += 1
+
+    nonzero_count = sum(value for key, value in depth_counts.items() if key != "zero")
+    deep_count = depth_counts["32_127"] + depth_counts["128_plus"]
+    if samples and depth_counts["zero"] == 0:
+        errors.append("Decode context coverage has no prompt-boundary samples")
+    if samples and nonzero_count == 0:
+        errors.append("Decode context coverage has no nonzero history suffix")
+    if samples and deep_count == 0:
+        errors.append("Decode context coverage has no suffix of at least 32 tokens")
+    detection_depths = task_depth_counts.get("detection", Counter())
+    if detection_depths and not (
+        detection_depths["32_127"] + detection_depths["128_plus"]
+    ):
+        errors.append("Detection Decode coverage has no suffix of at least 32 tokens")
+
+    selection_sha256 = hashlib.sha256(
+        json.dumps(samples, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": 1,
+        "policy": DECODE_CONTEXT_POLICY,
+        "sample_count": len(samples),
+        "selection_sha256": selection_sha256,
+        "suffix_len": _numeric_summary(suffix_lengths),
+        "past_len": _numeric_summary(past_lengths),
+        "depth_buckets": dict(depth_counts),
+        "token_sources": dict(sorted(source_counts.items())),
+        "task_depth_buckets": {
+            task: {bucket: counts.get(bucket, 0) for bucket in DECODE_DEPTH_BUCKETS}
+            for task, counts in sorted(task_depth_counts.items())
+        },
+        "samples": samples,
+        "errors": errors,
+        "passed": not errors,
+    }
+
+
 def select_pbd_tokens(
-    payload: dict[str, Any], q_len: int, text_mask_token_id: int
+    payload: dict[str, Any],
+    q_len: int,
+    text_mask_token_id: int,
+    *,
+    anchor_token_id: int | None = None,
 ) -> list[int]:
     """Build the native PBD window: history anchor followed by mask tokens."""
 
@@ -224,32 +525,12 @@ def select_pbd_tokens(
     active_len = int(attention_mask.sum().item())
     if active_len < 1 or active_len > input_ids.numel():
         raise ValueError(f"invalid active prompt length for PBD: {active_len}")
-    anchor = int(input_ids[active_len - 1].item())
+    anchor = (
+        int(anchor_token_id)
+        if anchor_token_id is not None
+        else int(input_ids[active_len - 1].item())
+    )
     return [anchor, *([int(text_mask_token_id)] * (q_len - 1))]
-
-
-def select_replay_prefix_tokens(
-    payload: dict[str, Any], prefix_len: int
-) -> list[int]:
-    """Select a deterministic, box-aligned pending prefix for decode replay."""
-
-    if prefix_len < 1:
-        raise ValueError("replay prefix length must be positive")
-    target = payload["target_token_ids"].reshape(-1).tolist()
-    target = [int(value) for value in target]
-    special = payload.get("special_token_ids") or {}
-    box_start = int(special.get("<box>", 151668))
-    starts = [
-        index
-        for index, token in enumerate(target)
-        if token == box_start and index + prefix_len <= len(target)
-    ]
-    if starts:
-        identity = str(payload.get("bundle_id") or "").encode("utf-8")
-        choice = int.from_bytes(hashlib.sha256(identity).digest()[:8], "little")
-        start = starts[choice % len(starts)]
-        return target[start : start + prefix_len]
-    return select_decode_tokens(payload, "hybrid", prefix_len)
 
 
 _LOG_HISTOGRAM_MIN_EXPONENT = -32.0

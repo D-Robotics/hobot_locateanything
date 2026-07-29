@@ -115,6 +115,32 @@ def test_decode_pbd_prefix_keeps_real_tokens_causal_before_mtp_window():
     assert torch.all(mask[:, :, :, 3:7] == 0)
 
 
+def test_q9_deep_context_positions_and_mask_keep_prefix_causal():
+    model = TinyText()
+    _, positions, mask = replay.build_decode_inputs(
+        model,
+        [20, 21, 22, 22, 15, 15, 15, 15, 15],
+        q_len=9,
+        past_len=20,
+        cache_len=64,
+        is_pbd=True,
+        pbd_prefix_len=3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert positions.tolist() == [[[20, 21, 22, 22, 23, 24, 25, 26, 27]]]
+    # Cached history occupies [35, 55). Prefix positions remain causal.
+    assert torch.all(mask[:, :, :, 35:55] == 0)
+    assert torch.all(mask[:, :, 0, 55:56] == 0)
+    assert torch.all(mask[:, :, 0, 56:] < 0)
+    assert torch.all(mask[:, :, 2, 55:58] == 0)
+    assert torch.all(mask[:, :, 2, 58:] < 0)
+    # The six-position PBD window is bidirectional and excludes its duplicate.
+    assert torch.all(mask[:, :, 3:, 58:64] == 0)
+    assert torch.all(mask[:, :, 3:, 57] < 0)
+
+
 def test_pbd_tokens_match_native_anchor_and_mask_protocol():
     payload = {
         "prompt_input_ids": torch.tensor([[11, 12, 13]]),
@@ -132,17 +158,148 @@ def test_pbd_tokens_match_native_anchor_and_mask_protocol():
         151676,
     ]
 
+    assert replay.select_pbd_tokens(
+        payload, 6, 151676, anchor_token_id=23
+    ) == [23, 151676, 151676, 151676, 151676, 151676]
 
-def test_replay_prefix_is_box_aligned_and_deterministic():
+
+def test_decode_context_is_structurally_deep_and_resume_deterministic():
+    ref_start, ref_end = 20, 21
+    box_start, box_end = 22, 23
+    target = [
+        ref_start, 7, ref_end, box_start, 1, 2, 3, 4, box_end,
+        ref_start, 8, ref_end, box_start, 5, 6, 7, 8, box_end,
+        ref_start, 9, ref_end, box_start, 9, 10, 11, 12, box_end,
+    ]
     payload = {
-        "bundle_id": "sample-1",
-        "prediction_token_ids": {"hybrid": torch.tensor([21, 22, 23])},
-        "target_token_ids": torch.tensor([7, 151668, 101, 102, 103, 104, 151669, 8]),
-        "special_token_ids": {"<box>": 151668},
+        "prompt_input_ids": torch.tensor([[2, 3, 4]]),
+        "prompt_attention_mask": torch.ones(1, 3, dtype=torch.long),
+        "prediction_token_ids": {"hybrid": torch.tensor([], dtype=torch.long)},
+        "target_token_ids": torch.tensor(target),
+        "special_token_ids": {"<ref>": ref_start, "<box>": box_start},
+    }
+    for index in range(1000):
+        payload["bundle_id"] = f"deep-sample-{index}"
+        first = replay.select_decode_replay_context(payload, chunk_size=64)
+        if first.selection_slot == 4:
+            break
+    else:  # pragma: no cover - SHA256 slots make this unreachable in practice.
+        raise AssertionError("could not find a tail-selection bundle id")
+
+    # Calling another sample between attempts models a resumed/shuffled replay.
+    other = dict(payload, bundle_id="different-sample")
+    replay.select_decode_replay_context(other, chunk_size=64)
+    second = replay.select_decode_replay_context(payload, chunk_size=64)
+
+    assert first == second
+    assert first.token_source == "target"
+    assert first.suffix_len > 0
+    assert first.pending_token_ids[0] in {ref_start, box_start}
+    assert list(first.suffix_token_ids) == target[: first.suffix_len]
+    assert list(first.pending_token_ids) == target[first.suffix_len : first.suffix_len + 6]
+    assert first.anchor_token_id == target[first.suffix_len - 1]
+    assert first.past_len == 3 + first.suffix_len
+
+
+def test_decode_context_repeats_short_output_only_for_pending_workspace():
+    payload = {
+        "bundle_id": "short-output",
+        "prompt_input_ids": torch.tensor([[2, 3, 4]]),
+        "prompt_attention_mask": torch.ones(1, 3, dtype=torch.long),
+        "prediction_token_ids": {"hybrid": torch.tensor([7, 8])},
+        "target_token_ids": torch.tensor([9]),
+        "special_token_ids": {"<ref>": 20, "<box>": 22},
     }
 
-    assert replay.select_replay_prefix_tokens(payload, 4) == [151668, 101, 102, 103]
-    assert replay.select_replay_prefix_tokens(payload, 6) == [151668, 101, 102, 103, 104, 151669]
+    context = replay.select_decode_replay_context(payload, chunk_size=8)
+
+    assert context.suffix_token_ids == ()
+    assert context.pending_token_ids == (7, 8, 9, 7, 8, 9)
+    assert context.past_len == 3
+    assert context.token_source == "fallback:hybrid+target"
+
+
+def test_decode_context_rejects_output_without_any_replay_tokens():
+    payload = {
+        "bundle_id": "empty-output",
+        "prompt_input_ids": torch.tensor([[2, 3, 4]]),
+        "prompt_attention_mask": torch.ones(1, 3, dtype=torch.long),
+        "prediction_token_ids": {"hybrid": torch.tensor([], dtype=torch.long)},
+        "target_token_ids": torch.tensor([], dtype=torch.long),
+        "special_token_ids": {"<ref>": 20, "<box>": 22},
+    }
+
+    with __import__("pytest").raises(ValueError, match="no tokens available"):
+        replay.select_decode_replay_context(payload, chunk_size=8)
+
+
+def test_decode_context_at_chunk_limit_keeps_pending_tokens_outside_prefill():
+    payload = {
+        "bundle_id": "chunk-limit",
+        "prompt_input_ids": torch.tensor([[2, 3, 4, 5]]),
+        "prompt_attention_mask": torch.ones(1, 4, dtype=torch.long),
+        "prediction_token_ids": {"hybrid": torch.tensor([], dtype=torch.long)},
+        "target_token_ids": torch.tensor([22, 1, 2, 3, 4, 23]),
+        "special_token_ids": {"<ref>": 20, "<box>": 22},
+    }
+
+    context = replay.select_decode_replay_context(payload, chunk_size=4)
+
+    assert context.max_suffix_len == 0
+    assert context.suffix_token_ids == ()
+    assert context.pending_token_ids == (22, 1, 2, 3, 4, 23)
+    assert context.past_len == 4
+
+
+def _context_record(
+    bundle_id: str,
+    *,
+    suffix_len: int,
+    source: str = "target",
+) -> dict:
+    return {
+        "bundle_id": bundle_id,
+        "task": "detection",
+        "token_source": source,
+        "selection_slot": 0 if suffix_len == 0 else 4,
+        "boundary_token_id": 22,
+        "prompt_len": 10,
+        "max_suffix_len": 128,
+        "offset": suffix_len,
+        "suffix_len": suffix_len,
+        "past_len": 10 + suffix_len,
+        "depth_bucket": replay.decode_depth_bucket(suffix_len),
+    }
+
+
+def test_decode_context_coverage_rejects_all_zero_suffixes():
+    coverage = replay.summarize_decode_context_coverage(
+        [_context_record("a", suffix_len=0), _context_record("b", suffix_len=0)],
+        expected_samples=2,
+        cache_len=256,
+    )
+
+    assert coverage["passed"] is False
+    assert coverage["depth_buckets"]["zero"] == 2
+    assert any("no nonzero history suffix" in error for error in coverage["errors"])
+
+
+def test_decode_context_coverage_accepts_shallow_and_deep_histories():
+    rows = [
+        _context_record("a", suffix_len=0),
+        _context_record("b", suffix_len=64, source="prediction:hybrid"),
+    ]
+    first = replay.summarize_decode_context_coverage(
+        rows, expected_samples=2, cache_len=256
+    )
+    second = replay.summarize_decode_context_coverage(
+        list(reversed(rows)), expected_samples=2, cache_len=256
+    )
+
+    assert first["passed"] is True
+    assert first["depth_buckets"]["32_127"] == 1
+    assert first["token_sources"] == {"prediction:hybrid": 1, "target": 1}
+    assert first["selection_sha256"] == second["selection_sha256"]
 
 
 def test_right_aligned_cache_preserves_only_active_prefill_tokens():

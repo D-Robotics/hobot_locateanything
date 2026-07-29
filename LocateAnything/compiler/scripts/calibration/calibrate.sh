@@ -363,6 +363,23 @@ manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 convergence = json.loads(convergence_path.read_text(encoding="utf-8"))
 counts = coverage.get("stage_sample_counts", {})
 errors = []
+
+def nonnegative_count_mapping(value, label):
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object of non-negative integer counts")
+        return {}
+    invalid = [
+        str(key)
+        for key, count in value.items()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0
+    ]
+    if invalid:
+        errors.append(
+            f"{label} contains invalid counts for: {', '.join(sorted(invalid))}"
+        )
+        return {}
+    return value
+
 if coverage.get("sample_count") != max_samples:
     errors.append(f"coverage sample_count={coverage.get('sample_count')} expected {max_samples}")
 if coverage.get("checkpoint_samples") != checkpoint:
@@ -401,6 +418,41 @@ if profile.get("component") != component:
     )
 if component in {"all", "language"} and profile.get("language_lm_head_weight_bits") != lm_head_w_bits:
     errors.append("scale manifest lm_head weight bits do not match the requested run")
+if component in {"all", "language"}:
+    context = coverage.get("decode_context_coverage")
+    if not isinstance(context, dict):
+        errors.append("coverage lacks decode_context_coverage")
+        context = {}
+    if coverage.get("decode_context_coverage_passed") is not True:
+        errors.append("decode_context_coverage_passed is not true")
+    if context.get("policy") != "bundle_hash_structural_boundary_v1":
+        errors.append("Decode context policy does not match the release contract")
+    if context.get("sample_count") != max_samples:
+        errors.append("Decode context sample count does not match the requested run")
+    if context.get("passed") is not True or context.get("errors"):
+        errors.append("Decode context coverage contains failed gates")
+    depth_buckets = nonnegative_count_mapping(
+        context.get("depth_buckets"), "Decode context depth_buckets"
+    )
+    if sum(depth_buckets.values()) != max_samples:
+        errors.append("Decode context depth buckets do not account for every sample")
+    if depth_buckets.get("zero", 0) <= 0:
+        errors.append("Decode context coverage has no prompt-boundary samples")
+    if sum(depth_buckets.get(name, 0) for name in ("1_31", "32_127", "128_plus")) <= 0:
+        errors.append("Decode context coverage has no nonzero history suffix")
+    if sum(depth_buckets.get(name, 0) for name in ("32_127", "128_plus")) <= 0:
+        errors.append("Decode context coverage has no suffix of at least 32 tokens")
+    token_sources = nonnegative_count_mapping(
+        context.get("token_sources"), "Decode context token_sources"
+    )
+    if sum(token_sources.values()) != max_samples:
+        errors.append("Decode context token sources do not account for every sample")
+    for metric in ("suffix_len", "past_len"):
+        values = context.get(metric)
+        if not isinstance(values, dict) or values.get("min") is None or values.get("max") is None:
+            errors.append(f"Decode context coverage lacks {metric} range")
+    if profile.get("decode_context_policy") != context.get("policy"):
+        errors.append("scale manifest and coverage Decode context policies differ")
 if manifest.get("replay_seed") != replay_seed:
     errors.append("scale manifest replay_seed does not match the requested run")
 generated_path = Path(manifest.get("generated_manifest", ""))
