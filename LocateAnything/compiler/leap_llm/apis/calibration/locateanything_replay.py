@@ -632,6 +632,29 @@ def apply_scale_manifest(
     except KeyError as exc:
         raise ValueError(f"scale manifest has no {group}/{sample_count} snapshot") from exc
     modules = dict(model.named_modules())
+
+    required_scale_modules: dict[str, str] = {}
+    for name, module in modules.items():
+        if hasattr(module, "absmax"):
+            # Disabled fake-quant modules do not consume a calibrated range in
+            # their build path and therefore do not require a manifest entry.
+            if getattr(module, "quantized", True):
+                required_scale_modules[name] = "ConstFakeQuant"
+        elif all(
+            hasattr(module, attribute)
+            for attribute in (
+                "scale", "summax_hidden", "weight", "i_scale", "i_scale_pow"
+            )
+        ):
+            required_scale_modules[name] = "RMSNorm"
+
+    missing_scales = sorted(set(required_scale_modules) - set(snapshot))
+    if missing_scales:
+        raise ValueError(
+            "scale manifest is missing current quantized modules: "
+            f"{missing_scales[:3]}"
+        )
+
     missing_modules = sorted(set(snapshot) - set(modules))
     retired_attention_points = [
         name
@@ -652,7 +675,23 @@ def apply_scale_manifest(
         if name not in modules:
             continue
         module = modules[name]
-        if value.get("kind") == "ConstFakeQuant":
+        expected_kind = required_scale_modules.get(name)
+        manifest_kind = value.get("kind")
+        if expected_kind is None:
+            raise ValueError(
+                f"scale manifest references non-quantized module: {name}"
+            )
+        if expected_kind == "ConstFakeQuant" and manifest_kind != "ConstFakeQuant":
+            raise ValueError(
+                f"scale manifest kind mismatch for {name}: "
+                f"expected ConstFakeQuant, got {manifest_kind!r}"
+            )
+        if expected_kind == "RMSNorm" and manifest_kind == "ConstFakeQuant":
+            raise ValueError(
+                f"scale manifest kind mismatch for {name}: "
+                f"expected RMSNorm-compatible scale, got ConstFakeQuant"
+            )
+        if expected_kind == "ConstFakeQuant":
             absmax = float(value["absmax"])
             if absmax <= 0:
                 raise ValueError(f"invalid zero absmax for {name}")

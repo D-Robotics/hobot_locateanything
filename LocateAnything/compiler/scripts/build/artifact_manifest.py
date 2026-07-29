@@ -106,7 +106,11 @@ def checkpoint_identity(model_path: Path) -> dict[str, Any]:
     for path in sorted(model_path.glob("*.safetensors")):
         stat = path.stat()
         weights.append(
-            {"name": path.name, "bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+            {
+                "name": path.name,
+                "bytes": stat.st_size,
+                "sha256": sha256_file(path),
+            }
         )
     if not weights:
         raise RuntimeError(f"checkpoint has no safetensors weights: {model_path}")

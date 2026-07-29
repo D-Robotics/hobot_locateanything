@@ -15,11 +15,19 @@ IMAGE_WIDTH=${IMAGE_WIDTH:-672}
 IMAGE_HEIGHT=${IMAGE_HEIGHT:-672}
 RESIZE_MODE=${RESIZE_MODE:-letterbox}
 LETTERBOX_FILL=${LETTERBOX_FILL:-128}
+PATCH_SIZE=${PATCH_SIZE:-14}
+MERGE_SIZE=${MERGE_SIZE:-2}
+HIDDEN_SIZE=${HIDDEN_SIZE:-2048}
 PREFILL_LIMIT=${PREFILL_LIMIT:-1024}
 SLOW_SAMPLES=${SLOW_SAMPLES:-128}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-1024}
 SEED=${SEED:-20260729}
 RESUME=${RESUME:-0}
+
+[[ "$DTYPE" == "bfloat16" ]] || {
+  echo "release Prepare requires DTYPE=bfloat16; got $DTYPE"
+  exit 1
+}
 
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || {
   echo "RESUME must be 0 or 1"
@@ -153,6 +161,9 @@ value = {
     "image_height": int("${IMAGE_HEIGHT}"),
     "resize_mode": "${RESIZE_MODE}",
     "letterbox_fill": int("${LETTERBOX_FILL}"),
+    "patch_size": int("${PATCH_SIZE}"),
+    "merge_size": int("${MERGE_SIZE}"),
+    "hidden_size": int("${HIDDEN_SIZE}"),
     "prefill_limit": int("${PREFILL_LIMIT}"),
     "slow_samples": int("${SLOW_SAMPLES}"),
     "max_new_tokens": int("${MAX_NEW_TOKENS}"),
@@ -170,9 +181,12 @@ PY
 environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
 set +e
 "$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
+  --profile prepare \
   --model-path "$MODEL_PATH" \
   --selected-jsonl "$SELECTED_JSONL" \
   --upstream-repo "$UPSTREAM_REPO" \
+  --resource-path "$OUTPUT_DIR" \
+  --device "$DEVICE" \
   --require-cuda \
   --required-module cv2 \
   --required-module decord \
@@ -209,6 +223,9 @@ PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$PREPARE_SCRIPT" generate \
   --image-height "$IMAGE_HEIGHT" \
   --resize-mode "$RESIZE_MODE" \
   --letterbox-fill "$LETTERBOX_FILL" \
+  --patch-size "$PATCH_SIZE" \
+  --merge-size "$MERGE_SIZE" \
+  --hidden-size "$HIDDEN_SIZE" \
   --prefill-limit "$PREFILL_LIMIT" \
   --max-new-tokens "$MAX_NEW_TOKENS" \
   --slow-samples "$SLOW_SAMPLES" \

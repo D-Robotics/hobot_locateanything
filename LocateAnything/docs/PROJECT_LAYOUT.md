@@ -11,7 +11,7 @@ LocateAnything/
 │   ├── config.yaml            # fixed release profile and workspace paths
 │   ├── leap_llm/
 │   └── scripts/
-│       ├── calibration/       # tensor materialization and observer replay
+│       ├── calibration/       # calibration tensor preparation and activation statistics
 │       ├── build/             # internal Vision and Language build wrappers
 │       ├── validate/          # contract, pipeline, and task validation
 │       └── common/            # shared compiler-side utilities
@@ -47,7 +47,7 @@ maintainers, but they are not separate release build entrypoints.
 
 Every executable derives the product root from its own file location. Generated
 state defaults to `workspace/`; deployment environments may override locations
-with `LA_WORKSPACE`, `LA_MODEL_ROOT`, `LA_ARTIFACT_ROOT`,
+with `LA_WORKSPACE`, `LA_MODEL_ROOT`, `LA_BUILD_ROOT`, `LA_ARTIFACT_ROOT`,
 `LA_CALIBRATION_ROOT`, `LA_EVALUATION_ROOT`, and `LA_RUN_ROOT`. A packaged
 compiler or deployment tree may be selected with `LA_COMPILER_ROOT` or
 `LA_DEPLOY_ROOT`; `LA_COMPILER_SCRIPTS_ROOT` is available only when the compiler
@@ -56,7 +56,9 @@ select host-specific checkpoint and upstream source locations. Source paths
 remain product-relative and do not depend on `$HOME`, a user name, or the name
 of the outer checkout.
 
-Compiler candidates are written to `workspace/builds/`. Only artifacts that
+Compiler candidates are written to `workspace/builds/` and may be relocated
+with `LA_BUILD_ROOT`. Only artifacts that
 have passed the release checks are promoted to `workspace/artifacts/release/`
-for deployment. Keeping these roots separate prevents an interrupted HBDK build
-from replacing the model used by the board runtime.
+for deployment; `LA_ARTIFACT_ROOT` relocates that published-artifact tree.
+Keeping these roots separate prevents an interrupted HBDK build from replacing
+the model used by the board runtime.

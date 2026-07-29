@@ -24,7 +24,7 @@ def test_default_quotas_match_the_1200_record_release_contract():
     }
 
 
-def test_explicit_v3_quotas():
+def test_explicit_custom_quotas():
     values = [
         "detection=208", "gui=130", "referring=83",
         "ocr=65", "layout=65", "pointing=50",
@@ -33,6 +33,15 @@ def test_explicit_v3_quotas():
         "detection": 208, "gui": 130, "referring": 83,
         "ocr": 65, "layout": 65, "pointing": 50,
     }
+
+
+def test_generated_reports_use_the_current_pipeline_terms():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "# Source Bundle QA Report" in source
+    assert "# Calibration Bundle Artifact Explanations" in source
+    assert "512/1200 的 Scale 收敛差异" in source
+    assert "G3" not in source
+    assert "observer convergence" not in source
 
 
 def test_explicit_quotas_require_all_domains():

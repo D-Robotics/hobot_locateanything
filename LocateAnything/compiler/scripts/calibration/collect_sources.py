@@ -440,8 +440,8 @@ def doclaynet_label(category_id: Any) -> str:
     DocLayNet ships COCO-style 1-indexed ``category_id`` values (1..11),
     while ``DOCLAYNET_CATEGORIES`` is a 0-indexed Python list (0..10).
     Without this offset, raw id 6 ("page header" per the DocLayNet spec) would
-    be mislabelled as "picture" (index 6 of the 0-indexed list). G1 confirmed
-    the local train shard uses 1-indexed ids (row0 category_id[0]=6 -> "page
+    be mislabelled as "picture" (index 6 of the 0-indexed list). The local
+    source audit confirmed 1-indexed ids (row0 category_id[0]=6 -> "page
     header"), so we subtract 1 before indexing. Unknown ids fall back to a
     generic label.
     """
@@ -1540,8 +1540,8 @@ def _load_local_detection(
     Returns (rows, inventory) where each row is a dict with:
       image_path, image_name, boxes, image_width, image_height.
 
-    The SKU110K_fixed release ships a headerless CSV (verified by G1 audit and
-    by re-reading ``annotations/readme.txt``): columns are
+    The SKU110K_fixed release ships a headerless CSV, as confirmed by the local
+    source audit and ``annotations/readme.txt``. Its columns are
     ``image_name,x1,y1,x2,y2,class,image_width,image_height``. We detect the
     headerless form by checking whether the first cell parses as a JPEG
     filename (``<split>_<n>.jpg``); if it does, the file is headerless and we

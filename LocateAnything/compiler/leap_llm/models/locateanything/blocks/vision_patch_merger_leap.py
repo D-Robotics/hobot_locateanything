@@ -1,4 +1,4 @@
-"""MoonViT patch merger + mlp1 projector — leap DSL (M3-α).
+"""MoonViT patch merger and mlp1 projector implemented with the Leap DSL.
 
 Structure:
   Input : (1, N=1024, hidden=1152)   post-encoder tokens
@@ -29,7 +29,7 @@ class LocateAnythingVisionPatchMerger(Module):
     def __init__(self, vit_hidden: int, llm_hidden: int,
                  grid_h: int = 32, grid_w: int = 32,
                  merge_kernel: tuple[int, int] = (2, 2),
-                 use_plugin: bool = False) -> None:
+                 use_plugin: bool = False, w_bits: int = 8) -> None:
         super().__init__()
         self.use_plugin = use_plugin
         self.vit_hidden = vit_hidden
@@ -56,9 +56,13 @@ class LocateAnythingVisionPatchMerger(Module):
             # mlp1.0.weight (LN), mlp1.1.weight (Linear1), mlp1.3.weight (Linear2).
             self.mlp1 = nn.Sequential(
                 LayerNorm(self.merged_dim),
-                DynamicQuantLinear(self.merged_dim, llm_hidden, bias=True, w_bits=8),
+                DynamicQuantLinear(
+                    self.merged_dim, llm_hidden, bias=True, w_bits=w_bits
+                ),
                 nn.GELU(),
-                DynamicQuantLinear(llm_hidden, llm_hidden, bias=True, w_bits=8),
+                DynamicQuantLinear(
+                    llm_hidden, llm_hidden, bias=True, w_bits=w_bits
+                ),
             )
 
     def _merge_2x2_leap(self, x):

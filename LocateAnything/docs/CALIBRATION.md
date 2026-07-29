@@ -8,12 +8,12 @@ MoonViT features, structured coordinate tokens, long object lists, PBD windows,
 and AR fallback. Calibration data must represent those execution paths instead
 of reusing a generic VLM question-answering corpus by default.
 
-The active lifecycle is `source -> prepare -> calibrate -> build -> verify`.
-Source freezes the selected image, prompt, and target manifest. Prepare runs
-the original Float processor and model to materialize replay tensors.
-Calibrate replays those tensors through the OELLM models and freezes activation
-scales. Build consumes the frozen scale contract, and Verify checks data,
-numerical, artifact, and task-level evidence.
+The active lifecycle has four commands: `prepare -> calibrate -> build -> verify`.
+Their prerequisite is a frozen manifest of selected images, prompts, and
+targets. Prepare runs the original Float processor and model to materialize
+calibration tensors. Calibrate feeds those tensors through the OELLM models and
+freezes activation scales. Build consumes the frozen scale contract, and Verify
+checks data, numerical, artifact, and task-level evidence.
 
 The release build consumes the frozen Scale manifest and graph-coverage record
 produced by `compiler/quantize.py calibrate`. Merely passing a dataset path to a
@@ -210,7 +210,7 @@ remote streaming.
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
-conda activate locateanything
+conda activate oellm_clean
 
 python compiler/scripts/calibration/collect_sources.py \
   --output-dir workspace/calibration/la_sources \
@@ -256,7 +256,7 @@ tokenizer metadata but never loads the 3B weights, initializes CUDA, or runs
 model inference. A passing report is written beside the generated bundle as
 `prepare_preflight.json`.
 
-After the static gate passes, materialize the PyTorch replay tensors:
+After the static gate passes, materialize the PyTorch calibration tensors:
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -357,7 +357,7 @@ python compiler/quantize.py calibrate --component all \
   --max-samples 1200 --checkpoint-samples 512 --resume
 ```
 
-Use `--dry-run` to print resolved paths and commands without running observers.
+Use `--dry-run` to print resolved paths and commands without collecting activation statistics.
 A dry run is never recorded as a completed calibration.
 
 ## 8. Acceptance Gates

@@ -38,6 +38,7 @@ from leap_llm.models.locateanything.hidden_rotation import (
     load_hidden_rotation,
     rotate_language_to_hidden_domain,
 )
+from leap_llm.apis.model.state_dict_contract import load_state_dict_fail_closed
 
 
 def remap_language_state_dict(raw_sd: dict) -> dict:
@@ -184,25 +185,21 @@ class LocateAnythingLanguageApi:
         self._validate_weight_policy(announce=True)
 
         sd = load_language_state_dict(input_model_path)
-        # If tied, drop lm_head from remap (we'll copy embed weights instead).
+        # A tied lm_head is still a required model parameter. Materialize its
+        # checkpoint value from the embedding before the fail-closed load.
         if tc.tie_word_embeddings:
-            sd.pop("lm_head.weight", None)
-        missing, unexpected = self.text_model.load_state_dict(sd, strict=False)
-        # cache_cos/cache_sin are computed inside __init__ and marked
-        # persistent (present in state_dict): if the load misses/adds these
-        # we just filter them.
-        missing = [k for k in missing if k not in {"cache_cos", "cache_sin"}]
-        unexpected = [k for k in unexpected if k not in {"cache_cos", "cache_sin"}]
-        # Depending on the layer type of lm_head (Dynamic vs plain), the
-        # weight key can also appear here — filter and tie afterwards.
-        missing = [k for k in missing if not k.startswith("lm_head.")]
-
-        if unexpected:
-            print(f"  WARN unexpected: {unexpected[:3]}")
-        if missing:
-            print(f"  WARN missing (post-tie): {missing[:3]}")
-        else:
-            print("  load_state_dict: clean")
+            try:
+                sd["lm_head.weight"] = sd["embed_tokens.weight"]
+            except KeyError as exc:
+                raise RuntimeError(
+                    "language checkpoint has no embed_tokens.weight for tied lm_head"
+                ) from exc
+        load_state_dict_fail_closed(
+            self.text_model,
+            sd,
+            component="LocateAnything Language",
+        )
+        print("  load_state_dict: clean")
 
         if tc.tie_word_embeddings:
             self.text_model.tie_lm_head_to_embeddings()
@@ -283,14 +280,15 @@ class LocateAnythingLanguageApi:
         """
         llm_kwargs = llm_kwargs or {}
         self._validate_weight_policy()
-        if self.calibration_scale_manifest:
-            from leap_llm.apis.calibration.locateanything_replay import apply_scale_manifest
-            restored = apply_scale_manifest(
-                self.text_model, Path(self.calibration_scale_manifest), "language"
+        if not self.calibration_scale_manifest:
+            raise ValueError(
+                "LocateAnything Language BC export requires a release calibration scale manifest"
             )
-            print(f"[LocateAnythingLanguageApi] restored calibration: {restored}")
-        else:
-            print("WARN: no release calibration scale manifest was provided")
+        from leap_llm.apis.calibration.locateanything_replay import apply_scale_manifest
+        restored = apply_scale_manifest(
+            self.text_model, Path(self.calibration_scale_manifest), "language"
+        )
+        print(f"[LocateAnythingLanguageApi] restored calibration: {restored}")
         self.text_model.compile_mode(True)
         self.text_model = self.text_model.to("cpu", dtype=torch.float16)
         gc.collect()

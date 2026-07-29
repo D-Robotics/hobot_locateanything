@@ -1,4 +1,4 @@
-"""MoonViT attention — leap DSL version (M3-α).
+"""MoonViT attention implemented with the Leap DSL.
 
 Vendored & adapted from qwen2_5_vl/blocks/attention.py::Qwen2_5_VLVisionAttention
 with these MoonViT-specific simplifications:
@@ -103,19 +103,20 @@ class LocateAnythingVisionAttention(Module):
       dim = 1152, num_heads = 16 (so head_dim = 72)
     """
 
-    def __init__(self, dim: int, num_heads: int = 16, use_plugin: bool = False) -> None:
+    def __init__(self, dim: int, num_heads: int = 16, use_plugin: bool = False,
+                 w_bits: int = 8) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.dim = dim
         self.use_plugin = use_plugin
-        # bias=True — MoonViT checkpoint has wqkv/wo biases (verified during M2 P4).
+        # The MoonViT checkpoint includes wqkv/wo biases.
         if self.use_plugin:
             self.wqkv = nn.Linear(dim, dim * 3, bias=True)
             self.wo = nn.Linear(dim, dim, bias=True)
         else:
-            self.wqkv = DynamicQuantLinear(dim, dim * 3, bias=True, w_bits=8)
-            self.wo = DynamicQuantLinear(dim, dim, bias=True, w_bits=8)
+            self.wqkv = DynamicQuantLinear(dim, dim * 3, bias=True, w_bits=w_bits)
+            self.wo = DynamicQuantLinear(dim, dim, bias=True, w_bits=w_bits)
             self.qk_matmul = DynamicQuantMatmul()
             self.wv_matmul = DynamicQuantMatmul()
         self.q_mul_value = 1.0 / math.sqrt(self.head_dim)

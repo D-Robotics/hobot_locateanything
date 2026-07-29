@@ -21,6 +21,7 @@ class RepositoryPaths:
     deploy_root: Path
     calibration_root: Path
     evaluation_root: Path
+    build_root: Path
     artifact_root: Path
     run_root: Path
     model_root: Path
@@ -39,6 +40,7 @@ class RepositoryPaths:
             deploy_root=_path_env("LA_DEPLOY_ROOT", root / "deploy"),
             calibration_root=_path_env("LA_CALIBRATION_ROOT", workspace / "calibration"),
             evaluation_root=_path_env("LA_EVALUATION_ROOT", workspace / "evaluation"),
+            build_root=_path_env("LA_BUILD_ROOT", workspace / "builds"),
             artifact_root=_path_env("LA_ARTIFACT_ROOT", workspace / "artifacts"),
             run_root=_path_env("LA_RUN_ROOT", workspace / "logs"),
             model_root=_path_env("LA_MODEL_ROOT", workspace / "models"),

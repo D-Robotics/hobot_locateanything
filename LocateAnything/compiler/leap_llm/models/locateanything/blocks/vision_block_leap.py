@@ -1,4 +1,4 @@
-"""MoonViT encoder block — leap DSL (M3-α).
+"""MoonViT encoder block implemented with the Leap DSL.
 
 Structure: LN → attention → residual → LN → MLP2 (GELU-tanh) → residual.
 
@@ -34,15 +34,19 @@ class LocateAnythingVisionMLP2(Module):
     """
 
     def __init__(self, hidden_dim: int, mlp_dim: int, bias: bool = True,
-                 use_plugin: bool = False) -> None:
+                 use_plugin: bool = False, w_bits: int = 8) -> None:
         super().__init__()
         self.use_plugin = use_plugin
         if use_plugin:
             self.fc0 = nn.Linear(hidden_dim, mlp_dim, bias=bias)
             self.fc1 = nn.Linear(mlp_dim, hidden_dim, bias=bias)
         else:
-            self.fc0 = DynamicQuantLinear(hidden_dim, mlp_dim, bias=bias, w_bits=8)
-            self.fc1 = DynamicQuantLinear(mlp_dim, hidden_dim, bias=bias, w_bits=8)
+            self.fc0 = DynamicQuantLinear(
+                hidden_dim, mlp_dim, bias=bias, w_bits=w_bits
+            )
+            self.fc1 = DynamicQuantLinear(
+                mlp_dim, hidden_dim, bias=bias, w_bits=w_bits
+            )
 
     def build(self, x):
         x = self.fc0(x)
@@ -124,7 +128,7 @@ class LocateAnythingVisionBlock(Module):
       mlp.fc0.{weight,bias}, mlp.fc1.{weight,bias}
     """
 
-    def __init__(self, config, use_plugin: bool = False) -> None:
+    def __init__(self, config, use_plugin: bool = False, w_bits: int = 8) -> None:
         super().__init__()
         self.use_plugin = use_plugin
         self.hidden_size = config.hidden_size
@@ -141,17 +145,17 @@ class LocateAnythingVisionBlock(Module):
             self.wo = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
         else:
             self.wqkv = DynamicQuantLinear(
-                config.hidden_size, config.hidden_size * 3, bias=True, w_bits=8,
+                config.hidden_size, config.hidden_size * 3, bias=True, w_bits=w_bits,
             )
             self.wo = DynamicQuantLinear(
-                config.hidden_size, config.hidden_size, bias=True, w_bits=8,
+                config.hidden_size, config.hidden_size, bias=True, w_bits=w_bits,
             )
             self.qk_matmul = LocateAnythingDynamicQuantMatmul()
             self.wv_matmul = LocateAnythingCenteredValueWVMatmul()
 
         self.mlp = LocateAnythingVisionMLP2(
             config.hidden_size, config.intermediate_size,
-            bias=True, use_plugin=use_plugin,
+            bias=True, use_plugin=use_plugin, w_bits=w_bits,
         )
 
     # ------------------------------------------------------------------

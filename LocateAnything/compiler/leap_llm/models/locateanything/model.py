@@ -26,10 +26,9 @@ State-dict key layout mirrors the LocateAnything checkpoint exactly so
 that `torch.load` + `load_state_dict(strict=False)` works with only a
 minimal remap.
 
-This file is P4 of M2 — it does *not* yet emit leap DSL. That happens
-in the LocateAnythingApi.compile() path (P5), which walks these
-sub-modules and calls their PyTorch forwards inside the calibration
-pass, then calls leap.export_module on the traced graphs.
+This module defines the native PyTorch composition and does not emit Leap DSL.
+The compiler API walks these submodules during activation calibration and then
+exports the resulting static graphs.
 """
 
 from __future__ import annotations

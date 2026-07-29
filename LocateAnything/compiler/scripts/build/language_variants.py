@@ -30,6 +30,13 @@ FUSED_PBD_STAGES = tuple(f"decode_pbd_q{q_len}" for q_len in range(7, 13))
 FUSED_AR_STAGES = tuple(f"decode_ar_q{q_len}" for q_len in range(2, 6))
 FUSED_STAGES = FUSED_PBD_STAGES + FUSED_AR_STAGES
 KNOWN_STAGES = set(BASE_EXPECTED) | set(FUSED_STAGES)
+VOCAB_SIZE = 152681
+HIDDEN_SIZE = 2048
+NUM_LAYERS = 36
+CACHE_LEN = 4096
+NUM_KV_HEADS = 2
+HEAD_DIM = 128
+CACHE_TENSOR_COUNT = NUM_LAYERS * 2
 
 
 def expected_contract(name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -40,6 +47,103 @@ def expected_contract(name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if prefix not in {"decode_pbd_", "decode_ar_"}:
         raise ValueError(f"unsupported Language graph: {name}")
     return (1, q_len, 152681), (1, q_len, 2, 128)
+
+
+def query_length(name: str) -> int:
+    if name == "prefill":
+        return 1024
+    if name == "decode":
+        return 6
+    if name == "decode_ar":
+        return 1
+    if name not in KNOWN_STAGES:
+        raise ValueError(f"unsupported Language graph: {name}")
+    return int(name.rsplit("q", 1)[1])
+
+
+def _canonical_dtype(value: Any) -> str:
+    tensor_type = getattr(value, "type", None)
+    raw = getattr(tensor_type, "np_dtype", None)
+    if raw is None:
+        raise RuntimeError("tensor descriptor has no np_dtype")
+    text = str(raw).lower()
+    for dtype in (
+        "float16", "float32", "int8", "uint8", "int16", "int32", "int64"
+    ):
+        if dtype in text:
+            return dtype
+    raise RuntimeError(f"unsupported tensor dtype: {raw!r}")
+
+
+def _descriptor_contract(value: Any) -> tuple[tuple[int, ...], str]:
+    tensor_type = getattr(value, "type", None)
+    shape = tuple(getattr(tensor_type, "shape", ()))
+    if not shape or not all(isinstance(axis, int) and axis > 0 for axis in shape):
+        raise RuntimeError(f"tensor has non-static shape: {shape}")
+    return shape, _canonical_dtype(value)
+
+
+def expected_io_contract(
+    name: str,
+    *,
+    cache_dtype: str = "float32",
+) -> tuple[list[tuple[tuple[int, ...], str]], list[tuple[tuple[int, ...], str]]]:
+    q_len = query_length(name)
+    logits_shape, update_shape = expected_contract(name)
+    cache_shape = (1, CACHE_LEN, NUM_KV_HEADS, HEAD_DIM)
+    inputs = [
+        ((1, q_len, HIDDEN_SIZE), "float16"),
+        ((1, 1, q_len), "int32"),
+        ((1, q_len, CACHE_LEN), "float16"),
+        *[(cache_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
+    ]
+    outputs = [
+        (logits_shape, "float16"),
+        *[(update_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
+    ]
+    return inputs, outputs
+
+
+def validate_graph_contract(
+    function: Any,
+    name: str,
+    *,
+    cache_dtype: str = "float32",
+) -> None:
+    actual_name = str(function.name)
+    if actual_name != name:
+        raise RuntimeError(
+            f"Language graph name mismatch: expected {name}, got {actual_name}"
+        )
+    expected_inputs, expected_outputs = expected_io_contract(
+        name, cache_dtype=cache_dtype
+    )
+    if len(function.inputs) != len(expected_inputs):
+        raise RuntimeError(
+            f"{name} contract has {len(function.inputs)} inputs; "
+            f"expected {len(expected_inputs)}"
+        )
+    if len(function.outputs) != len(expected_outputs):
+        raise RuntimeError(
+            f"{name} contract has {len(function.outputs)} outputs; "
+            f"expected {len(expected_outputs)}"
+        )
+    for direction, actual, expected in (
+        ("input", function.inputs, expected_inputs),
+        ("output", function.outputs, expected_outputs),
+    ):
+        for index, (descriptor, expected_descriptor) in enumerate(
+            zip(actual, expected)
+        ):
+            try:
+                actual_descriptor = _descriptor_contract(descriptor)
+            except RuntimeError as exc:
+                raise RuntimeError(f"{name} {direction}[{index}]: {exc}") from exc
+            if actual_descriptor != expected_descriptor:
+                raise RuntimeError(
+                    f"{name} {direction}[{index}] mismatch: "
+                    f"got {actual_descriptor}, expected {expected_descriptor}"
+                )
 
 
 def heading(value: str) -> None:
@@ -114,19 +218,9 @@ def discover_bc(
             continue
         if name in discovered:
             raise RuntimeError(f"duplicate {name} BC: {discovered[name]} and {path}")
-        if len(function.inputs) != 75 or len(function.outputs) != 73:
-            raise RuntimeError(
-                f"{name} contract is {len(function.inputs)} inputs and "
-                f"{len(function.outputs)} outputs; expected 75 and 73"
-            )
+        validate_graph_contract(function, name)
         logits_shape = tuple(function.outputs[0].type.shape)
         cache_shape = tuple(function.outputs[1].type.shape)
-        expected_logits, expected_cache = expected_contract(name)
-        if logits_shape != expected_logits or cache_shape != expected_cache:
-            raise RuntimeError(
-                f"{name} output mismatch: logits={logits_shape}, "
-                f"cache={cache_shape}; expected {(expected_logits, expected_cache)}"
-            )
         discovered[name] = path.resolve()
         print(
             f"[PASS] {name}: logits={logits_shape} cache={cache_shape} "
@@ -200,7 +294,10 @@ def valid_function(path: Path, expected_name: str) -> bool:
     try:
         module = load(str(path))
         functions = list(module.functions)
-        return len(functions) == 1 and str(functions[0].name) == expected_name
+        if len(functions) != 1:
+            return False
+        validate_graph_contract(functions[0], expected_name, cache_dtype="float32")
+        return True
     except Exception:
         return False
 
@@ -221,6 +318,10 @@ def convert_stage(source: Path, destination: Path, name: str,
     if str(function.name) != name:
         raise RuntimeError(f"converted function is {function.name}, expected {name}")
     function.remove_io_op(["Dequantize", "Quantize"])
+    # remove_io_op removes boundary Quantize/Dequantize nodes but does not
+    # change the saved Converted BC interface: KV inputs and updates remain
+    # float32. HBDK lowers that boundary to int8 in the linked HBM.
+    validate_graph_contract(function, name, cache_dtype="float32")
     temporary = destination.with_name(destination.stem + ".partial.bc")
     save(converted, str(temporary))
     os.replace(temporary, destination)
@@ -245,6 +346,10 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
         return
     heading(f"COMPILE {name.upper()} CORE={core_num}")
     module = load(str(converted_bc))
+    functions = list(module.functions)
+    if len(functions) != 1:
+        raise RuntimeError(f"{converted_bc} contains {len(functions)} functions")
+    validate_graph_contract(functions[0], name, cache_dtype="float32")
     temporary = destination.with_name(destination.stem + ".partial.hbo")
     kwargs = {
         "march": args.march,
@@ -279,12 +384,7 @@ def hbm_contract_matches(path: Path, expected_names: list[str]) -> bool:
             return False
         for name in expected_names:
             graph = graphs[name]
-            if len(graph.inputs) != 75 or len(graph.outputs) != 73:
-                return False
-            logits_shape = tuple(graph.outputs[0].type.shape)
-            cache_shape = tuple(graph.outputs[1].type.shape)
-            if (logits_shape, cache_shape) != expected_contract(name):
-                return False
+            validate_graph_contract(graph, name, cache_dtype="int8")
         return True
     except Exception:
         return False

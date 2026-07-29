@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,16 +47,30 @@ def load_stage_module(monkeypatch, filename: str, module_name: str):
     return module
 
 
-def value(shape):
-    return SimpleNamespace(type=SimpleNamespace(shape=shape))
+def value(shape, dtype="float16"):
+    return SimpleNamespace(type=SimpleNamespace(shape=shape, np_dtype=dtype))
 
 
-def language_module(name: str, logits_shape: tuple[int, ...], cache_shape: tuple[int, ...]):
+def language_module(
+    name: str,
+    logits_shape: tuple[int, ...],
+    cache_shape: tuple[int, ...],
+    cache_dtype: str = "float32",
+):
+    query = cache_shape[1]
+    cache_input_shape = (1, 4096, 2, 128)
     function = SimpleNamespace(
         name=name,
-        inputs=[value((1,)) for _ in range(75)],
-        outputs=[value(logits_shape), value(cache_shape)]
-        + [value((1,)) for _ in range(71)],
+        inputs=[
+            value((1, query, 2048)),
+            value((1, 1, query), "int32"),
+            value((1, query, 4096)),
+            *[value(cache_input_shape, cache_dtype) for _ in range(72)],
+        ],
+        outputs=[
+            value(logits_shape),
+            *[value(cache_shape, cache_dtype) for _ in range(72)],
+        ],
     )
     return SimpleNamespace(functions=[function])
 
@@ -84,6 +101,40 @@ def test_language_bc_check_requires_all_13_release_graphs(tmp_path, monkeypatch)
     missing.unlink()
     with pytest.raises(RuntimeError, match="graph family is incomplete"):
         module.discover_bc(tmp_path, artifact_prefix=prefix, require_fused=True)
+
+
+def test_language_graph_contract_checks_last_kv_and_every_dtype(monkeypatch):
+    module = load_stage_module(
+        monkeypatch, "language_variants.py", "language_full_contract_test"
+    )
+    function = language_module(
+        "decode_pbd_q12", (1, 12, 152681), (1, 12, 2, 128)
+    ).functions[0]
+    module.validate_graph_contract(function, "decode_pbd_q12")
+
+    function.inputs[-1] = value((1, 4095, 2, 128), "float32")
+    with pytest.raises(RuntimeError, match=r"input\[74\] mismatch"):
+        module.validate_graph_contract(function, "decode_pbd_q12")
+
+    function = language_module(
+        "decode_pbd_q12", (1, 12, 152681), (1, 12, 2, 128)
+    ).functions[0]
+    function.outputs[-1] = value((1, 12, 2, 128), "float16")
+    with pytest.raises(RuntimeError, match=r"output\[72\] mismatch"):
+        module.validate_graph_contract(function, "decode_pbd_q12")
+
+    function = language_module(
+        "decode_pbd_q12", (1, 12, 152681), (1, 12, 2, 128)
+    ).functions[0]
+    function.inputs[1] = value((1, 1, 12), "int64")
+    with pytest.raises(RuntimeError, match=r"input\[1\] mismatch"):
+        module.validate_graph_contract(function, "decode_pbd_q12")
+
+    function = language_module(
+        "decode_pbd_q12", (1, 12, 152681), (1, 12, 2, 128), "int8"
+    ).functions[0]
+    with pytest.raises(RuntimeError, match=r"input\[3\] mismatch"):
+        module.validate_graph_contract(function, "decode_pbd_q12")
 
 
 def test_language_resume_invalidates_changed_bc_identity(tmp_path, monkeypatch):
@@ -121,19 +172,13 @@ def test_language_resume_skips_completed_converted_hbo_and_hbm(tmp_path, monkeyp
     for path in (converted, hbo, hbm):
         path.write_bytes(b"complete")
         module.write_digest(path)
-    module.load = lambda _path: SimpleNamespace(
-        functions=[SimpleNamespace(name="prefill")]
+    module.load = lambda _path: language_module(
+        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "float32"
     )
     module.Hbo = lambda _path: object()
-    hbm_graph = SimpleNamespace(
-        name="prefill",
-        inputs=[value((1,)) for _ in range(75)],
-        outputs=[
-            value((1, 1, 152681)),
-            value((1, 1024, 2, 128)),
-            *[value((1,)) for _ in range(71)],
-        ],
-    )
+    hbm_graph = language_module(
+        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "int8"
+    ).functions[0]
     module.Hbm = lambda _path: SimpleNamespace(graphs=[hbm_graph])
 
     class FailModel:
@@ -180,6 +225,42 @@ def test_vision_bc_check_enforces_release_shapes(tmp_path, monkeypatch):
         module.validate_visual_bc(bc)
 
 
+@pytest.mark.parametrize("side", ("input", "output"))
+def test_vision_bc_check_enforces_fp16_io(tmp_path, monkeypatch, side):
+    module = load_stage_module(
+        monkeypatch, "vision_stages.py", f"vision_dtype_{side}_test"
+    )
+    bc = tmp_path / "release.visual.bc"
+    bc.write_bytes(b"bc")
+    function = SimpleNamespace(
+        name="visual",
+        inputs=[value((1, 2304, 588))],
+        outputs=[value((1, 576, 2048))],
+    )
+    getattr(function, f"{side}s")[0] = value(
+        (1, 2304, 588) if side == "input" else (1, 576, 2048),
+        "float32",
+    )
+    module.load = lambda _path: SimpleNamespace(functions=[function])
+    with pytest.raises(RuntimeError, match="dtype mismatch"):
+        module.validate_visual_bc(bc)
+
+
+def test_vision_hbm_completion_rejects_non_fp16_io(tmp_path, monkeypatch):
+    module = load_stage_module(
+        monkeypatch, "vision_stages.py", "vision_hbm_dtype_test"
+    )
+    hbm = tmp_path / "release.hbm"
+    hbm.write_bytes(b"hbm")
+    graph = SimpleNamespace(
+        name="visual",
+        inputs=[value((1, 2304, 588), "float16")],
+        outputs=[value((1, 576, 2048), "float32")],
+    )
+    module.Hbm = lambda _path: SimpleNamespace(graphs=[graph])
+    assert module.hbm_contract_matches(hbm) is False
+
+
 def test_vision_resume_invalidates_changed_bc_identity(tmp_path, monkeypatch):
     module = load_stage_module(monkeypatch, "vision_stages.py", "vision_manifest_test")
     source = tmp_path / "release.visual.bc"
@@ -206,8 +287,8 @@ def test_resume_requires_matching_stage_digest(tmp_path, monkeypatch):
     )
     converted = tmp_path / "release.prefill_convert.bc"
     converted.write_bytes(b"converted")
-    module.load = lambda _path: SimpleNamespace(
-        functions=[SimpleNamespace(name="prefill")]
+    module.load = lambda _path: language_module(
+        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "float32"
     )
 
     assert module.valid_function(converted, "prefill") is False
@@ -256,7 +337,8 @@ def test_bc_provenance_rejects_changed_calibration(tmp_path):
     model.mkdir()
     (model / "config.json").write_text("{}\n", encoding="utf-8")
     (model / "model.safetensors.index.json").write_text("{}\n", encoding="utf-8")
-    (model / "model-00001-of-00001.safetensors").write_bytes(b"weights")
+    weight = model / "model-00001-of-00001.safetensors"
+    weight.write_bytes(b"weights")
     scale = tmp_path / "scales.json"
     scale.write_text('{"scale": 1}\n', encoding="utf-8")
     bc = tmp_path / "visual.bc"
@@ -283,6 +365,10 @@ def test_bc_provenance_rejects_changed_calibration(tmp_path):
         text=True,
     )
     assert written.returncode == 0, written.stderr
+    recorded = json.loads(manifest.read_text(encoding="utf-8"))
+    assert recorded["model"]["weights"][0]["sha256"] == hashlib.sha256(
+        b"weights"
+    ).hexdigest()
     checked = subprocess.run(
         [sys.executable, str(script), "check", *common],
         capture_output=True,
@@ -310,6 +396,18 @@ def test_bc_provenance_rejects_changed_calibration(tmp_path):
     assert "compiler_source" in stale_source.stdout
 
     source_file.write_text("VALUE = 1\n", encoding="utf-8")
+    weight_stat = weight.stat()
+    weight.write_bytes(b"changed")
+    os.utime(weight, ns=(weight_stat.st_atime_ns, weight_stat.st_mtime_ns))
+    stale_weight = subprocess.run(
+        [sys.executable, str(script), "check", *common],
+        capture_output=True,
+        text=True,
+    )
+    assert stale_weight.returncode == 1
+    assert "model" in stale_weight.stdout
+
+    weight.write_bytes(b"weights")
     bc.write_bytes(b"changed bc")
     stale_bc = subprocess.run(
         [sys.executable, str(script), "check", *common],

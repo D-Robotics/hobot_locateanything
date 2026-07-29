@@ -1,4 +1,4 @@
-"""MoonViT patch embed — leap DSL (M3-α).
+"""MoonViT patch embedding implemented with the Leap DSL.
 
 Compile-time design: input is already patchified into
     (1, N_patches, patch_size² * in_channels)  = (1, 2304, 588)  for 672x672
@@ -38,7 +38,8 @@ class LocateAnythingVisionPatchEmbed(Module):
     """
 
     def __init__(self, hidden_size: int, patch_size: int = 14, in_channels: int = 3,
-                 num_patches: int = 1024, use_plugin: bool = False) -> None:
+                 num_patches: int = 1024, use_plugin: bool = False,
+                 w_bits: int = 8) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.patch_size = patch_size
@@ -50,7 +51,9 @@ class LocateAnythingVisionPatchEmbed(Module):
         if use_plugin:
             self.proj = nn.Linear(flat_dim, hidden_size, bias=True)
         else:
-            self.proj = DynamicQuantLinear(flat_dim, hidden_size, bias=True, w_bits=8)
+            self.proj = DynamicQuantLinear(
+                flat_dim, hidden_size, bias=True, w_bits=w_bits
+            )
 
         # Pre-interpolated pos_emb, baked in as buffer at model load time.
         self.register_buffer(

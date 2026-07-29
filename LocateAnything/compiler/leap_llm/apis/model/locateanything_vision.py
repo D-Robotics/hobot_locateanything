@@ -1,4 +1,4 @@
-"""LocateAnything vision-only compile Api (M3-α).
+"""LocateAnything MoonViT compile API.
 
 Mirrors locateanything_language.py but for the MoonViT vision tower.
 
@@ -19,6 +19,7 @@ from hbdk4.compiler import leap
 from safetensors import safe_open
 
 from leap_llm.nn.utils import standard_vit_name
+from leap_llm.nn.modules import DynamicQuantLinear
 
 from leap_llm.models.locateanything.config.locateanything_3b import (
     load_config_from_json,
@@ -28,6 +29,7 @@ from leap_llm.models.locateanything.hidden_rotation import (
     load_hidden_rotation,
     rotate_vision_output_to_hidden_domain,
 )
+from leap_llm.apis.model.state_dict_contract import load_state_dict_fail_closed
 
 
 def remap_vision_state_dict(raw_sd: dict, num_patches: int, patch_size: int,
@@ -144,9 +146,13 @@ class LocateAnythingVisionApi:
         print(f"  image               = {image_height} x {image_width}")
 
         self.model = LocateAnythingVisionModel(
-            vc, la_cfg.text_config.hidden_size, use_plugin=False,
+            vc,
+            la_cfg.text_config.hidden_size,
+            use_plugin=False,
+            w_bits=self.w_bits,
         )
         self.vision_cfg = vc
+        self._validate_weight_policy(announce=True)
 
         # Load + remap state dict.
         num_patches = self.model.num_patches
@@ -158,7 +164,10 @@ class LocateAnythingVisionApi:
 
         # Extract raw pos_emb (H, W, dim) and bake into pos_emb_static via bicubic.
         raw_pos_emb = sd.pop("__raw_pos_emb", None)
-        assert raw_pos_emb is not None, "vision_model.patch_embed.pos_emb.weight missing"
+        if raw_pos_emb is None:
+            raise RuntimeError(
+                "vision checkpoint has no vision_model.patch_embed.pos_emb.weight"
+            )
 
         import torch.nn.functional as F
         # raw_pos_emb: (init_H=64, init_W=64, dim=1152)
@@ -167,19 +176,16 @@ class LocateAnythingVisionApi:
         pe = F.interpolate(pe, size=(self.model.grid_h, self.model.grid_w),
                             mode="bicubic")                     # (1, dim, gH, gW)
         pe = pe.squeeze(0).permute(1, 2, 0).reshape(num_patches, -1)  # (N, dim)
-        missing, unexpected = self.model.load_state_dict(sd, strict=False)
+        load_state_dict_fail_closed(
+            self.model,
+            sd,
+            component="LocateAnything Vision",
+        )
         # pos_emb_static is intentionally non-persistent, so load_state_dict
         # cannot populate it. Copy the interpolated checkpoint value directly.
         with torch.no_grad():
             self.model.patch_embed.pos_emb_static.copy_(pe.to(torch.float32))
-        # `rope_cos`, `rope_sin` are computed in __init__ and marked persistent
-        # → they will be reported as missing since they're not in the checkpoint.
-        missing = [k for k in missing if k not in {"rope_cos", "rope_sin"}]
-        if missing or unexpected:
-            print(f"  WARN missing: {missing[:5]}")
-            print(f"  WARN unexpected: {unexpected[:5]}")
-        else:
-            print("  load_state_dict: clean")
+        print("  load_state_dict: clean")
 
         if self.apply_hidden_rotation:
             rotation, source = load_hidden_rotation(
@@ -198,6 +204,31 @@ class LocateAnythingVisionApi:
             )
             print(f"  hidden rotation     = {source}")
 
+    def _validate_weight_policy(self, *, announce: bool = False) -> None:
+        linears = [
+            (name, module)
+            for name, module in self.model.named_modules()
+            if isinstance(module, DynamicQuantLinear)
+        ]
+        expected = 3 + self.vision_cfg.num_hidden_layers * 4
+        if len(linears) != expected:
+            raise RuntimeError(
+                "unexpected Vision DynamicQuantLinear count: "
+                f"expected {expected}, got {len(linears)}"
+            )
+        mismatched = [
+            name for name, module in linears if module.w_bits != self.w_bits
+        ]
+        if mismatched:
+            raise RuntimeError(
+                f"Vision weight policy mismatch: {mismatched[:3]}"
+            )
+        if announce:
+            print(
+                f"  weight policy        = {len(linears)} Vision Linear "
+                f"W{self.w_bits}"
+            )
+
     def compile(self, vit_kwargs: Optional[dict] = None,
                 llm_kwargs: Optional[dict] = None) -> None:
         """Compile the vision HBM.
@@ -205,14 +236,16 @@ class LocateAnythingVisionApi:
         `llm_kwargs` accepted but ignored (this API produces only the vision HBM).
         """
         vit_kwargs = vit_kwargs or {}
-        if self.calibration_scale_manifest:
-            from leap_llm.apis.calibration.locateanything_replay import apply_scale_manifest
-            restored = apply_scale_manifest(
-                self.model, Path(self.calibration_scale_manifest), "vision"
+        if not self.calibration_scale_manifest:
+            raise ValueError(
+                "LocateAnything Vision BC export requires a release calibration scale manifest"
             )
-            print(f"[LocateAnythingVisionApi] restored calibration: {restored}")
-        else:
-            print("WARN: no release calibration scale manifest was provided")
+        self._validate_weight_policy()
+        from leap_llm.apis.calibration.locateanything_replay import apply_scale_manifest
+        restored = apply_scale_manifest(
+            self.model, Path(self.calibration_scale_manifest), "vision"
+        )
+        print(f"[LocateAnythingVisionApi] restored calibration: {restored}")
         self.model.compile_mode(True)
         self.model = self.model.to("cpu", dtype=torch.float16)
         gc.collect()

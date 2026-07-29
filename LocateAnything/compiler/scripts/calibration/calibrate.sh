@@ -8,11 +8,13 @@ Run LocateAnything activation calibration.
 
 Required variables:
   GENERATED_JSONL  prepared calibration manifest
+  SELECTED_JSONL   frozen 1200-sample source manifest
+  UPSTREAM_REPO    frozen LocateAnything Float source tree
   OUTPUT_DIR       activation statistics output directory
 
 Release defaults:
   MODEL_PATH          workspace/models/LocateAnything-3B
-  STAGE               all
+  CALIBRATION_COMPONENT  all
   MAX_SAMPLES         1200
   CHECKPOINT_SAMPLES  512
   CHUNK_SIZE          1024
@@ -31,13 +33,15 @@ REPO_ROOT=${REPO_ROOT:-"$(cd "$(dirname "$0")/../../.." && pwd)"}
 PYTHON_BIN=${PYTHON_BIN:-python3}
 REPLAY_SCRIPT=${REPLAY_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/calibrate.py"}
 GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration manifest}
+SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the frozen selected manifest}
+UPSTREAM_REPO=${UPSTREAM_REPO:?set UPSTREAM_REPO to the LocateAnything Float source tree}
 MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/workspace/models/LocateAnything-3B"}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation calibration output directory}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-float16}
 CHUNK_SIZE=${CHUNK_SIZE:-1024}
 CACHE_LEN=${CACHE_LEN:-4096}
-STAGE=${STAGE:-all}
+CALIBRATION_COMPONENT=${CALIBRATION_COMPONENT:-all}
 LM_HEAD_W_BITS=${LM_HEAD_W_BITS:-8}
 REPLAY_SEED=${REPLAY_SEED:-20260729}
 MAX_SAMPLES=${MAX_SAMPLES:-1200}
@@ -45,6 +49,17 @@ CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:-512}
 IMAGE_TOKEN_ID=${IMAGE_TOKEN_ID:-151665}
 HIDDEN_ROTATION_PATH=${HIDDEN_ROTATION_PATH:-}
 PREFLIGHT_ONLY=${PREFLIGHT_ONLY:-0}
+RESUME=${RESUME:-0}
+
+[[ "$DTYPE" == "float16" ]] || {
+  echo "release calibration requires DTYPE=float16; got $DTYPE"
+  exit 1
+}
+
+[[ "$RESUME" == "0" || "$RESUME" == "1" ]] || {
+  echo "RESUME must be 0 or 1"
+  exit 1
+}
 
 mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/workspace/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_calibrate"}
@@ -53,11 +68,13 @@ EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.launcher.log"}
+ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/calibration_environment.json"}
+ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 STARTED_AT=$(date --iso-8601=seconds)
 mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"
 
 if [[ "${DETACH:-0}" == "1" ]]; then
-  setsid nohup env DETACH=0 bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
+  setsid nohup env DETACH=0 RESUME="$RESUME" bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
   printf '%s\n' "$child_pid" > "$PID_PATH"
   echo "[calibrate] detached_pid=$child_pid"
@@ -87,16 +104,17 @@ write_exit_record() {
 }
 
 write_initial_metadata() {
-  "$PYTHON_BIN" - "$META_PATH" "$STARTED_AT" "$GENERATED_JSONL" "$MODEL_PATH" \
+  "$PYTHON_BIN" - "$META_PATH" "$STARTED_AT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
+    "$UPSTREAM_REPO" "$MODEL_PATH" \
     "$OUTPUT_DIR" "$REPLAY_SCRIPT" "$DEVICE" "$DTYPE" "$CHUNK_SIZE" "$CACHE_LEN" \
-    "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$STAGE" \
+    "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
     "$LM_HEAD_W_BITS" "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" "$LOG_PATH" \
     "$PREFLIGHT_ONLY" <<'PY'
 import json, os, socket, sys
 from pathlib import Path
 
-(path, started_at, generated, model, output, replay, device, dtype, chunk, cache,
- max_samples, checkpoint, image_token, stage, lm_head_w_bits, replay_seed,
+(path, started_at, generated, selected, upstream, model, output, replay, device, dtype, chunk, cache,
+ max_samples, checkpoint, image_token, component, lm_head_w_bits, replay_seed,
  rotation, log_path, preflight_only) = sys.argv[1:]
 language_stages = [
     "prefill",
@@ -104,20 +122,22 @@ language_stages = [
     *(f"ar_q{q_len}" for q_len in range(1, 6)),
 ]
 expected_graph_paths = []
-if stage in {"all", "vision"}:
+if component in {"all", "vision"}:
     expected_graph_paths.append("vision")
-if stage in {"all", "language"}:
+if component in {"all", "language"}:
     expected_graph_paths.extend(language_stages)
 value = {
     "schema_version": 1,
     "phase": "calibrate",
-    "component": stage,
+    "component": component,
     "status": "running",
     "execution_mode": "preflight_only" if preflight_only == "1" else "replay",
     "started_at": started_at,
     "hostname": socket.gethostname(),
     "wrapper_pid": os.getppid(),
     "generated_jsonl": generated,
+    "selected_jsonl": selected,
+    "upstream_repo": upstream,
     "model_path": model,
     "output_dir": output,
     "replay_script": replay,
@@ -199,22 +219,52 @@ trap 'cancel_job SIGHUP 129' HUP
 write_exit_record running
 write_initial_metadata
 
-echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
-echo "[calibrate] output=$OUTPUT_DIR stage=$STAGE device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES lm_head_w_bits=$LM_HEAD_W_BITS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
+environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
+set +e
+"$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
+  --profile calibrate \
+  --model-path "$MODEL_PATH" \
+  --selected-jsonl "$GENERATED_JSONL" \
+  --resource-path "$OUTPUT_DIR" \
+  --device "$DEVICE" \
+  --require-cuda \
+  --required-module hbdk4.compiler \
+  --required-module leap_llm \
+  --required-module numpy \
+  --required-module PIL \
+  > "$environment_temporary"
+environment_status=$?
+set -e
+mv -f "$environment_temporary" "$ENVIRONMENT_PATH"
+if [[ "$environment_status" -ne 0 ]]; then
+  echo "[calibrate] environment gate failed exit_code=$environment_status" | tee -a "$LOG_PATH"
+  exit "$environment_status"
+fi
 
-"$PYTHON_BIN" - "$REPLAY_SCRIPT" "$GENERATED_JSONL" "$MODEL_PATH" \
-  "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$STAGE" "$LM_HEAD_W_BITS" \
+echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
+echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES lm_head_w_bits=$LM_HEAD_W_BITS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
+
+"$PYTHON_BIN" - "$REPLAY_SCRIPT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
+  "$UPSTREAM_REPO" "$MODEL_PATH" \
+  "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$CALIBRATION_COMPONENT" "$LM_HEAD_W_BITS" \
   "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" 2>&1 <<'PY' | tee -a "$LOG_PATH"
 import sys
 from pathlib import Path
 
-replay, manifest, model, max_samples, checkpoint, stage, lm_head_w_bits, replay_seed, rotation = sys.argv[1:]
+(
+    replay, manifest, selected, upstream, model, max_samples, checkpoint,
+    component, lm_head_w_bits, replay_seed, rotation,
+) = sys.argv[1:]
 max_samples, checkpoint = int(max_samples), int(checkpoint)
 errors = []
 if not Path(replay).is_file():
     errors.append(f"replay script is not a file: {replay}")
 if not Path(manifest).is_file():
     errors.append(f"generated manifest is not a file: {manifest}")
+if not Path(selected).is_file():
+    errors.append(f"selected manifest is not a file: {selected}")
+if not Path(upstream).is_dir():
+    errors.append(f"upstream source is not a directory: {upstream}")
 if not Path(model).is_dir():
     errors.append(f"model path is not a directory: {model}")
 if rotation and not Path(rotation).is_file():
@@ -223,34 +273,46 @@ if max_samples <= 0:
     errors.append("MAX_SAMPLES must be positive")
 if checkpoint <= 0 or checkpoint >= max_samples:
     errors.append("CHECKPOINT_SAMPLES must be positive and smaller than MAX_SAMPLES")
-if stage not in {"all", "vision", "language"}:
-    errors.append(f"STAGE must be all, vision, or language; got {stage}")
-if int(lm_head_w_bits) not in {4, 8}:
-    errors.append(f"LM_HEAD_W_BITS must be 4 or 8; got {lm_head_w_bits}")
+if max_samples != 1200 or checkpoint != 512:
+    errors.append("release calibration requires MAX_SAMPLES=1200 and CHECKPOINT_SAMPLES=512")
+if component not in {"all", "vision", "language"}:
+    errors.append(
+        "CALIBRATION_COMPONENT must be all, vision, or language; "
+        f"got {component}"
+    )
+if int(lm_head_w_bits) != 8:
+    errors.append(f"release calibration requires LM_HEAD_W_BITS=8; got {lm_head_w_bits}")
 if int(replay_seed) < 0:
     errors.append(f"REPLAY_SEED must be non-negative; got {replay_seed}")
 if Path(manifest).is_file():
     with Path(manifest).open("r", encoding="utf-8") as handle:
         record_count = sum(bool(line.strip()) for line in handle)
-    if record_count < max_samples:
-        errors.append(f"manifest has {record_count} records, fewer than MAX_SAMPLES={max_samples}")
+    if record_count != max_samples:
+        errors.append(f"generated manifest has {record_count} records, expected {max_samples}")
+if Path(selected).is_file():
+    with Path(selected).open("r", encoding="utf-8") as handle:
+        selected_count = sum(bool(line.strip()) for line in handle)
+    if selected_count != max_samples:
+        errors.append(f"selected manifest has {selected_count} records, expected {max_samples}")
 if errors:
     raise SystemExit("calibration preflight failed:\n- " + "\n- ".join(errors))
 print(f"[calibration preflight] passed: records>={max_samples}, checkpoint={checkpoint}", flush=True)
 PY
 
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
-  echo "[calibrate] preflight-only; activation replay was not started" | tee -a "$LOG_PATH"
+  echo "[calibrate] preflight-only; activation statistics collection was not started" | tee -a "$LOG_PATH"
   exit 0
 fi
 
 replay_args=(
   --generated-jsonl "$GENERATED_JSONL"
+  --selected-jsonl "$SELECTED_JSONL"
+  --upstream-repo "$UPSTREAM_REPO"
   --model-path "$MODEL_PATH"
   --output-dir "$OUTPUT_DIR"
   --device "$DEVICE"
   --dtype "$DTYPE"
-  --stage "$STAGE"
+  --component "$CALIBRATION_COMPONENT"
   --chunk-size "$CHUNK_SIZE"
   --cache-len "$CACHE_LEN"
   --lm-head-w-bits "$LM_HEAD_W_BITS"
@@ -261,6 +323,9 @@ replay_args=(
 )
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   replay_args+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
+fi
+if [[ "$RESUME" == "1" ]]; then
+  replay_args+=(--resume)
 fi
 
 PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$REPLAY_SCRIPT" "${replay_args[@]}" \
@@ -277,14 +342,14 @@ if [[ "$replay_status" -ne 0 ]]; then
 fi
 
 # A zero replay exit is accepted only when all durable calibration evidence agrees.
-"$PYTHON_BIN" - "$OUTPUT_DIR" "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$STAGE" \
+"$PYTHON_BIN" - "$OUTPUT_DIR" "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$CALIBRATION_COMPONENT" \
   "$LM_HEAD_W_BITS" "$REPLAY_SEED" 2>&1 <<'PY' | tee -a "$LOG_PATH"
 import hashlib, json, sys
 from pathlib import Path
 
 output = Path(sys.argv[1])
 max_samples, checkpoint = map(int, sys.argv[2:4])
-stage = sys.argv[4]
+component = sys.argv[4]
 lm_head_w_bits = int(sys.argv[5])
 replay_seed = int(sys.argv[6])
 coverage_path = output / "calibration_graph_coverage.json"
@@ -310,9 +375,9 @@ language_stages = [
     *(f"ar_q{q_len}" for q_len in range(1, 6)),
 ]
 expected_stages = []
-if stage in {"all", "vision"}:
+if component in {"all", "vision"}:
     expected_stages.append("vision")
-if stage in {"all", "language"}:
+if component in {"all", "language"}:
     expected_stages.extend(language_stages)
 for graph_stage in expected_stages:
     if counts.get(graph_stage) != max_samples:
@@ -330,9 +395,11 @@ if audit_passed is not True:
 if manifest.get("sample_count") != max_samples or manifest.get("checkpoint_samples") != checkpoint:
     errors.append("scale manifest sample/checkpoint counts do not match the requested run")
 profile = manifest.get("profile", {})
-if profile.get("stage") != stage:
-    errors.append(f"scale manifest stage={profile.get('stage')} expected {stage}")
-if stage in {"all", "language"} and profile.get("language_lm_head_weight_bits") != lm_head_w_bits:
+if profile.get("component") != component:
+    errors.append(
+        f"scale manifest component={profile.get('component')} expected {component}"
+    )
+if component in {"all", "language"} and profile.get("language_lm_head_weight_bits") != lm_head_w_bits:
     errors.append("scale manifest lm_head weight bits do not match the requested run")
 if manifest.get("replay_seed") != replay_seed:
     errors.append("scale manifest replay_seed does not match the requested run")
@@ -351,8 +418,8 @@ if errors:
     raise SystemExit("calibration postflight failed:\n- " + "\n- ".join(errors))
 print(
     f"[calibration postflight] passed: samples={max_samples}, "
-    f"component={stage}, stages={len(expected_stages)}, "
-    f"checkpoint={checkpoint}, observers=passed",
+    f"component={component}, stages={len(expected_stages)}, "
+    f"checkpoint={checkpoint}, activation_statistics=passed",
     flush=True,
 )
 PY

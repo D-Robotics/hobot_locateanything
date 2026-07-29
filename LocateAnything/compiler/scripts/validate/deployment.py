@@ -7,9 +7,28 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from compiler.scripts.common.identity import (  # noqa: E402
+    artifact_identities,
+    checkpoint_identity,
+    file_identity,
+    identity_mismatches,
+    prepared_bundle_identity_errors,
+    read_json as read_identity_json,
+    release_checkpoint_errors,
+    sha256_json,
+    source_tree_identity,
+    tokenizer_identity,
+)
 
 TASKS = ("detection", "gui", "referring", "ocr", "layout", "pointing")
 RELEASE_SAMPLE_COUNT = 1200
@@ -154,12 +173,133 @@ def selected_manifest_sha_errors(
     return []
 
 
+def release_identity_errors(
+    *,
+    expected_samples: int | None,
+    selected_jsonl: Path,
+    generated_jsonl: Path,
+    scale_manifest_path: Path,
+    scale: dict[str, Any],
+    coverage: dict[str, Any],
+    generated_sha: str | None,
+    model_path: Path | None,
+    compiler_source_root: Path | None = None,
+    prepare_source_path: Path | None = None,
+    enforce_frozen_checkpoint: bool = True,
+) -> list[str]:
+    """Verify that release calibration artifacts still match every input."""
+    if expected_samples != RELEASE_SAMPLE_COUNT:
+        return []
+
+    errors: list[str] = []
+    if model_path is None:
+        errors.append("release validation requires --model-path")
+    else:
+        if enforce_frozen_checkpoint:
+            errors.extend(release_checkpoint_errors(model_path))
+        source_path = prepare_source_path or (
+            PROJECT_ROOT / "compiler" / "scripts" / "calibration" / "prepare.py"
+        )
+        errors.extend(
+            prepared_bundle_identity_errors(
+                selected_jsonl=selected_jsonl,
+                generated_jsonl=generated_jsonl,
+                model_path=model_path,
+                prepare_source_path=source_path,
+                expected_sample_count=RELEASE_SAMPLE_COUNT,
+            )
+        )
+    identity_path = scale_manifest_path.parent / "calibration_run_identity.json"
+    if not identity_path.is_file():
+        return ["release calibration_run_identity.json is missing"]
+
+    try:
+        calibration_identity = read_identity_json(identity_path)
+        run_identity = calibration_identity.get("identity")
+        if calibration_identity.get("status") != "complete" or not isinstance(
+            run_identity, dict
+        ):
+            return ["release calibration identity is not complete"]
+
+        run_identity_sha = sha256_json(run_identity)
+        if scale.get("calibration_run_identity_sha256") != run_identity_sha:
+            errors.append("scale manifest calibration identity SHA256 mismatch")
+        if coverage.get("calibration_run_identity_sha256") != run_identity_sha:
+            errors.append("coverage calibration identity SHA256 mismatch")
+        generated_identity = run_identity.get("generated_manifest", {})
+        if generated_identity.get("sha256") != generated_sha:
+            errors.append("calibration identity generated manifest mismatch")
+        if identity_mismatches(
+            run_identity.get("selected_manifest"), file_identity(selected_jsonl)
+        ):
+            errors.append("calibration identity selected manifest mismatch")
+
+        expected_artifacts = calibration_identity.get("artifacts")
+        durable = [
+            scale_manifest_path,
+            scale_manifest_path.parent / "calibration_graph_coverage.json",
+            scale_manifest_path.parent / "scale_convergence.json",
+            scale_manifest_path.parent
+            / f"scale_convergence_{RELEASE_CHECKPOINT_SAMPLES}_vs_{RELEASE_SAMPLE_COUNT}.json",
+        ]
+        if not isinstance(expected_artifacts, dict):
+            errors.append("release calibration identity lacks artifact catalog")
+        elif all(path.is_file() for path in durable):
+            mismatches = identity_mismatches(
+                expected_artifacts, artifact_identities(durable)
+            )
+            if mismatches:
+                errors.append(
+                    "release calibration artifact identity mismatch: "
+                    + ", ".join(mismatches[:8])
+                )
+        else:
+            errors.append("release calibration convergence artifacts are incomplete")
+
+        prepare_identity = generated_jsonl.parent / "prepare_run_identity.json"
+        generation_summary = generated_jsonl.parent / "generation_summary.json"
+        if not prepare_identity.is_file() or not generation_summary.is_file():
+            errors.append("release Prepare identity/summary is missing")
+        else:
+            if identity_mismatches(
+                run_identity.get("prepare_run_identity"),
+                file_identity(prepare_identity),
+            ):
+                errors.append("calibration identity Prepare input mismatch")
+            if identity_mismatches(
+                run_identity.get("generation_summary"),
+                file_identity(generation_summary),
+            ):
+                errors.append("calibration identity generation summary mismatch")
+
+        if model_path is not None:
+            resolved_model = model_path.resolve()
+            if identity_mismatches(
+                run_identity.get("checkpoint"), checkpoint_identity(resolved_model)
+            ):
+                errors.append("calibration identity checkpoint mismatch")
+            if identity_mismatches(
+                run_identity.get("tokenizer"), tokenizer_identity(resolved_model)
+            ):
+                errors.append("calibration identity tokenizer mismatch")
+
+        source_root = compiler_source_root or (PROJECT_ROOT / "compiler")
+        if identity_mismatches(
+            run_identity.get("compiler_source"), source_tree_identity(source_root)
+        ):
+            errors.append("calibration identity compiler source mismatch")
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        errors.append(f"cannot validate release calibration identity: {exc}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selected-jsonl", type=Path, required=True)
     parser.add_argument("--generated-jsonl", type=Path, required=True)
     parser.add_argument("--scale-manifest", type=Path, required=True)
     parser.add_argument("--coverage-json", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path)
     parser.add_argument(
         "--component", choices=tuple(COMPONENT_GROUPS), default="full"
     )
@@ -257,6 +397,16 @@ def main() -> int:
             generated_mode_counts.update(str(mode) for mode in prediction)
 
     generated_sha = sha256(args.generated_jsonl) if args.generated_jsonl.is_file() else None
+    errors.extend(release_identity_errors(
+        expected_samples=args.expected_samples,
+        selected_jsonl=args.selected_jsonl,
+        generated_jsonl=args.generated_jsonl,
+        scale_manifest_path=args.scale_manifest,
+        scale=scale,
+        coverage=coverage,
+        generated_sha=generated_sha,
+        model_path=args.model_path,
+    ))
     if scale:
         if scale.get("generated_manifest_sha256") != generated_sha:
             errors.append("calibration scale manifest generated SHA256 mismatch")

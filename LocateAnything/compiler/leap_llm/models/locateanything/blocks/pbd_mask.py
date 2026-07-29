@@ -9,7 +9,7 @@ The PBD decode HBM consumes a 4D attention_mask of shape
   (batch, 1, q_len, kv_len)
 where entries are additive (0.0 = allow, -inf = mask).
 
-Two variants matter for M2:
+Two mask variants are used by the static Language graphs:
 
   1. build_pbd_decode_mask
        q_len = block_size (typ. 6). kv_len = past + block_size.

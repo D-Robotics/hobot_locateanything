@@ -118,8 +118,150 @@ def run(monkeypatch, paths):
     return deployment.main()
 
 
+def release_identity_fixture(tmp_path):
+    generated_dir = tmp_path / "generated"
+    statistics_dir = tmp_path / "statistics"
+    model_dir = tmp_path / "model"
+    compiler_dir = tmp_path / "compiler"
+    for directory in (generated_dir, statistics_dir, model_dir, compiler_dir):
+        directory.mkdir()
+
+    selected = tmp_path / "selected.jsonl"
+    generated = generated_dir / "generated.jsonl"
+    selected.write_text("{}\n" * 1200, encoding="utf-8")
+    generated.write_text("{}\n" * 1200, encoding="utf-8")
+    prepare_identity = generated_dir / "prepare_run_identity.json"
+    generation_summary = generated_dir / "generation_summary.json"
+
+    shard_name = "model-00001-of-00001.safetensors"
+    (model_dir / shard_name).write_bytes(b"checkpoint")
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layer.weight": shard_name}}), encoding="utf-8"
+    )
+    (model_dir / "config.json").write_text("{}\n", encoding="utf-8")
+    (model_dir / "tokenizer.json").write_text("{}\n", encoding="utf-8")
+    (model_dir / "tokenizer_config.json").write_text("{}\n", encoding="utf-8")
+    (compiler_dir / "entry.py").write_text("VALUE = 1\n", encoding="utf-8")
+    prepare_source = compiler_dir / "scripts" / "calibration" / "prepare.py"
+    prepare_source.parent.mkdir(parents=True)
+    prepare_source.write_text("VALUE = 'prepare'\n", encoding="utf-8")
+
+    fixed_profile = {"image_width": 672, "prefill_limit": 1024}
+    generation_config = {"max_new_tokens": 1024}
+    prepare_identity.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "selected_manifest_sha256": deployment.sha256(selected),
+            "checkpoint": deployment.checkpoint_identity(model_dir),
+            "tokenizer": deployment.tokenizer_identity(model_dir),
+            "prepare_source": deployment.file_identity(
+                prepare_source, normalize_text=True
+            ),
+            "fixed_profile": fixed_profile,
+            "generation_config": generation_config,
+        }),
+        encoding="utf-8",
+    )
+    generation_summary.write_text(
+        json.dumps({
+            "selected_manifest_sha256": deployment.sha256(selected),
+            "generated_manifest": generated.name,
+            "generated_manifest_sha256": deployment.sha256(generated),
+            "sample_count": 1200,
+            "fixed_profile": fixed_profile,
+            "generation_config": generation_config,
+            "prepare_run_identity": prepare_identity.name,
+            "prepare_run_identity_sha256": deployment.sha256(prepare_identity),
+        }),
+        encoding="utf-8",
+    )
+
+    run_identity = {
+        "generated_manifest": deployment.file_identity(generated),
+        "selected_manifest": deployment.file_identity(selected),
+        "prepare_run_identity": deployment.file_identity(prepare_identity),
+        "generation_summary": deployment.file_identity(generation_summary),
+        "checkpoint": deployment.checkpoint_identity(model_dir),
+        "tokenizer": deployment.tokenizer_identity(model_dir),
+        "compiler_source": deployment.source_tree_identity(compiler_dir),
+    }
+    run_identity_sha = deployment.sha256_json(run_identity)
+    scale = {"calibration_run_identity_sha256": run_identity_sha}
+    coverage = {"calibration_run_identity_sha256": run_identity_sha}
+    scale_path = statistics_dir / "calibration_scale_manifest.json"
+    coverage_path = statistics_dir / "calibration_graph_coverage.json"
+    scale_path.write_text(json.dumps(scale), encoding="utf-8")
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    convergence = statistics_dir / "scale_convergence.json"
+    legacy_convergence = statistics_dir / "scale_convergence_512_vs_1200.json"
+    convergence.write_text("{}\n", encoding="utf-8")
+    legacy_convergence.write_text("{}\n", encoding="utf-8")
+    durable = [scale_path, coverage_path, convergence, legacy_convergence]
+    (statistics_dir / "calibration_run_identity.json").write_text(
+        json.dumps({
+            "status": "complete",
+            "identity": run_identity,
+            "artifacts": deployment.artifact_identities(durable),
+        }),
+        encoding="utf-8",
+    )
+    return {
+        "generated": generated,
+        "selected": selected,
+        "generated_sha": deployment.sha256(generated),
+        "scale": scale,
+        "scale_path": scale_path,
+        "coverage": coverage,
+        "model": model_dir,
+        "compiler": compiler_dir,
+        "prepare_source": prepare_source,
+        "shard": model_dir / shard_name,
+    }
+
+
+def release_identity_errors(state):
+    return deployment.release_identity_errors(
+        expected_samples=1200,
+        selected_jsonl=state["selected"],
+        generated_jsonl=state["generated"],
+        scale_manifest_path=state["scale_path"],
+        scale=state["scale"],
+        coverage=state["coverage"],
+        generated_sha=state["generated_sha"],
+        model_path=state["model"],
+        compiler_source_root=state["compiler"],
+        prepare_source_path=state["prepare_source"],
+        enforce_frozen_checkpoint=False,
+    )
+
+
 def test_preflight_accepts_consistent_chain(tmp_path, monkeypatch):
     assert run(monkeypatch, fixtures(tmp_path)) == 0
+
+
+def test_release_identity_accepts_unchanged_complete_chain(tmp_path):
+    assert release_identity_errors(release_identity_fixture(tmp_path)) == []
+
+
+def test_release_identity_rejects_modified_scale_artifact(tmp_path):
+    state = release_identity_fixture(tmp_path)
+    state["scale_path"].write_text('{"changed":true}\n', encoding="utf-8")
+    errors = release_identity_errors(state)
+    assert any("artifact identity mismatch" in error for error in errors)
+
+
+def test_release_identity_rejects_modified_checkpoint(tmp_path):
+    state = release_identity_fixture(tmp_path)
+    state["shard"].write_bytes(b"changed checkpoint")
+    errors = release_identity_errors(state)
+    assert "calibration identity checkpoint mismatch" in errors
+
+
+def test_release_identity_rejects_modified_compiler_source(tmp_path):
+    state = release_identity_fixture(tmp_path)
+    (state["compiler"] / "entry.py").write_text("VALUE = 2\n", encoding="utf-8")
+    errors = release_identity_errors(state)
+    assert "calibration identity compiler source mismatch" in errors
 
 
 def test_preflight_rejects_scale_from_other_generated_manifest(tmp_path, monkeypatch):

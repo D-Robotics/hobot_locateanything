@@ -56,6 +56,17 @@ EXPECTED_COCO_STRATUM_COUNTS = {"single": 200, "double": 220, "multi": 80}
 EXPECTED_SELECTED_MANIFEST_SHA256 = (
     "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
 )
+EXPECTED_CHECKPOINT_SHA256 = {
+    "model-00001-of-00002.safetensors": (
+        "923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58"
+    ),
+    "model-00002-of-00002.safetensors": (
+        "3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47"
+    ),
+}
+EXPECTED_CHECKPOINT_INDEX_SHA256 = (
+    "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
+)
 EXPECTED_LANGUAGE_GRAPHS = (
     "prefill", "decode", "decode_ar",
     *(f"decode_pbd_q{q_len}" for q_len in range(7, 13)),
@@ -64,6 +75,18 @@ EXPECTED_LANGUAGE_GRAPHS = (
 PATH_ENV_OVERRIDES = {
     "model": "LA_MODEL_PATH",
     "upstream_source": "LA_UPSTREAM_SOURCE",
+}
+PATH_ROOT_OVERRIDES = {
+    "model": ("LA_MODEL_ROOT", Path("workspace/models")),
+    "selected_jsonl": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "generated_dir": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "generated_jsonl": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "calibration_dir": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "scale_manifest": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "coverage_json": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
+    "build_root": ("LA_BUILD_ROOT", Path("workspace/builds")),
+    "log_root": ("LA_RUN_ROOT", Path("workspace/logs")),
+    "verification_root": ("LA_EVALUATION_ROOT", Path("workspace/evaluation")),
 }
 
 
@@ -112,7 +135,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
     required_paths = {
         "model", "upstream_source", "selected_jsonl", "generated_dir",
         "generated_jsonl", "calibration_dir", "scale_manifest", "coverage_json",
-        "artifact_root", "log_root", "verification_root",
+        "build_root", "log_root", "verification_root",
     }
     missing_paths = sorted(required_paths - paths.keys())
     if missing_paths:
@@ -125,6 +148,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
     spatial_merge = _positive_int(model.get("spatial_merge"), "model.spatial_merge")
     if image_width != 672 or image_height != 672:
         raise ConfigurationError("release image size is fixed at 672x672")
+    if patch_size != 14 or spatial_merge != 2:
+        raise ConfigurationError("release Vision contract requires patch_size=14, spatial_merge=2")
     if image_width % (patch_size * spatial_merge) or image_height % (patch_size * spatial_merge):
         raise ConfigurationError("image dimensions must align to patch_size * spatial_merge")
     if model.get("resize_mode") != "letterbox":
@@ -133,6 +158,12 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("release letterbox_fill must be 128")
     if model.get("hidden_size") != 2048 or model.get("vocab_size") != 152681:
         raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model contracts")
+    if model.get("checkpoint_sha256") != EXPECTED_CHECKPOINT_SHA256:
+        raise ConfigurationError("model.checkpoint_sha256 does not match the frozen checkpoint")
+    if model.get("checkpoint_index_sha256") != EXPECTED_CHECKPOINT_INDEX_SHA256:
+        raise ConfigurationError(
+            "model.checkpoint_index_sha256 does not match the frozen checkpoint index"
+        )
 
     calibration = _mapping(config.get("calibration"), "calibration")
     sample_count = _positive_int(calibration.get("sample_count"), "calibration.sample_count")
@@ -145,6 +176,12 @@ def validate_config(config: Mapping[str, Any]) -> None:
         )
     if calibration.get("max_new_tokens") != 1024:
         raise ConfigurationError("release calibration requires max_new_tokens=1024")
+    if calibration.get("image_token_id") != 151665:
+        raise ConfigurationError("release calibration requires image_token_id=151665")
+    if calibration.get("prepare_dtype") != "bfloat16":
+        raise ConfigurationError("release Prepare tensors require bfloat16")
+    if calibration.get("calibrate_dtype") != "float16":
+        raise ConfigurationError("release activation calibration requires float16")
     if calibration.get("task_counts") != EXPECTED_CALIBRATION_TASK_COUNTS:
         raise ConfigurationError("release calibration task_counts do not match the 1200-sample profile")
     if calibration.get("source_role_counts") != EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS:
@@ -195,6 +232,38 @@ def validate_config(config: Mapping[str, Any]) -> None:
             raise ConfigurationError(f"verification.{key} must be configured")
 
 
+def _resolve_config_path(
+    raw: Any,
+    *,
+    root_override: tuple[str, Path] | None = None,
+) -> Path:
+    expanded = Path(os.path.expandvars(os.path.expanduser(str(raw))))
+    if expanded.is_absolute():
+        return expanded.resolve()
+
+    if root_override is not None:
+        environment, anchor = root_override
+        configured_root = os.environ.get(environment)
+        if configured_root:
+            try:
+                suffix = expanded.relative_to(anchor)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    f"{environment} cannot rebase path outside {anchor}: {expanded}"
+                ) from exc
+            return (Path(configured_root).expanduser() / suffix).resolve()
+
+    workspace = os.environ.get("LA_WORKSPACE")
+    if workspace:
+        try:
+            suffix = expanded.relative_to("workspace")
+        except ValueError:
+            pass
+        else:
+            return (Path(workspace).expanduser() / suffix).resolve()
+    return (PROJECT_ROOT / expanded).resolve()
+
+
 def resolve_path(config: Mapping[str, Any], key: str, override: str | None = None) -> Path:
     environment = PATH_ENV_OVERRIDES.get(key)
     raw = override
@@ -202,8 +271,8 @@ def resolve_path(config: Mapping[str, Any], key: str, override: str | None = Non
         raw = os.environ.get(environment)
     if raw is None:
         raw = _mapping(config["paths"], "paths")[key]
-    expanded = Path(os.path.expandvars(os.path.expanduser(str(raw))))
-    return expanded.resolve() if expanded.is_absolute() else (PROJECT_ROOT / expanded).resolve()
+        return _resolve_config_path(raw, root_override=PATH_ROOT_OVERRIDES.get(key))
+    return _resolve_config_path(raw)
 
 
 def select_components(value: str) -> tuple[str, ...]:
@@ -238,26 +307,27 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
     selected = resolve_path(config, "selected_jsonl", args.selected_jsonl)
     output_dir = resolve_path(config, "generated_dir", args.output_dir)
     build = _mapping(config["build"], "build")
+    report_json = (
+        resolve_path_value(args.report_json)
+        if args.report_json
+        else output_dir / "prepare_preflight.json"
+    )
+    preflight_command = (
+        python_command(config),
+        str(CALIBRATION_SCRIPTS / "preflight.py"),
+        "--config", str(args.config.resolve()),
+        "--selected-jsonl", str(selected),
+        "--model-path", str(resolve_path(config, "model", args.model_path)),
+        "--upstream-repo", str(resolve_path(config, "upstream_source", args.upstream_source)),
+        "--report-json", str(report_json),
+    )
+    preflight_step = PlanStep(
+        "validate frozen Prepare inputs without loading model weights",
+        preflight_command,
+        note="static data, processor, and tokenizer check only; no CUDA or model inference",
+    )
     if args.preflight_only:
-        report_json = (
-            resolve_path_value(args.report_json)
-            if args.report_json
-            else output_dir / "prepare_preflight.json"
-        )
-        command = (
-            python_command(config),
-            str(CALIBRATION_SCRIPTS / "preflight.py"),
-            "--config", str(args.config.resolve()),
-            "--selected-jsonl", str(selected),
-            "--model-path", str(resolve_path(config, "model", args.model_path)),
-            "--upstream-repo", str(resolve_path(config, "upstream_source", args.upstream_source)),
-            "--report-json", str(report_json),
-        )
-        return [PlanStep(
-            "validate prepared inputs without loading model weights",
-            command,
-            note="static processor/tokenizer check only; no CUDA or model inference",
-        )]
+        return [preflight_step]
     env = common_env(config, args.progress)
     env.update({
         "SELECTED_JSONL": str(selected),
@@ -280,26 +350,37 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
         "RESUME": "1" if args.resume else "0",
     })
     command = (str(build.get("bash", "bash")), str(CALIBRATION_SCRIPTS / "prepare.sh"))
-    return [PlanStep("prepare calibration tensors", command, env=env)]
+    return [preflight_step, PlanStep("prepare calibration tensors", command, env=env)]
 
 
 def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
     calibration = _mapping(config["calibration"], "calibration")
     language = _mapping(config["language"], "language")
     build = _mapping(config["build"], "build")
+    requested_samples = args.max_samples or calibration["sample_count"]
+    requested_checkpoint = args.checkpoint_samples or calibration["checkpoint_samples"]
+    if requested_samples != 1200 or requested_checkpoint != 512:
+        raise ConfigurationError(
+            "release calibration fixes --max-samples=1200 and "
+            "--checkpoint-samples=512"
+        )
     env = common_env(config, args.progress)
     env.update({
         "GENERATED_JSONL": str(resolve_path(config, "generated_jsonl", args.generated_jsonl)),
+        "SELECTED_JSONL": str(resolve_path(config, "selected_jsonl", args.selected_jsonl)),
+        "UPSTREAM_REPO": str(
+            resolve_path(config, "upstream_source", args.upstream_source)
+        ),
         "MODEL_PATH": str(resolve_path(config, "model", args.model_path)),
         "OUTPUT_DIR": str(resolve_path(config, "calibration_dir", args.output_dir)),
         "DEVICE": args.device or str(calibration["device"]),
         "DTYPE": args.dtype or str(calibration["calibrate_dtype"]),
-        "STAGE": "all" if args.component == "all" else args.component,
+        "CALIBRATION_COMPONENT": "all" if args.component == "all" else args.component,
         "CHUNK_SIZE": str(language["chunk_size"]),
         "CACHE_LEN": str(language["cache_len"]),
         "LM_HEAD_W_BITS": str(language["lm_head_w_bits"]),
-        "MAX_SAMPLES": str(args.max_samples or calibration["sample_count"]),
-        "CHECKPOINT_SAMPLES": str(args.checkpoint_samples or calibration["checkpoint_samples"]),
+        "MAX_SAMPLES": str(requested_samples),
+        "CHECKPOINT_SAMPLES": str(requested_checkpoint),
         "IMAGE_TOKEN_ID": str(calibration["image_token_id"]),
         "REPLAY_SEED": str(calibration["seed"]),
         "RESUME": "1" if args.resume else "0",
@@ -315,22 +396,29 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
 
 
 def resolve_path_value(value: Any) -> Path:
-    path = Path(os.path.expandvars(os.path.expanduser(str(value))))
-    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    return _resolve_config_path(value)
+
+
+def resolve_evaluation_path(value: Any) -> Path:
+    return _resolve_config_path(
+        value,
+        root_override=("LA_EVALUATION_ROOT", Path("workspace/evaluation")),
+    )
 
 
 def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
     calibration = _mapping(config["calibration"], "calibration")
+    model = _mapping(config["model"], "model")
     language = _mapping(config["language"], "language")
     vision = _mapping(config["vision"], "vision")
     build = _mapping(config["build"], "build")
     cores = _mapping(build["cores"], "build.cores")
-    artifact_root = resolve_path(config, "artifact_root", args.output_dir)
+    build_root = resolve_path(config, "build_root", args.output_dir)
     log_root = resolve_path(config, "log_root")
     bash = str(build.get("bash", "bash"))
     steps: list[PlanStep] = []
     for component in select_components(args.component):
-        output = artifact_root / component
+        output = build_root / component
         env = common_env(config, args.progress)
         env.update({
             "INPUT_MODEL_PATH": str(resolve_path(config, "model", args.model_path)),
@@ -359,8 +447,16 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "LOG_DIR": str(log_root),
             "LOG_FILE": str(log_root / f"build_{component}_{args.target}.log"),
         })
+        rotation = calibration.get("hidden_rotation_path")
+        if rotation:
+            env["HIDDEN_ROTATION_PATH"] = str(resolve_path_value(rotation))
         if component == "vision":
-            env.update({"W_BITS": str(vision["w_bits"]), "VIT_CORE_NUM": str(cores["vision"])})
+            env.update({
+                "W_BITS": str(vision["w_bits"]),
+                "VIT_CORE_NUM": str(cores["vision"]),
+                "IMAGE_WIDTH": str(model["image_width"]),
+                "IMAGE_HEIGHT": str(model["image_height"]),
+            })
             script = BUILD_SCRIPTS / "vision.sh"
         else:
             env.update({
@@ -387,6 +483,7 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--generated-jsonl", str(resolve_path(config, "generated_jsonl")),
         "--scale-manifest", str(resolve_path(config, "scale_manifest")),
         "--coverage-json", str(resolve_path(config, "coverage_json")),
+        "--model-path", str(resolve_path(config, "model")),
         "--expected-samples", str(calibration["sample_count"]),
         "--expected-selected-sha256", str(calibration["selected_manifest_sha256"]),
         "--image-width", str(model["image_width"]),
@@ -409,13 +506,21 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--output_dir", str(verification_root / "pipeline"),
         "--scale_manifest", str(resolve_path(config, "scale_manifest")),
     )
-    predictions = args.predictions_jsonl or str(verification["predictions_jsonl"])
-    reference = args.reference_jsonl or str(verification["reference_jsonl"])
+    predictions = (
+        resolve_path_value(args.predictions_jsonl)
+        if args.predictions_jsonl
+        else resolve_evaluation_path(verification["predictions_jsonl"])
+    )
+    reference = (
+        resolve_path_value(args.reference_jsonl)
+        if args.reference_jsonl
+        else resolve_evaluation_path(verification["reference_jsonl"])
+    )
     task_command = (
         python_command(config),
         str(VALIDATE_SCRIPTS / "evaluate_grounding.py"),
-        "--predictions-jsonl", str(resolve_path_value(predictions)),
-        "--reference-jsonl", str(resolve_path_value(reference)),
+        "--predictions-jsonl", str(predictions),
+        "--reference-jsonl", str(reference),
         "--output-json", str(verification_root / "task_metrics.json"),
         "--details-jsonl", str(verification_root / "task_details.jsonl"),
         "--iou-threshold", str(verification["iou_threshold"]),
@@ -448,16 +553,6 @@ def print_contract(config: Mapping[str, Any]) -> None:
     print("[contract] " + json.dumps(payload, sort_keys=True))
 
 
-def reusable_calibration_exists(config: Mapping[str, Any], output_override: str | None) -> bool:
-    if output_override:
-        output = resolve_path(config, "calibration_dir", output_override)
-        return all(
-            (output / name).is_file()
-            for name in ("calibration_scale_manifest.json", "calibration_graph_coverage.json")
-        )
-    return all(resolve_path(config, key).is_file() for key in ("scale_manifest", "coverage_json"))
-
-
 def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[str, Any]) -> int:
     print_contract(config)
     for index, step in enumerate(steps, 1):
@@ -472,14 +567,6 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
 
     if args.dry_run:
         print("[dry-run] no command executed")
-        return 0
-
-    if (
-        args.command == "calibrate"
-        and args.resume
-        and reusable_calibration_exists(config, args.output_dir)
-    ):
-        print("[resume] calibration manifests already exist; replay skipped")
         return 0
 
     for step in steps:
@@ -503,22 +590,22 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "LocateAnything source -> prepare -> calibrate -> build -> verify "
-            "orchestrator"
+            "LocateAnything prepare -> calibrate -> build -> verify orchestrator; "
+            "the four commands consume a frozen calibration manifest"
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    prepare = subparsers.add_parser("prepare", help="materialize original Float replay tensors")
+    prepare = subparsers.add_parser("prepare", help="materialize Float calibration tensors")
     add_common_options(prepare)
     prepare.add_argument("--selected-jsonl")
     prepare.add_argument("--output-dir")
     prepare.add_argument("--upstream-source")
     prepare.add_argument("--model-path")
     prepare.add_argument("--device")
-    prepare.add_argument("--dtype", choices=("float16", "bfloat16", "float32"))
+    prepare.add_argument("--dtype", choices=("bfloat16",))
     prepare.add_argument("--slow-samples", type=int)
     prepare.add_argument("--max-new-tokens", type=int)
     prepare.add_argument(
@@ -535,10 +622,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_options(calibrate)
     calibrate.add_argument("--component", choices=COMPONENTS, default="all")
     calibrate.add_argument("--generated-jsonl")
+    calibrate.add_argument("--selected-jsonl")
+    calibrate.add_argument("--upstream-source")
     calibrate.add_argument("--output-dir")
     calibrate.add_argument("--model-path")
     calibrate.add_argument("--device")
-    calibrate.add_argument("--dtype", choices=("float16", "bfloat16", "float32"))
+    calibrate.add_argument("--dtype", choices=("float16",))
     calibrate.add_argument("--max-samples", type=int)
     calibrate.add_argument("--checkpoint-samples", type=int)
 

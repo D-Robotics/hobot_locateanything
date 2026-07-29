@@ -41,11 +41,11 @@ def release_graphs(profile=None):
             tensor("position_ids", (1, 1, q_len), "int32"),
             tensor("attention_mask", (1, q_len, profile.cache_length)),
         ]
-        inputs.extend(tensor(f"cache_{i}", cache, "float32") for i in range(profile.cache_tensor_count))
+        inputs.extend(tensor(f"cache_{i}", cache, "int8") for i in range(profile.cache_tensor_count))
         logits_q = sanity._expected_logits_query(name, q_len)
         outputs = [tensor("logits", (1, logits_q, profile.vocab_size))]
         outputs.extend(
-            tensor(f"update_{i}", (1, q_len, profile.cache_groups, profile.head_dim), "float32")
+            tensor(f"update_{i}", (1, q_len, profile.cache_groups, profile.head_dim), "int8")
             for i in range(profile.cache_tensor_count)
         )
         graphs[name] = sanity.GraphDescriptor(name, tuple(inputs), tuple(outputs))
@@ -112,7 +112,7 @@ def test_cache_updates_must_match_each_graph_query_length():
     graphs = release_graphs()
     graph = graphs["decode"]
     outputs = list(graph.outputs)
-    outputs[-1] = tensor("bad_update", (1, 1, 2, 128), "float32")
+    outputs[-1] = tensor("bad_update", (1, 1, 2, 128), "int8")
     graphs["decode"] = sanity.GraphDescriptor(graph.name, graph.inputs, tuple(outputs))
     with pytest.raises(ValueError, match="cache update shapes"):
         sanity.validate_descriptor_contract(graphs, sanity.ExpectedProfile())
@@ -128,6 +128,25 @@ def test_prefill_full_sequence_logits_are_rejected():
 
     with pytest.raises(ValueError, match=r"prefill logits: expected \(1, 1, 152681\)"):
         sanity.validate_descriptor_contract(graphs, profile)
+
+
+def test_linked_hbm_rejects_float32_kv_boundary():
+    graphs = release_graphs()
+    graph = graphs["decode"]
+    inputs = list(graph.inputs)
+    outputs = list(graph.outputs)
+    inputs[3:] = [
+        tensor(item.name, item.shape, "float32") for item in inputs[3:]
+    ]
+    outputs[1:] = [
+        tensor(item.name, item.shape, "float32") for item in outputs[1:]
+    ]
+    graphs["decode"] = sanity.GraphDescriptor(
+        graph.name, tuple(inputs), tuple(outputs)
+    )
+
+    with pytest.raises(ValueError, match="linked HBM cache dtype must be int8"):
+        sanity.validate_descriptor_contract(graphs, sanity.ExpectedProfile())
 
 
 def test_release_descriptor_contract_rejects_extra_graphs():

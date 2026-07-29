@@ -19,8 +19,25 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPILER_ROOT = REPO_ROOT / "compiler"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(COMPILER_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from compiler.scripts.common.identity import (  # noqa: E402
+    artifact_identities,
+    atomic_json as atomic_identity_json,
+    checkpoint_identity,
+    file_identity,
+    identity_mismatches,
+    prepared_bundle_identity_errors,
+    read_json,
+    release_checkpoint_errors,
+    rotation_identity,
+    sha256_json,
+    source_tree_identity,
+    tokenizer_identity,
+)
 
 from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     ActivationTracker,
@@ -40,6 +57,11 @@ from report import generate_activation_report  # noqa: E402
 
 
 STANDARD_CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
+RELEASE_SAMPLE_COUNT = 1200
+RELEASE_CONVERGENCE_CHECKPOINT = 512
+RELEASE_SELECTED_MANIFEST_SHA256 = (
+    "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+)
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -141,6 +163,46 @@ def progress(records: list[dict[str, Any]], description: str):
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.lm_head_w_bits != 8:
+        raise RuntimeError("release activation calibration requires lm_head W8")
+    if args.dtype != "float16":
+        raise RuntimeError("release activation calibration requires float16")
+    if args.max_samples != RELEASE_SAMPLE_COUNT:
+        raise RuntimeError(
+            f"release activation calibration requires {RELEASE_SAMPLE_COUNT} samples"
+        )
+    if args.chunk_size != 1024 or args.cache_len != 4096:
+        raise RuntimeError(
+            "release activation calibration requires chunk_size=1024 and cache_len=4096"
+        )
+    if args.image_token_id != 151665:
+        raise RuntimeError(
+            "release activation calibration requires image_token_id=151665"
+        )
+
+    selected_sha = sha256_file(args.selected_jsonl.resolve())
+    if selected_sha != RELEASE_SELECTED_MANIFEST_SHA256:
+        raise RuntimeError(
+            "release selected manifest SHA256 mismatch: "
+            f"actual={selected_sha} expected={RELEASE_SELECTED_MANIFEST_SHA256}"
+        )
+    checkpoint_errors = release_checkpoint_errors(args.model_path)
+    if checkpoint_errors:
+        raise RuntimeError("; ".join(checkpoint_errors))
+    prepare_errors = prepared_bundle_identity_errors(
+        selected_jsonl=args.selected_jsonl,
+        generated_jsonl=args.generated_jsonl,
+        model_path=args.model_path,
+        prepare_source_path=Path(__file__).with_name("prepare.py"),
+        upstream_repo=args.upstream_repo,
+        expected_sample_count=RELEASE_SAMPLE_COUNT,
+    )
+    if prepare_errors:
+        raise RuntimeError(
+            "prepared calibration identity check failed: "
+            + "; ".join(prepare_errors)
+        )
+
     from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
 
     manifest = args.generated_jsonl.resolve()
@@ -152,6 +214,11 @@ def run(args: argparse.Namespace) -> int:
         skipped_checkpoints,
         legacy_checkpoint,
     ) = resolve_convergence_checkpoints(args.checkpoint_samples, len(records))
+    if legacy_checkpoint != RELEASE_CONVERGENCE_CHECKPOINT:
+        raise RuntimeError(
+            "release activation calibration requires the 512-sample "
+            "convergence checkpoint"
+        )
     snapshot_samples = sorted(set([*evaluated_checkpoints, len(records)]))
     device = torch.device(args.device)
     dtype = torch_dtype(args.dtype)
@@ -160,13 +227,94 @@ def run(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     task_counts = dict(Counter(record["task"] for record in records))
 
+    prepare_identity_path = manifest.parent / "prepare_run_identity.json"
+    generation_summary_path = manifest.parent / "generation_summary.json"
+    if not prepare_identity_path.is_file() or not generation_summary_path.is_file():
+        raise RuntimeError(
+            "prepared calibration tensors lack prepare identity/summary; rerun Prepare "
+            "with the current code into a new output directory"
+        )
+    run_identity = {
+        "schema_version": 1,
+        "generated_manifest": file_identity(manifest),
+        "selected_manifest": file_identity(args.selected_jsonl),
+        "prepare_run_identity": file_identity(prepare_identity_path),
+        "generation_summary": file_identity(generation_summary_path),
+        "checkpoint": checkpoint_identity(args.model_path),
+        "tokenizer": tokenizer_identity(args.model_path),
+        "upstream_source": source_tree_identity(args.upstream_repo, {".py"}),
+        "compiler_source": source_tree_identity(COMPILER_ROOT),
+        "rotation": rotation_identity(args.hidden_rotation_path),
+        "settings": {
+            "device": args.device,
+            "dtype": args.dtype,
+            "component": args.component,
+            "chunk_size": args.chunk_size,
+            "cache_len": args.cache_len,
+            "lm_head_w_bits": args.lm_head_w_bits,
+            "sample_count": len(records),
+            "convergence_checkpoints": configured_checkpoints,
+            "legacy_checkpoint": legacy_checkpoint,
+            "image_token_id": args.image_token_id,
+            "replay_seed": args.replay_seed,
+        },
+    }
+    run_identity_sha256 = sha256_json(run_identity)
+    identity_path = output_dir / "calibration_run_identity.json"
+    durable_outputs = [
+        output_dir / "calibration_scale_manifest.json",
+        output_dir / "calibration_graph_coverage.json",
+        output_dir / "scale_convergence.json",
+        output_dir / f"scale_convergence_{legacy_checkpoint}_vs_{len(records)}.json",
+    ]
+    if args.resume and identity_path.is_file():
+        previous = read_json(identity_path)
+        previous_identity = previous.get("identity") if isinstance(previous, dict) else None
+        mismatches = identity_mismatches(run_identity, previous_identity)
+        if mismatches:
+            raise RuntimeError(
+                "calibration resume identity mismatch: " + ", ".join(mismatches[:12])
+                + "; use a separate output directory"
+            )
+        if previous.get("status") == "complete":
+            expected_artifacts = previous.get("artifacts")
+            if not isinstance(expected_artifacts, dict):
+                raise RuntimeError("completed calibration identity has no artifact catalog")
+            actual_artifacts = artifact_identities(durable_outputs)
+            artifact_mismatches = identity_mismatches(expected_artifacts, actual_artifacts)
+            if artifact_mismatches:
+                raise RuntimeError(
+                    "completed calibration artifacts changed: "
+                    + ", ".join(artifact_mismatches[:12])
+                )
+            print(
+                f"[calibrate] resume identity matched; reused {len(records)} samples",
+                flush=True,
+            )
+            return 0
+    elif args.resume and any(path.exists() for path in durable_outputs):
+        raise RuntimeError(
+            "calibration outputs exist without calibration_run_identity.json; "
+            "use a separate output directory"
+        )
+    elif not args.resume and (
+        identity_path.exists() or any(path.exists() for path in durable_outputs)
+    ):
+        raise RuntimeError(
+            "calibration output already contains run state; use --resume or a separate output directory"
+        )
+    atomic_identity_json(
+        identity_path,
+        {"schema_version": 1, "status": "running", "identity": run_identity},
+    )
+
     vision_snapshots = {}
     vision_cosines = []
     language_snapshots = {}
     stage_counts = Counter()
     activation_rows: list[dict[str, Any]] = []
 
-    if args.stage in {"all", "vision"}:
+    if args.component in {"all", "vision"}:
         from leap_llm.apis.model.locateanything_vision import LocateAnythingVisionApi
 
         print("\n================== VISION ACTIVATION STATISTICS ==================", flush=True)
@@ -198,7 +346,7 @@ def run(args: argparse.Namespace) -> int:
         gc.collect()
         torch.cuda.empty_cache()
 
-    if args.stage in {"all", "language"}:
+    if args.component in {"all", "language"}:
         print("\n================== LANGUAGE ACTIVATION STATISTICS ==================", flush=True)
         language_api = LocateAnythingLanguageApi(
             str(args.model_path.resolve()), str(output_dir / "language_api"),
@@ -309,9 +457,10 @@ def run(args: argparse.Namespace) -> int:
         "skipped_convergence_checkpoints": skipped_checkpoints,
         "replay_order": "deterministic_shuffle",
         "replay_seed": args.replay_seed,
+        "calibration_run_identity_sha256": run_identity_sha256,
         "task_counts": task_counts,
         "profile": {
-            "stage": args.stage,
+            "component": args.component,
             "chunk_size": args.chunk_size,
             "cache_len": args.cache_len,
             "pbd_query_len": 6,
@@ -353,6 +502,7 @@ def run(args: argparse.Namespace) -> int:
         "recorded_snapshot_samples": snapshot_samples,
         "skipped_convergence_checkpoints": skipped_checkpoints,
         "task_counts": task_counts,
+        "calibration_run_identity_sha256": run_identity_sha256,
         "profile": scale_manifest["profile"],
         "stage_sample_counts": stage_sample_counts,
         "expected_stages": expected_stages,
@@ -450,21 +600,34 @@ def run(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "activation statistics audit found unexecuted, non-finite, or invalid scales"
         )
+    atomic_identity_json(
+        identity_path,
+        {
+            "schema_version": 1,
+            "status": "complete",
+            "identity": run_identity,
+            "artifacts": artifact_identities(durable_outputs),
+        },
+    )
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--generated-jsonl", type=Path, required=True)
+    result.add_argument("--selected-jsonl", type=Path, required=True)
+    result.add_argument("--upstream-repo", type=Path, required=True)
     result.add_argument("--model-path", type=Path, required=True)
     result.add_argument("--output-dir", type=Path, required=True)
     result.add_argument("--device", default="cuda:0")
-    result.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
-    result.add_argument("--stage", choices=["all", "vision", "language"], default="all")
+    result.add_argument("--dtype", choices=["float16"], default="float16")
+    result.add_argument(
+        "--component", choices=["all", "vision", "language"], default="all"
+    )
     result.add_argument("--chunk-size", type=int, default=1024)
     result.add_argument("--cache-len", type=int, default=4096)
-    result.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
-    result.add_argument("--max-samples", type=int)
+    result.add_argument("--lm-head-w-bits", type=int, choices=[8], default=8)
+    result.add_argument("--max-samples", type=int, default=RELEASE_SAMPLE_COUNT)
     result.add_argument(
         "--checkpoint-samples",
         default="64,128,256,512",
@@ -473,6 +636,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--image-token-id", type=int, default=151665)
     result.add_argument("--hidden-rotation-path")
     result.add_argument("--replay-seed", type=int, default=20260729)
+    result.add_argument("--resume", action="store_true")
     return result
 
 

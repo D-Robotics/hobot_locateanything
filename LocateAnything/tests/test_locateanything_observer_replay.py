@@ -260,3 +260,57 @@ def test_apply_scale_manifest_still_rejects_other_unknown_modules(tmp_path):
 
     with __import__("pytest").raises(ValueError, match="unknown modules"):
         replay.apply_scale_manifest(model, path, "vision")
+
+
+def test_apply_scale_manifest_rejects_current_quantized_module_without_scale(tmp_path):
+    class FakeQuant(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.quantized = True
+            self.register_buffer("absmax", torch.tensor(0.0))
+
+    model = nn.Module()
+    model.first = FakeQuant()
+    model.added_after_calibration = FakeQuant()
+    manifest = {
+        "sample_count": 1200,
+        "vision": {
+            "1200": {
+                "first": {"kind": "ConstFakeQuant", "absmax": 2.0},
+            }
+        },
+    }
+    path = tmp_path / "scales.json"
+    path.write_text(__import__("json").dumps(manifest), encoding="utf-8")
+
+    with __import__("pytest").raises(
+        ValueError, match="missing current quantized modules.*added_after_calibration"
+    ):
+        replay.apply_scale_manifest(model, path, "vision")
+
+
+def test_apply_scale_manifest_does_not_require_disabled_fake_quant(tmp_path):
+    class FakeQuant(nn.Module):
+        def __init__(self, quantized):
+            super().__init__()
+            self.quantized = quantized
+            self.register_buffer("absmax", torch.tensor(0.0))
+
+    model = nn.Module()
+    model.enabled = FakeQuant(True)
+    model.disabled = FakeQuant(False)
+    manifest = {
+        "sample_count": 1200,
+        "language": {
+            "1200": {
+                "enabled": {"kind": "ConstFakeQuant", "absmax": 3.0},
+            }
+        },
+    }
+    path = tmp_path / "scales.json"
+    path.write_text(__import__("json").dumps(manifest), encoding="utf-8")
+
+    result = replay.apply_scale_manifest(model, path, "language")
+
+    assert result["applied_modules"] == 1
+    assert model.enabled.absmax.item() == 3.0

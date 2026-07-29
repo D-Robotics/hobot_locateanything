@@ -18,6 +18,9 @@ from typing import Any, Callable, Iterable, Mapping
 import yaml
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+RUNTIME_TOKENIZER_JSON = PROJECT_ROOT / "deploy" / "tokenizer" / "tokenizer.json"
+
 REQUIRED_MODULES = {
     "torch": ("torch", None),
     "torchvision": ("torchvision", None),
@@ -48,6 +51,17 @@ EXPECTED_TOKEN_IDS = {
 }
 EXPECTED_SAMPLE_COUNT = 1200
 EXPECTED_MANIFEST_SHA256 = "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+EXPECTED_CHECKPOINT_SHA256 = {
+    "model-00001-of-00002.safetensors": (
+        "923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58"
+    ),
+    "model-00002-of-00002.safetensors": (
+        "3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47"
+    ),
+}
+EXPECTED_CHECKPOINT_INDEX_SHA256 = (
+    "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
+)
 EXPECTED_TASK_COUNTS = {
     "detection": 620,
     "gui": 180,
@@ -189,6 +203,12 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     max_new_tokens = int(calibration.get("max_new_tokens", 0))
     if max_new_tokens != 1024:
         raise PreflightError("release prepare max_new_tokens must be 1024")
+    checkpoint_sha256 = model.get("checkpoint_sha256")
+    if checkpoint_sha256 != EXPECTED_CHECKPOINT_SHA256:
+        raise PreflightError("model.checkpoint_sha256 is not the frozen release checkpoint")
+    checkpoint_index_sha256 = str(model.get("checkpoint_index_sha256") or "")
+    if checkpoint_index_sha256 != EXPECTED_CHECKPOINT_INDEX_SHA256:
+        raise PreflightError("model.checkpoint_index_sha256 is not the frozen release index")
     return {
         "sample_count": samples,
         "manifest_sha256": manifest_sha,
@@ -208,6 +228,8 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
         "image_token_id": int(calibration.get("image_token_id", -1)),
         "prefill_limit": prefill,
         "max_new_tokens": max_new_tokens,
+        "checkpoint_sha256": dict(checkpoint_sha256),
+        "checkpoint_index_sha256": checkpoint_index_sha256,
     }
 
 
@@ -494,6 +516,9 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
 
     index_path = path / "model.safetensors.index.json"
     if index_path.is_file():
+        actual_index_sha256 = sha256_file(index_path)
+        if actual_index_sha256 != profile.get("checkpoint_index_sha256"):
+            raise PreflightError("checkpoint index SHA256 mismatch")
         index = read_json(index_path)
         weight_map = index.get("weight_map") if isinstance(index, dict) else None
         if not isinstance(weight_map, dict) or not weight_map:
@@ -503,9 +528,28 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
         if missing_shards:
             raise PreflightError(f"model checkpoint shards are missing: {missing_shards[:3]}")
     else:
+        actual_index_sha256 = None
         shards = [item.name for item in path.glob("*.safetensors") if item.is_file()]
         if not shards:
             raise PreflightError("model path has no safetensors checkpoint")
+    expected_shards = profile.get("checkpoint_sha256")
+    if not isinstance(expected_shards, dict) or not expected_shards:
+        raise PreflightError("release profile has no checkpoint SHA256 mapping")
+    if set(shards) != set(expected_shards):
+        raise PreflightError(
+            f"checkpoint shard catalog mismatch: actual={shards}, "
+            f"expected={sorted(expected_shards)}"
+        )
+    checkpoint_files = {}
+    for name in shards:
+        shard_path = path / name
+        actual_sha256 = sha256_file(shard_path)
+        if actual_sha256 != expected_shards[name]:
+            raise PreflightError(f"checkpoint shard SHA256 mismatch: {name}")
+        checkpoint_files[name] = {
+            "bytes": shard_path.stat().st_size,
+            "sha256": actual_sha256,
+        }
     return {
         "passed": True,
         "path": str(path),
@@ -515,6 +559,8 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
             item.name: sha256_file(item) for item in [*tokenizer_files, tokenizer_config]
         },
         "checkpoint_shards": len(shards),
+        "checkpoint_index_sha256": actual_index_sha256,
+        "checkpoint_files": checkpoint_files,
         "special_token_ids": EXPECTED_TOKEN_IDS,
     }
 
@@ -548,15 +594,103 @@ def audit_upstream(path: Path) -> dict[str, Any]:
 
 
 def flatten_ids(encoded: Any) -> list[int]:
-    if isinstance(encoded, dict):
+    if isinstance(encoded, Mapping):
         encoded = encoded.get("input_ids")
     if hasattr(encoded, "tolist"):
         encoded = encoded.tolist()
     if isinstance(encoded, list) and encoded and isinstance(encoded[0], list):
+        if len(encoded) != 1:
+            raise PreflightError("tokenizer returned more than one input_ids sequence")
         encoded = encoded[0]
     if not isinstance(encoded, list):
         raise PreflightError("tokenizer did not return a flat input_ids list")
     return [int(value) for value in encoded]
+
+
+def audit_runtime_tokenizer(
+    checkpoint_tokenizer: Any,
+    records: Iterable[Mapping[str, Any]],
+    runtime_tokenizer_path: Path,
+    loader: Callable[[str], Any] | None = None,
+    processor: Any | None = None,
+    visual_tokens: int | None = None,
+) -> dict[str, Any]:
+    if not runtime_tokenizer_path.is_file():
+        raise PreflightError(f"runtime tokenizer.json not found: {runtime_tokenizer_path}")
+    if loader is None:
+        try:
+            from tokenizers import Tokenizer
+        except ImportError as exc:
+            raise PreflightError("tokenizers cannot load the runtime tokenizer.json") from exc
+        loader = Tokenizer.from_file
+    try:
+        runtime_tokenizer = loader(str(runtime_tokenizer_path.resolve()))
+    except Exception as exc:
+        raise PreflightError(f"cannot load runtime tokenizer.json: {exc}") from exc
+
+    checked = 0
+    expanded_prompts_checked = 0
+    for record in records:
+        bundle_id = str(record.get("bundle_id"))
+        cases = [
+            ("prompt", str(record["prompt"]), False),
+            ("target_response", str(record["target_response"]), False),
+        ]
+        if processor is not None and visual_tokens is not None:
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": "static-preflight"},
+                    {"type": "text", "text": str(record["prompt"])},
+                ],
+            }]
+            rendered = processor.py_apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            placeholder = "<image-1>"
+            if rendered.count(placeholder) != 1:
+                raise PreflightError(
+                    f"processor chat template mismatch at {bundle_id}:expanded_prompt"
+                )
+            expansion = (
+                f"<image 1>{getattr(processor, 'image_start_token', '<img>')}"
+                + str(getattr(processor, "image_token", "")) * visual_tokens
+                + str(getattr(processor, "image_end_token", "</img>"))
+            )
+            cases.append(("expanded_prompt", rendered.replace(placeholder, expansion), False))
+
+        for field, value, add_special_tokens in cases:
+            checkpoint_ids = flatten_ids(checkpoint_tokenizer(
+                value,
+                add_special_tokens=add_special_tokens,
+                return_attention_mask=False,
+            ))
+            try:
+                runtime_ids = [
+                    int(token_id)
+                    for token_id in runtime_tokenizer.encode(
+                        value, add_special_tokens=add_special_tokens
+                    ).ids
+                ]
+            except Exception as exc:
+                raise PreflightError(
+                    f"runtime tokenizer failed for {bundle_id}:{field}: {exc}"
+                ) from exc
+            if checkpoint_ids != runtime_ids:
+                raise PreflightError(
+                    f"checkpoint/runtime tokenizer mismatch at {bundle_id}:{field}"
+                )
+            checked += 1
+            if field == "expanded_prompt":
+                expanded_prompts_checked += 1
+    return {
+        "passed": True,
+        "path": str(runtime_tokenizer_path.resolve()),
+        "sha256": sha256_file(runtime_tokenizer_path),
+        "texts_checked": checked,
+        "expanded_prompts_checked": expanded_prompts_checked,
+        "regex_contract": "checkpoint_default_matches_runtime_tokenizer_json",
+    }
 
 
 def letterbox_for_profile(image: Any, profile: Mapping[str, Any], image_module: Any) -> Any:
@@ -671,6 +805,8 @@ def audit_processor(
     records: Iterable[Mapping[str, Any]],
     profile: Mapping[str, Any],
     loader: Callable[..., Any] | None = None,
+    runtime_tokenizer_path: Path | None = None,
+    runtime_tokenizer_loader: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     records = list(records)
     if loader is None:
@@ -681,7 +817,11 @@ def audit_processor(
         loader = AutoProcessor.from_pretrained
     try:
         processor = loader(
-            str(model_path.resolve()), trust_remote_code=True, local_files_only=True
+            str(model_path.resolve()),
+            trust_remote_code=True,
+            local_files_only=True,
+            use_fast=False,
+            fix_mistral_regex=False,
         )
     except Exception as exc:
         raise PreflightError(f"cannot load processor metadata without model weights: {exc}") from exc
@@ -701,6 +841,16 @@ def audit_processor(
     if image_token_id != profile["image_token_id"]:
         raise PreflightError("processor image_token_id does not match config")
 
+    runtime_tokenizer = None
+    if runtime_tokenizer_path is not None:
+        runtime_tokenizer = audit_runtime_tokenizer(
+            tokenizer,
+            records,
+            runtime_tokenizer_path,
+            loader=runtime_tokenizer_loader,
+            processor=processor,
+            visual_tokens=int(profile["visual_tokens"]),
+        )
     representative_images = audit_representative_images(processor, records, profile)
 
     max_prefill = {"tokens": 0, "bundle_id": None}
@@ -755,12 +905,17 @@ def audit_processor(
         "processor_class": type(processor).__name__,
         "image_processor_class": type(image_processor).__name__,
         "tokenizer_class": type(tokenizer).__name__,
+        "processor_load_contract": {
+            "use_fast": False,
+            "fix_mistral_regex": False,
+        },
         "patch_size": profile["patch_size"],
         "merge_kernel_size": [profile["merge_size"], profile["merge_size"]],
         "visual_tokens": profile["visual_tokens"],
         "max_prefill": max_prefill,
         "max_target": max_target,
         "representative_images": representative_images,
+        "runtime_tokenizer": runtime_tokenizer,
         "model_weights_loaded": False,
         "gpu_inference": False,
     }
@@ -784,7 +939,12 @@ def main(argv: list[str] | None = None) -> int:
         manifest, records = audit_manifest(args.selected_jsonl, profile)
         model = audit_model(args.model_path, profile)
         upstream = audit_upstream(args.upstream_repo)
-        processor = audit_processor(args.model_path, records, profile)
+        processor = audit_processor(
+            args.model_path,
+            records,
+            profile,
+            runtime_tokenizer_path=RUNTIME_TOKENIZER_JSON,
+        )
         report = {
             "schema_version": 1,
             "phase": "prepare_preflight",

@@ -24,6 +24,16 @@ def _bash() -> str:
     return executable
 
 
+def _passing_environment_script(tmp_path: Path) -> Path:
+    script = tmp_path / "passing_environment.py"
+    script.write_text("print('{\"passed\": true}')\n", encoding="utf-8")
+    return script
+
+
+def _write_manifest(path: Path, count: int) -> None:
+    path.write_text("{}\n" * count, encoding="utf-8")
+
+
 def _terminate_after_marker(
     wrapper: Path, env: dict[str, str], marker: Path
 ) -> subprocess.CompletedProcess[str]:
@@ -68,7 +78,8 @@ def test_calibration_wrappers_reenter_through_bash_when_detached():
     for wrapper in (PREPARE_WRAPPER, CALIBRATE_WRAPPER):
         text = wrapper.read_text(encoding="utf-8")
         assert "set -euo pipefail" in text
-        assert 'setsid nohup env DETACH=0 bash "$0"' in text
+        assert "setsid nohup env DETACH=0" in text
+        assert 'bash "$0"' in text
         assert "trap finish_job EXIT" in text
         assert "trap 'cancel_job SIGTERM 143' TERM" in text
         assert "trap 'cancel_job SIGINT 130' INT" in text
@@ -98,6 +109,9 @@ def test_prepare_wrapper_forwards_release_geometry_from_environment():
         "IMAGE_HEIGHT": ("672", '--image-height "$IMAGE_HEIGHT"'),
         "RESIZE_MODE": ("letterbox", '--resize-mode "$RESIZE_MODE"'),
         "LETTERBOX_FILL": ("128", '--letterbox-fill "$LETTERBOX_FILL"'),
+        "PATCH_SIZE": ("14", '--patch-size "$PATCH_SIZE"'),
+        "MERGE_SIZE": ("2", '--merge-size "$MERGE_SIZE"'),
+        "HIDDEN_SIZE": ("2048", '--hidden-size "$HIDDEN_SIZE"'),
         "PREFILL_LIMIT": ("1024", '--prefill-limit "$PREFILL_LIMIT"'),
     }
     for name, (default, argument) in expected.items():
@@ -222,7 +236,7 @@ def test_calibrate_help_exposes_current_defaults_only():
 
 def test_calibrate_wrapper_forwards_profile_and_requires_complete_graph_family(tmp_path):
     generated = tmp_path / "generated.jsonl"
-    generated.write_text("{}\n{}\n{}\n", encoding="utf-8")
+    _write_manifest(generated, 1200)
     model = tmp_path / "model"
     model.mkdir()
     output = tmp_path / "statistics"
@@ -234,11 +248,12 @@ def test_calibrate_wrapper_forwards_profile_and_requires_complete_graph_family(t
 import argparse, hashlib, json
 from pathlib import Path
 p = argparse.ArgumentParser()
-p.add_argument('--generated-jsonl'); p.add_argument('--model-path'); p.add_argument('--output-dir')
+p.add_argument('--generated-jsonl'); p.add_argument('--selected-jsonl'); p.add_argument('--upstream-repo')
+p.add_argument('--model-path'); p.add_argument('--output-dir')
 p.add_argument('--device'); p.add_argument('--dtype'); p.add_argument('--chunk-size')
 p.add_argument('--cache-len'); p.add_argument('--max-samples', type=int)
 p.add_argument('--checkpoint-samples', type=int); p.add_argument('--image-token-id')
-p.add_argument('--stage'); p.add_argument('--lm-head-w-bits', type=int)
+p.add_argument('--component'); p.add_argument('--lm-head-w-bits', type=int)
 p.add_argument('--replay-seed', type=int)
 p.add_argument('--hidden-rotation-path', default=None)
 a = p.parse_args()
@@ -249,8 +264,8 @@ language_stages = [
   *(f'ar_q{q_len}' for q_len in range(1, 6)),
 ]
 expected_stages = []
-if a.stage in {'all', 'vision'}: expected_stages.append('vision')
-if a.stage in {'all', 'language'}: expected_stages.extend(language_stages)
+if a.component in {'all', 'vision'}: expected_stages.append('vision')
+if a.component in {'all', 'language'}: expected_stages.extend(language_stages)
 coverage = {
   'generated_manifest_sha256': hashlib.sha256(Path(a.generated_jsonl).read_bytes()).hexdigest(),
   'sample_count': a.max_samples,
@@ -268,7 +283,10 @@ generated = Path(a.generated_jsonl)
   'generated_manifest': str(generated),
   'generated_manifest_sha256': hashlib.sha256(generated.read_bytes()).hexdigest(),
   'replay_seed': a.replay_seed,
-  'profile': {'stage': a.stage, 'language_lm_head_weight_bits': a.lm_head_w_bits}}))
+  'profile': {
+    'component': a.component,
+    'language_lm_head_weight_bits': a.lm_head_w_bits,
+  }}))
 (out / f'scale_convergence_{a.checkpoint_samples}_vs_{a.max_samples}.json').write_text(
   json.dumps({'checkpoint_samples': a.checkpoint_samples, 'full_samples': a.max_samples}))
 """.strip()
@@ -280,11 +298,14 @@ generated = Path(a.generated_jsonl)
         "REPO_ROOT": REPO_ROOT.as_posix(),
         "PYTHON_BIN": os.environ.get("PYTHON", "python"),
         "REPLAY_SCRIPT": fake_replay.as_posix(),
+        "ENVIRONMENT_SCRIPT": _passing_environment_script(tmp_path).as_posix(),
         "GENERATED_JSONL": generated.as_posix(),
+        "SELECTED_JSONL": generated.as_posix(),
+        "UPSTREAM_REPO": model.as_posix(),
         "MODEL_PATH": model.as_posix(),
         "OUTPUT_DIR": output.as_posix(),
-        "MAX_SAMPLES": "3",
-        "CHECKPOINT_SAMPLES": "2",
+        "MAX_SAMPLES": "1200",
+        "CHECKPOINT_SAMPLES": "512",
         "LOG_PATH": (logs / "calibrate.log").as_posix(),
         "EXIT_PATH": (logs / "calibrate.exit.txt").as_posix(),
     }
@@ -323,11 +344,14 @@ def test_calibrate_wrapper_fails_preflight_before_replay_for_short_manifest(tmp_
         "REPO_ROOT": REPO_ROOT.as_posix(),
         "PYTHON_BIN": os.environ.get("PYTHON", "python"),
         "REPLAY_SCRIPT": fake_replay.as_posix(),
+        "ENVIRONMENT_SCRIPT": _passing_environment_script(tmp_path).as_posix(),
         "GENERATED_JSONL": generated.as_posix(),
+        "SELECTED_JSONL": generated.as_posix(),
+        "UPSTREAM_REPO": model.as_posix(),
         "MODEL_PATH": model.as_posix(),
         "OUTPUT_DIR": output.as_posix(),
-        "MAX_SAMPLES": "2",
-        "CHECKPOINT_SAMPLES": "1",
+        "MAX_SAMPLES": "1200",
+        "CHECKPOINT_SAMPLES": "512",
         "LOG_PATH": (tmp_path / "logs/calibrate.log").as_posix(),
         "EXIT_PATH": (tmp_path / "logs/calibrate.exit.txt").as_posix(),
     }
@@ -338,7 +362,7 @@ def test_calibrate_wrapper_fails_preflight_before_replay_for_short_manifest(tmp_
         text=True,
     )
     assert result.returncode != 0
-    assert "fewer than MAX_SAMPLES=2" in result.stdout
+    assert "generated manifest has 1 records, expected 1200" in result.stdout
     assert "replay was started" not in result.stdout + result.stderr
     exit_record = (tmp_path / "logs/calibrate.exit.txt").read_text(encoding="utf-8")
     assert "status=failed" in exit_record
@@ -351,7 +375,7 @@ def test_calibrate_wrapper_fails_preflight_before_replay_for_short_manifest(tmp_
 
 def test_calibrate_sigterm_writes_cancelled_terminal_state(tmp_path):
     generated = tmp_path / "generated.jsonl"
-    generated.write_text("{}\n{}\n{}\n", encoding="utf-8")
+    _write_manifest(generated, 1200)
     model = tmp_path / "model"
     output = tmp_path / "statistics"
     logs = tmp_path / "logs"
@@ -371,11 +395,14 @@ def test_calibrate_sigterm_writes_cancelled_terminal_state(tmp_path):
         "REPO_ROOT": REPO_ROOT.as_posix(),
         "PYTHON_BIN": os.environ.get("PYTHON", "python"),
         "REPLAY_SCRIPT": fake_replay.as_posix(),
+        "ENVIRONMENT_SCRIPT": _passing_environment_script(tmp_path).as_posix(),
         "GENERATED_JSONL": generated.as_posix(),
+        "SELECTED_JSONL": generated.as_posix(),
+        "UPSTREAM_REPO": model.as_posix(),
         "MODEL_PATH": model.as_posix(),
         "OUTPUT_DIR": output.as_posix(),
-        "MAX_SAMPLES": "3",
-        "CHECKPOINT_SAMPLES": "2",
+        "MAX_SAMPLES": "1200",
+        "CHECKPOINT_SAMPLES": "512",
         "LOG_PATH": (logs / "calibrate.log").as_posix(),
         "EXIT_PATH": exit_path.as_posix(),
     }
@@ -391,3 +418,77 @@ def test_calibrate_sigterm_writes_cancelled_terminal_state(tmp_path):
     )
     assert metadata["status"] == "cancelled"
     assert metadata["signal"] == "SIGTERM"
+
+
+def test_calibrate_wrapper_rejects_nonrelease_sample_contract_before_replay(tmp_path):
+    generated = tmp_path / "generated.jsonl"
+    _write_manifest(generated, 1199)
+    model = tmp_path / "model"
+    model.mkdir()
+    marker = tmp_path / "replay_started"
+    fake_replay = tmp_path / "must_not_run.py"
+    fake_replay.write_text(
+        f"from pathlib import Path\nPath({marker.as_posix()!r}).touch()\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "REPO_ROOT": REPO_ROOT.as_posix(),
+        "PYTHON_BIN": os.environ.get("PYTHON", "python"),
+        "REPLAY_SCRIPT": fake_replay.as_posix(),
+        "ENVIRONMENT_SCRIPT": _passing_environment_script(tmp_path).as_posix(),
+        "GENERATED_JSONL": generated.as_posix(),
+        "SELECTED_JSONL": generated.as_posix(),
+        "UPSTREAM_REPO": model.as_posix(),
+        "MODEL_PATH": model.as_posix(),
+        "OUTPUT_DIR": (tmp_path / "statistics").as_posix(),
+        "MAX_SAMPLES": "1199",
+        "CHECKPOINT_SAMPLES": "512",
+        "LOG_PATH": (tmp_path / "logs/calibrate.log").as_posix(),
+        "EXIT_PATH": (tmp_path / "logs/calibrate.exit.txt").as_posix(),
+    }
+    result = subprocess.run(
+        [_bash(), CALIBRATE_WRAPPER.as_posix()], env=env, capture_output=True, text=True
+    )
+    assert result.returncode != 0
+    assert "requires MAX_SAMPLES=1200 and CHECKPOINT_SAMPLES=512" in result.stdout
+    assert not marker.exists()
+
+
+def test_calibrate_wrapper_rejects_lm_head_w4_before_replay(tmp_path):
+    generated = tmp_path / "generated.jsonl"
+    _write_manifest(generated, 1200)
+    model = tmp_path / "model"
+    model.mkdir()
+    marker = tmp_path / "replay_started"
+    fake_replay = tmp_path / "must_not_run.py"
+    fake_replay.write_text(
+        f"from pathlib import Path\nPath({marker.as_posix()!r}).touch()\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "REPO_ROOT": REPO_ROOT.as_posix(),
+        "PYTHON_BIN": os.environ.get("PYTHON", "python"),
+        "REPLAY_SCRIPT": fake_replay.as_posix(),
+        "ENVIRONMENT_SCRIPT": _passing_environment_script(tmp_path).as_posix(),
+        "GENERATED_JSONL": generated.as_posix(),
+        "SELECTED_JSONL": generated.as_posix(),
+        "UPSTREAM_REPO": model.as_posix(),
+        "MODEL_PATH": model.as_posix(),
+        "OUTPUT_DIR": (tmp_path / "statistics").as_posix(),
+        "MAX_SAMPLES": "1200",
+        "CHECKPOINT_SAMPLES": "512",
+        "LM_HEAD_W_BITS": "4",
+        "LOG_PATH": (tmp_path / "logs/calibrate.log").as_posix(),
+        "EXIT_PATH": (tmp_path / "logs/calibrate.exit.txt").as_posix(),
+    }
+    result = subprocess.run(
+        [_bash(), CALIBRATE_WRAPPER.as_posix()],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "requires LM_HEAD_W_BITS=8" in result.stdout
+    assert not marker.exists()

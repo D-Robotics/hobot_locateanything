@@ -448,7 +448,7 @@ def resolve_scale_manifest(
     if not candidates:
         raise FileNotFoundError(
             "calibration_scale_manifest.json was not found under "
-            f"{calibration_root}; run observer replay first"
+            f"{calibration_root}; run `quantize.py calibrate` first"
         )
     choices = ", ".join(str(path) for path in candidates)
     raise ValueError(

@@ -55,7 +55,9 @@ lm_head W8/W8, prefill 1024, KV cache 4096, PBD q=6, and AR q=1. Calibration
 uses 1,200 samples: 620 Detection records and 580 records covering GUI,
 Referring, OCR, Layout, and Pointing. The 512-sample snapshot is used only to
 check scale convergence. Grounding release comparisons use an IoU threshold
-of 0.90.
+of 0.90. The release config also freezes the checkpoint index and both weight
+shard SHA256 values, so calibration scales cannot be reused with a different
+checkpoint under the same directory name.
 
 ## Architecture
 
@@ -115,9 +117,10 @@ cd ..
 
 ### 3. Prepare and calibrate
 
-The compiler lifecycle is `source -> prepare -> calibrate -> build -> verify`.
-The Source stage freezes `workspace/calibration/current/selected.jsonl`; the
-commands below consume that manifest and do not recollect datasets.
+The compiler lifecycle has four commands: `prepare -> calibrate -> build -> verify`.
+Its input is the frozen manifest at
+`workspace/calibration/current/selected.jsonl`; these commands consume that
+manifest and do not recollect datasets.
 
 ```bash
 python compiler/quantize.py prepare --preflight-only

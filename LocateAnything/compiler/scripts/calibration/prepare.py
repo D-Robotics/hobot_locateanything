@@ -25,6 +25,22 @@ from typing import Any, Iterable
 import numpy as np
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from compiler.scripts.common.identity import (  # noqa: E402
+    atomic_json as atomic_identity_json,
+    checkpoint_identity,
+    file_identity,
+    identity_mismatches,
+    read_json,
+    sha256_json,
+    source_tree_identity,
+    tokenizer_identity,
+)
+
+
 SCHEMA_VERSION = 2
 PAPER_TASK_WEIGHTS = {
     "detection": 0.669,
@@ -457,6 +473,23 @@ def build_fixed_profile(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("patch_size and merge_size must be positive")
     if not 0 <= args.letterbox_fill <= 255:
         raise ValueError("letterbox_fill must be within [0, 255]")
+    release_contract = {
+        "image_width": 672,
+        "image_height": 672,
+        "resize_mode": "letterbox",
+        "letterbox_fill": 128,
+        "patch_size": 14,
+        "merge_size": 2,
+        "hidden_size": 2048,
+        "prefill_limit": 1024,
+    }
+    drift = {
+        name: getattr(args, name)
+        for name, expected in release_contract.items()
+        if getattr(args, name) != expected
+    }
+    if drift:
+        raise ValueError(f"Prepare arguments drift from the release contract: {drift}")
 
     profile_multiple = args.patch_size * args.merge_size
     if args.image_width % profile_multiple or args.image_height % profile_multiple:
@@ -743,6 +776,9 @@ def save_tensor_artifact(
 
 
 def generate_bundle(args: argparse.Namespace) -> int:
+    if args.dtype != "bfloat16":
+        raise RuntimeError("release Prepare requires bfloat16 tensors")
+
     import torch
     from PIL import Image
     from tqdm import tqdm
@@ -769,9 +805,8 @@ def generate_bundle(args: argparse.Namespace) -> int:
     bundle_root = selected_path.parent
     output_dir = args.output_dir.resolve()
     tensor_dir = output_dir / "tensors"
-    tensor_dir.mkdir(parents=True, exist_ok=True)
     progress_path = output_dir / "generation_progress.jsonl"
-    completed = load_completed_progress(progress_path) if args.resume else {}
+    identity_path = output_dir / "prepare_run_identity.json"
 
     records = read_jsonl(selected_path)
     if not records:
@@ -787,6 +822,48 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "use_cache": True,
     }
 
+    slow_order = sorted(
+        records,
+        key=lambda record: deterministic_seed(args.seed, record["bundle_id"], "slow-select"),
+    )
+    slow_ids = {record["bundle_id"] for record in slow_order[: args.slow_samples]}
+    run_identity = {
+        "schema_version": 1,
+        "selected_manifest_sha256": sha256_file(selected_path),
+        "checkpoint": checkpoint_identity(model_path),
+        "tokenizer": tokenizer_identity(model_path),
+        "upstream_source": source_tree_identity(upstream_repo, {".py"}),
+        "prepare_source": file_identity(Path(__file__), normalize_text=True),
+        "device": args.device,
+        "dtype": args.dtype,
+        "output_format": args.output_format,
+        "fixed_profile": profile,
+        "generation_config": generation_config,
+        "base_seed": args.seed,
+        "slow_samples": args.slow_samples,
+        "slow_selection_sha256": sha256_json(sorted(slow_ids)),
+    }
+    existing_state = progress_path.exists() or identity_path.exists()
+    if args.resume:
+        if progress_path.exists() and not identity_path.is_file():
+            raise RuntimeError(
+                "resume progress has no prepare_run_identity.json; use a separate output directory"
+            )
+        if identity_path.is_file():
+            mismatches = identity_mismatches(run_identity, read_json(identity_path))
+            if mismatches:
+                raise RuntimeError(
+                    "prepare resume identity mismatch: " + ", ".join(mismatches[:12])
+                    + "; use a separate output directory"
+                )
+    elif existing_state:
+        raise RuntimeError(
+            "prepare output already contains run state; use --resume or a separate output directory"
+        )
+    tensor_dir.mkdir(parents=True, exist_ok=True)
+    atomic_identity_json(identity_path, run_identity)
+    completed = load_completed_progress(progress_path) if args.resume else {}
+
     dtype = torch_dtype_from_name(torch, args.dtype)
     worker = LocateAnythingWorker(
         model_path=str(model_path),
@@ -795,11 +872,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         use_batch_runtime=False,
     )
 
-    slow_order = sorted(
-        records,
-        key=lambda record: deterministic_seed(args.seed, record["bundle_id"], "slow-select"),
-    )
-    slow_ids = {record["bundle_id"] for record in slow_order[: args.slow_samples]}
     generated_records: dict[str, dict[str, Any]] = dict(completed)
     special_tokens = [
         "<ref>",
@@ -938,6 +1010,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
                 "tensor_format": args.output_format,
                 "tensor_file": tensor_path.relative_to(output_dir).as_posix(),
                 "tensor_sha256": tensor_sha256,
+                "prepare_run_identity_sha256": sha256_file(identity_path),
             }
         )
         append_progress(progress_path, generated)
@@ -986,6 +1059,8 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "special_token_ids": special_token_ids,
         "special_token_occurrences": coverage_by_token,
         "fixed_profile": profile,
+        "prepare_run_identity": identity_path.name,
+        "prepare_run_identity_sha256": sha256_file(identity_path),
     }
     write_json(output_dir / "generation_summary.json", summary)
 
@@ -1030,7 +1105,7 @@ def build_parser() -> argparse.ArgumentParser:
     select_parser.set_defaults(func=select_records)
 
     generate_parser = subparsers.add_parser(
-        "generate", help="run the original LA PyTorch model and save replay tensors"
+        "generate", help="run the original LA PyTorch model and save calibration tensors"
     )
     generate_parser.add_argument("--selected-jsonl", type=Path, required=True)
     generate_parser.add_argument("--output-dir", type=Path, required=True)
@@ -1045,7 +1120,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate_parser.add_argument("--device", default="cuda:0")
     generate_parser.add_argument(
-        "--dtype", choices=["float16", "bfloat16", "float32"], default="bfloat16"
+        "--dtype", choices=["bfloat16"], default="bfloat16"
     )
     generate_parser.add_argument("--image-width", type=int, default=672)
     generate_parser.add_argument("--image-height", type=int, default=672)

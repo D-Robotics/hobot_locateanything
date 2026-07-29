@@ -180,6 +180,10 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
             parser.error("Qwen2.5-VL prefill and decode core counts must match")
     elif args.model_name == "locateanything-vit-3b":
         require_single_core("vit_core_num")
+        if args.calibration_scale_manifest is None:
+            parser.error(
+                "LocateAnything Vision release requires --calibration_scale_manifest"
+            )
         if (args.image_width, args.image_height) != (672, 672):
             parser.error(
                 "LocateAnything Vision release requires "
@@ -190,6 +194,10 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
     elif args.model_name == "locateanything-lm-3b":
         require_single_core("prefill_core_num")
         require_single_core("decode_core_num")
+        if args.calibration_scale_manifest is None:
+            parser.error(
+                "LocateAnything Language release requires --calibration_scale_manifest"
+            )
         if args.ar_core_num is None:
             args.ar_core_num = list(args.decode_core_num)
         require_single_core("ar_core_num")

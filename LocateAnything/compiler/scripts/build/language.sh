@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 LEAP_LLM_SRC="${LEAP_LLM_SRC:-$REPO_ROOT/compiler}"
 
 MODEL_NAME="${MODEL_NAME:-locateanything-lm-3b}"
@@ -16,8 +17,8 @@ LM_HEAD_W_BITS="${LM_HEAD_W_BITS:-8}"
 CHUNK_SIZE="${CHUNK_SIZE:-1024}"
 CACHE_LEN="${CACHE_LEN:-4096}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:-6}"   # PBD q_len=6
-EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
-EXPECTED_SELECTED_MANIFEST_SHA256="${EXPECTED_SELECTED_MANIFEST_SHA256:-22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03}"
+EXPECTED_SAMPLES=1200
+EXPECTED_SELECTED_MANIFEST_SHA256="22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
 DEVICE="${DEVICE:-cuda:0}"
 PREFILL_CORE_NUM="${PREFILL_CORE_NUM:-4}"
 DECODE_CORE_NUM="${DECODE_CORE_NUM:-4}"
@@ -43,6 +44,8 @@ CONDA_ENV="${CONDA_ENV:-oellm_clean}"
 
 LOG_DIR="${LOG_DIR:-$REPO_ROOT/workspace/builds/$BUILD_ID/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/language.log}"
+ENVIRONMENT_PATH="${ENVIRONMENT_PATH:-$LOG_DIR/language_environment.json}"
+ENVIRONMENT_SCRIPT="${ENVIRONMENT_SCRIPT:-$REPO_ROOT/compiler/scripts/common/environment.py}"
 
 if [[ -z "$BUILD_TARGET" ]]; then
   [[ "$EXPORT_ONLY_INPUT" == "1" ]] && BUILD_TARGET=bc || BUILD_TARGET=hbm
@@ -99,15 +102,30 @@ cd "$LEAP_LLM_SRC"
 [[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || { echo "activation scale manifest missing; set CALIBRATION_SCALE_MANIFEST"; exit 1; }
 [[ -n "$CALIBRATION_COVERAGE_JSON" && -f "$CALIBRATION_COVERAGE_JSON" ]] || { echo "calibration graph coverage missing; set CALIBRATION_COVERAGE_JSON"; exit 1; }
 [[ "$DISABLE_HIDDEN_ROTATION" == "0" || "$DISABLE_HIDDEN_ROTATION" == "1" ]] || { echo "DISABLE_HIDDEN_ROTATION must be 0 or 1"; exit 1; }
-command -v oellm_build >/dev/null || { echo "oellm_build not on PATH in env $CONDA_ENV"; exit 1; }
 
-VALIDATION_ARGS=()
-if [[ -n "$EXPECTED_SAMPLES" ]]; then
-  VALIDATION_ARGS+=(--expected-samples "$EXPECTED_SAMPLES")
+environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
+set +e
+"$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
+  --profile build \
+  --model-path "$INPUT_MODEL_PATH" \
+  --selected-jsonl "$CALIB_JSON" \
+  --resource-path "$OUTPUT_MODEL_PATH" \
+  --requested-jobs "$JOBS" \
+  --device "$DEVICE" \
+  --require-cuda \
+  > "$environment_temporary"
+environment_status=$?
+set -e
+mv -f "$environment_temporary" "$ENVIRONMENT_PATH"
+if [[ "$environment_status" -ne 0 ]]; then
+  echo "[build:language] environment gate failed exit_code=$environment_status report=$ENVIRONMENT_PATH"
+  exit "$environment_status"
 fi
-if [[ -n "$EXPECTED_SELECTED_MANIFEST_SHA256" ]]; then
-  VALIDATION_ARGS+=(--expected-selected-sha256 "$EXPECTED_SELECTED_MANIFEST_SHA256")
-fi
+
+VALIDATION_ARGS=(
+  --expected-samples "$EXPECTED_SAMPLES"
+  --expected-selected-sha256 "$EXPECTED_SELECTED_MANIFEST_SHA256"
+)
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
 fi
@@ -117,6 +135,7 @@ fi
 
 python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
   --component language \
+  --model-path "$INPUT_MODEL_PATH" \
   --selected-jsonl "$CALIB_JSON" \
   --generated-jsonl "$GENERATED_JSON" \
   --scale-manifest "$CALIBRATION_SCALE_MANIFEST" \

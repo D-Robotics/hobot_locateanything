@@ -910,7 +910,7 @@ link，HBM 大小 1,825,443,280 bytes，SHA256 为
 2026-07-18 后续进展：已新增
 `compiler/scripts/calibration/prepare.py`，完成论文六域配比采样、训练/验证
 隔离、图像哈希去重、LA 原生 PyTorch Hybrid/Slow 推理和可重放张量导出。当前仍需将
-生成 bundle 接入独立 Language/Vision API 的 eager observer replay；在该步骤和 scale
+生成 bundle 接入独立 Language/Vision API 的激活校准；在该步骤和 scale
 audit 完成前，#029 保持未关闭。
 
 ---
@@ -938,6 +938,6 @@ audit 完成前，#029 保持未关闭。
 `(1,576,2048)`；16:9 与 9:16 图像的 full-box 和 center-point 坐标变换检查通过；
 Python 与编译 shell 语法检查通过。
 
-**未验证**: 4090 上的 LA 原生 Hybrid/Slow 672 生成、observer replay、scale audit
+**未验证**: 4090 上的 LA 原生 Hybrid/Slow 672 生成、激活校准、scale audit
 和 672 HBM 板端结果尚未完成，因此当前不能启动发布 HBM 长编译。
 

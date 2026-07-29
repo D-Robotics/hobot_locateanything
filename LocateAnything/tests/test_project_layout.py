@@ -51,6 +51,7 @@ def test_central_path_defaults_match_product_layout(monkeypatch):
         "LA_DEPLOY_ROOT",
         "LA_CALIBRATION_ROOT",
         "LA_EVALUATION_ROOT",
+        "LA_BUILD_ROOT",
         "LA_ARTIFACT_ROOT",
         "LA_RUN_ROOT",
         "LA_MODEL_ROOT",
@@ -63,5 +64,6 @@ def test_central_path_defaults_match_product_layout(monkeypatch):
     assert paths.deploy_root == (ROOT / "deploy").resolve()
     assert paths.calibration_root == (ROOT / "workspace" / "calibration").resolve()
     assert paths.evaluation_root == (ROOT / "workspace" / "evaluation").resolve()
+    assert paths.build_root == (ROOT / "workspace" / "builds").resolve()
     assert paths.artifact_root == (ROOT / "workspace" / "artifacts").resolve()
     assert paths.model_root == (ROOT / "workspace" / "models").resolve()

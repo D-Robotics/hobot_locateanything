@@ -169,6 +169,8 @@ def validate_descriptor_contract(
         _require(len(cache_dtypes) == 1,
                  f"{graph_name}: cache input dtypes are inconsistent: {sorted(cache_dtypes)}")
         cache_dtype = next(iter(cache_dtypes))
+        _require(cache_dtype == "int8",
+                 f"{graph_name}: linked HBM cache dtype must be int8, got {cache_dtype}")
         if common_cache_dtype is None:
             common_cache_dtype = cache_dtype
         _require(cache_dtype == common_cache_dtype,

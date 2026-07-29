@@ -18,6 +18,7 @@ from leap_llm.nn.utils import Model
 
 INPUT_SHAPE = (1, 2304, 588)
 OUTPUT_SHAPE = (1, 576, 2048)
+IO_DTYPE = "float16"
 
 
 def heading(value: str) -> None:
@@ -68,6 +69,42 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def canonical_dtype(value: Any) -> str:
+    tensor_type = getattr(value, "type", None)
+    raw = getattr(tensor_type, "np_dtype", None)
+    if raw is None:
+        raise RuntimeError("visual tensor descriptor has no np_dtype")
+    text = str(raw).lower()
+    for dtype in ("float16", "float32", "int8", "uint8", "int16", "int32", "int64"):
+        if dtype in text:
+            return dtype
+    raise RuntimeError(f"unsupported visual tensor dtype: {raw!r}")
+
+
+def validate_visual_function(function: Any) -> None:
+    if str(function.name) != "visual":
+        raise RuntimeError(f"visual graph name mismatch: {function.name}")
+    if len(function.inputs) != 1 or len(function.outputs) != 1:
+        raise RuntimeError(
+            "visual graph must expose one input and one output; "
+            f"got {len(function.inputs)} and {len(function.outputs)}"
+        )
+    input_shape = tuple(function.inputs[0].type.shape)
+    output_shape = tuple(function.outputs[0].type.shape)
+    input_dtype = canonical_dtype(function.inputs[0])
+    output_dtype = canonical_dtype(function.outputs[0])
+    if input_shape != INPUT_SHAPE or output_shape != OUTPUT_SHAPE:
+        raise RuntimeError(
+            f"visual graph shape mismatch: input={input_shape} output={output_shape}; "
+            f"expected {INPUT_SHAPE} -> {OUTPUT_SHAPE}"
+        )
+    if input_dtype != IO_DTYPE or output_dtype != IO_DTYPE:
+        raise RuntimeError(
+            f"visual graph dtype mismatch: input={input_dtype} output={output_dtype}; "
+            f"expected {IO_DTYPE} -> {IO_DTYPE}"
+        )
+
+
 def validate_visual_bc(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         raise RuntimeError(f"visual BC is missing: {path}")
@@ -77,20 +114,12 @@ def validate_visual_bc(path: Path) -> None:
         names = [str(function.name) for function in functions]
         raise RuntimeError(f"visual BC must contain only graph 'visual'; got {names}")
     function = functions[0]
-    if len(function.inputs) != 1 or len(function.outputs) != 1:
-        raise RuntimeError(
-            "visual BC must expose one input and one output; "
-            f"got {len(function.inputs)} and {len(function.outputs)}"
-        )
+    validate_visual_function(function)
     input_shape = tuple(function.inputs[0].type.shape)
     output_shape = tuple(function.outputs[0].type.shape)
-    if input_shape != INPUT_SHAPE or output_shape != OUTPUT_SHAPE:
-        raise RuntimeError(
-            f"visual BC shape mismatch: input={input_shape} output={output_shape}; "
-            f"expected {INPUT_SHAPE} -> {OUTPUT_SHAPE}"
-        )
     print(
-        f"[PASS] visual: input={input_shape} output={output_shape}",
+        f"[PASS] visual: input={input_shape}/{IO_DTYPE} "
+        f"output={output_shape}/{IO_DTYPE}",
         flush=True,
     )
 
@@ -101,7 +130,10 @@ def valid_function(path: Path, expected_name: str) -> bool:
     try:
         module = load(str(path))
         functions = list(module.functions)
-        return len(functions) == 1 and str(functions[0].name) == expected_name
+        if len(functions) != 1 or str(functions[0].name) != expected_name:
+            return False
+        validate_visual_function(functions[0])
+        return True
     except Exception:
         return False
 
@@ -127,10 +159,8 @@ def hbm_contract_matches(path: Path) -> bool:
         graph = graphs["visual"]
         if len(graph.inputs) != 1 or len(graph.outputs) != 1:
             return False
-        return (
-            tuple(graph.inputs[0].type.shape) == INPUT_SHAPE
-            and tuple(graph.outputs[0].type.shape) == OUTPUT_SHAPE
-        )
+        validate_visual_function(graph)
+        return True
     except Exception:
         return False
 
@@ -223,6 +253,7 @@ def main() -> int:
         temporary = converted_path.with_name(converted_path.stem + ".partial.bc")
         save(converted, str(temporary))
         os.replace(temporary, converted_path)
+        validate_visual_bc(converted_path)
         write_digest(converted_path)
         print(f"[PASS] converted visual: {converted_path}", flush=True)
 

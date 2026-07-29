@@ -32,10 +32,11 @@ python compiler/quantize.py calibrate
 python compiler/quantize.py verify --component all --level contract
 ```
 
-The first command checks the frozen 1,200-record manifest, image hashes, model
-metadata, tokenizer, processor, and sequence-length contracts without loading
-the 3B weights or using CUDA. The full Prepare stage then creates replay
-tensors with `max_new_tokens=1024`. Contract verification checks the
+The first command checks the frozen 1,200-record manifest, image hashes,
+checkpoint index and shard hashes, tokenizer, processor, runtime-tokenizer
+parity, and sequence-length contracts without loading the 3B weights or using
+CUDA. The regular `prepare` command runs the same preflight first, then creates
+calibration tensors with `max_new_tokens=1024`. Contract verification checks the
 selected/generated manifests, frozen scale files, graph coverage, and the fixed
 672/1024/4096 build profile. It does not re-run the separate hidden-domain
 numerical experiment. The internal rotation validator previously produced the
@@ -63,6 +64,20 @@ Expected BC contracts:
 | decode_pbd_q7...q12 | 75 | fused-PBD logits + 72 KV |
 | decode_ar_q2...q5 | 75 | causal bridge logits + 72 KV |
 | visual | 1 | `(1,576,2048)` visual embeddings |
+
+The 13 Language graphs follow the upstream Hybrid state machine, not a generic
+`q=1...12` sweep. `prefill`, `decode` (PBD q=6), and `decode_ar` (AR q=1) are
+the three base graphs. In upstream generation, a PBD result is appended to the
+generated sequence before its K/V rows exist in the cache. If a legal pattern
+accepts `N` tokens, the next MTP call receives those `N` causal prefix tokens
+followed by the duplicated anchor and five mask tokens; the fixed graph query
+length is therefore `N+6`. Legal patterns can retain 1 through 6 tokens, which
+requires `decode_pbd_q7...q12`. An `error_box` instead switches to AR after a
+1-through-5-token coordinate prefix, so the causal bridge family is q=1...5;
+q=1 is `decode_ar`, while `decode_ar_q2...q5` supply the remaining four shapes.
+There is no AR q=6 branch: a complete six-token box is legal and remains in
+PBD. Calibration consequently executes PBD q=6...12 and AR q=1...5, while the
+compiled catalog represents the q=6 and q=1 cases with their base graph names.
 
 ## 4. Compile HBM
 

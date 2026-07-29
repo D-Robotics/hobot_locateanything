@@ -3,7 +3,7 @@
 These tests focus on source provenance and offline-reader requirements that
 ``test_collect_local_sources.py`` does not yet cover:
 
-  * Real headerless SKU110K CSV (the G1-verified format — the existing fixture
+  * Real headerless SKU110K CSV (the source-audited format; the existing fixture
     has a synthetic header which masks the production bug).
   * A hard assertion that local mode never opens a network socket, by
     patching ``urllib.request.urlopen`` and ``socket.socket`` and asserting

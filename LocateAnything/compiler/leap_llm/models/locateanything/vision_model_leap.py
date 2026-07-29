@@ -1,4 +1,4 @@
-"""LocateAnything MoonViT vision model — leap DSL wrapper (M3-α).
+"""LocateAnything MoonViT vision model implemented with the Leap DSL.
 
 Vendored & simplified from qwen2_5_vl/model.py::Qwen2_5_VLVisionModel with
 these MoonViT-specific changes:
@@ -50,11 +50,18 @@ class LocateAnythingVisionModel(Model):
       visual_embeds: (1, N_patches/4, llm_hidden)          = (1, 576, 2048)
     """
 
-    def __init__(self, vision_config, llm_hidden: int, use_plugin: bool = False) -> None:
+    def __init__(
+        self,
+        vision_config,
+        llm_hidden: int,
+        use_plugin: bool = False,
+        w_bits: int = 8,
+    ) -> None:
         super().__init__()
         self.config = vision_config
         self.llm_hidden = llm_hidden
         self.use_plugin = use_plugin
+        self.w_bits = w_bits
 
         self.patch_size = vision_config.patch_size
         self.grid_h = vision_config.image_height // self.patch_size
@@ -69,11 +76,14 @@ class LocateAnythingVisionModel(Model):
             in_channels=3,
             num_patches=self.num_patches,
             use_plugin=use_plugin,
+            w_bits=w_bits,
         )
 
         # 27 encoder blocks.
         self.blocks = nn.ModuleList([
-            LocateAnythingVisionBlock(vision_config, use_plugin=use_plugin)
+            LocateAnythingVisionBlock(
+                vision_config, use_plugin=use_plugin, w_bits=w_bits
+            )
             for _ in range(vision_config.num_hidden_layers)
         ])
         self.final_layernorm = LayerNorm(vision_config.hidden_size)
@@ -85,6 +95,7 @@ class LocateAnythingVisionModel(Model):
             grid_h=self.grid_h, grid_w=self.grid_w,
             merge_kernel=tuple(vision_config.merge_kernel_size),
             use_plugin=use_plugin,
+            w_bits=w_bits,
         )
 
         # Pre-compute 2D rope table and stash as buffers (fp32).
@@ -102,8 +113,8 @@ class LocateAnythingVisionModel(Model):
         # pair's rotor for its real and imaginary element.
         cos = cos_half.repeat_interleave(2, dim=-1)                         # (N, dim)
         sin = sin_half.repeat_interleave(2, dim=-1)
-        self.register_buffer("rope_cos", cos.to(torch.float32), persistent=True)
-        self.register_buffer("rope_sin", sin.to(torch.float32), persistent=True)
+        self.register_buffer("rope_cos", cos.to(torch.float32), persistent=False)
+        self.register_buffer("rope_sin", sin.to(torch.float32), persistent=False)
 
         if self.use_plugin:
             self.quant_hiddenstates = QuantStub()

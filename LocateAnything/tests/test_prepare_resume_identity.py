@@ -4,6 +4,7 @@ from compiler.scripts.calibration.prepare import (
     RESUME_IDENTITY_FIELDS,
     resume_identity_mismatches,
 )
+from compiler.scripts.common.identity import identity_mismatches
 
 
 def identity_record():
@@ -44,4 +45,22 @@ def test_resume_identity_rejects_v5_prompt_for_v6_record():
     assert resume_identity_mismatches(selected, completed) == [
         "prompt",
         "target_response",
+    ]
+
+
+def test_run_identity_reports_nested_checkpoint_and_generation_changes():
+    expected = {
+        "checkpoint": {"index": {"sha256": "a"}},
+        "dtype": "bfloat16",
+        "generation_config": {"temperature": 0.7},
+    }
+    actual = {
+        "checkpoint": {"index": {"sha256": "b"}},
+        "dtype": "float16",
+        "generation_config": {"temperature": 0.9},
+    }
+    assert identity_mismatches(expected, actual) == [
+        "checkpoint.index.sha256",
+        "dtype",
+        "generation_config.temperature",
     ]

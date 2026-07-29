@@ -135,8 +135,8 @@ class LocateAnythingTextModel(Model):
         rope = LocateAnythingRotaryEmbedding(config)
         max_len = getattr(config, "max_lm_tokens", config.cache_len)
         cache_cos, cache_sin = rope.build_cos_sin(max_len)
-        self.register_buffer("cache_cos", cache_cos, persistent=True)
-        self.register_buffer("cache_sin", cache_sin, persistent=True)
+        self.register_buffer("cache_cos", cache_cos, persistent=False)
+        self.register_buffer("cache_sin", cache_sin, persistent=False)
 
         if self.use_plugin:
             self.quant_input_embeds = None  # QuantStub removed: text embed too small (mean 0.02) gets quantized to zero in decode

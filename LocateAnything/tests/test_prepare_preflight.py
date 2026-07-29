@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+from collections import UserDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,6 +111,7 @@ def test_model_audit_accepts_vocab_merges_tokenizer_layout(tmp_path):
         json.dumps(module.EXPECTED_TOKEN_IDS), encoding="utf-8"
     )
     (model / "model.safetensors").write_bytes(b"weights")
+    checkpoint_sha256 = sha256(model / "model.safetensors")
 
     report = module.audit_model(model, {
         "patch_size": 14,
@@ -117,6 +119,8 @@ def test_model_audit_accepts_vocab_merges_tokenizer_layout(tmp_path):
         "vocab_size": 152681,
         "hidden_size": 2048,
         "image_token_id": 151665,
+        "checkpoint_sha256": {"model.safetensors": checkpoint_sha256},
+        "checkpoint_index_sha256": None,
     })
 
     assert report["tokenizer_layout"] == "bpe_vocab_merges"
@@ -124,6 +128,7 @@ def test_model_audit_accepts_vocab_merges_tokenizer_layout(tmp_path):
         "vocab.json", "merges.txt", "added_tokens.json", "tokenizer_config.json"
     }
     assert report["checkpoint_shards"] == 1
+    assert report["checkpoint_files"]["model.safetensors"]["sha256"] == checkpoint_sha256
 
 
 def test_dependency_audit_uses_import_and_checks_critical_versions():
@@ -200,6 +205,40 @@ def test_processor_contract_expands_exactly_576_visual_tokens():
     assert report["max_prefill"]["tokens"] == 578
     assert report["model_weights_loaded"] is False
     assert report["gpu_inference"] is False
+
+
+def test_flatten_ids_accepts_batch_encoding_mapping():
+    module = load_module()
+    encoded = UserDict({"input_ids": [[11, 12, 13]]})
+    assert module.flatten_ids(encoded) == [11, 12, 13]
+
+
+def test_runtime_tokenizer_must_match_checkpoint_tokenizer(tmp_path):
+    module = load_module()
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text("{}", encoding="utf-8")
+
+    class CheckpointTokenizer:
+        def __call__(self, value, **_kwargs):
+            return UserDict({"input_ids": [ord(character) for character in value]})
+
+    class RuntimeEncoding:
+        def __init__(self, value):
+            self.ids = [ord(character) for character in value]
+
+    class RuntimeTokenizer:
+        def encode(self, value, **_kwargs):
+            return RuntimeEncoding(value)
+
+    records = [{"bundle_id": "sample-1", "prompt": "cat", "target_response": "box"}]
+    report = module.audit_runtime_tokenizer(
+        CheckpointTokenizer(),
+        records,
+        tokenizer_json,
+        loader=lambda _path: RuntimeTokenizer(),
+    )
+    assert report["texts_checked"] == 2
+    assert report["regex_contract"] == "checkpoint_default_matches_runtime_tokenizer_json"
 
 
 def test_representative_image_check_runs_real_letterbox_processor_contract(tmp_path):

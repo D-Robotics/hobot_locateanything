@@ -32,6 +32,10 @@ def parse_release_profile(tmp_path: Path, model_name: str, *overrides: str):
         "--input_model_path", str(checkpoint),
         "--output_model_path", str(tmp_path / "output"),
     ]
+    if model_name.startswith("locateanything-"):
+        scale_manifest = tmp_path / "calibration_scale_manifest.json"
+        scale_manifest.write_text("{}\n", encoding="utf-8")
+        base.extend(["--calibration_scale_manifest", str(scale_manifest)])
     if model_name == "locateanything-vit-3b":
         base.extend(["--image_width", "672", "--image_height", "672"])
     elif model_name == "locateanything-lm-3b":
@@ -60,10 +64,10 @@ def test_compile_wrappers_validate_all_four_evidence_inputs_before_build():
             "--expected-samples",
         ):
             assert argument in validation, f"{path.name} misses validation argument {argument}"
-        assert 'EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"' in validation
+        assert "EXPECTED_SAMPLES=1200" in validation
         assert (
-            'EXPECTED_SELECTED_MANIFEST_SHA256="${EXPECTED_SELECTED_MANIFEST_SHA256:-'
-            '22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03}"'
+            'EXPECTED_SELECTED_MANIFEST_SHA256="'
+            '22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"'
             in validation
         )
         assert "--calibration_scale_manifest" in build
@@ -152,6 +156,19 @@ def test_oellm_build_accepts_locateanything_release_profiles(tmp_path, model_nam
     build, parser, args = parse_release_profile(tmp_path, model_name)
 
     build.validate_args(parser, args)
+
+
+@pytest.mark.parametrize(
+    "model_name", ("locateanything-vit-3b", "locateanything-lm-3b")
+)
+def test_oellm_build_rejects_missing_calibration_scale_manifest(
+    tmp_path, capsys, model_name
+):
+    build, parser, args = parse_release_profile(tmp_path, model_name)
+    args.calibration_scale_manifest = None
+    with pytest.raises(SystemExit):
+        build.validate_args(parser, args)
+    assert "--calibration_scale_manifest" in capsys.readouterr().err
 
 
 def test_oellm_build_keeps_qwen_baseline_contract_independent(tmp_path):

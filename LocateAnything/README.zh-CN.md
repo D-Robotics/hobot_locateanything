@@ -46,7 +46,8 @@ LocateAnything-3B 面向开放词汇目标定位、区域理解与结构化坐�
 当前发布配置固定为 MoonViT 672x672、Vision W8、Language 与 `lm_head` W8/W8、
 Prefill 1024、KV cache 4096、PBD q=6 和 AR q=1。校准集共 1200 条，其中
 Detection 620 条，其余 580 条覆盖 GUI、Referring、OCR、Layout 和 Pointing；
-512 条仅用于检查 Scale 收敛。Grounding 发布评测使用 IoU 0.90。
+512 条仅用于检查 Scale 收敛。Grounding 发布评测使用 IoU 0.90。发布配置同时固定
+checkpoint 索引与两份权重分片的 SHA256，禁止同名目录下的其他权重复用这套 Scale。
 
 ## 系统架构
 
@@ -106,9 +107,9 @@ cd ..
 
 ### 3. 准备并校准
 
-编译流程统一为 `source -> prepare -> calibrate -> build -> verify`。Source 阶段冻结
+编译流程统一为四个命令：`prepare -> calibrate -> build -> verify`。流程输入是已经冻结的
 `workspace/calibration/current/selected.jsonl`；下面的命令只消费该清单，不会重新采集
-数据集。
+数据集，也不把数据筛选误写成第五个编译阶段。
 
 ```bash
 python compiler/quantize.py prepare --preflight-only

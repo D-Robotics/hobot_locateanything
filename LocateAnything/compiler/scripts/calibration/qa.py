@@ -255,7 +255,7 @@ def main() -> int:
     write_json(args.bundle_dir / "qa_summary.json", summary)
 
     args.report_dir.mkdir(parents=True, exist_ok=True)
-    report = f"""# G3 Source QA Report
+    report = f"""# Source Bundle QA Report
 
 ## Outcome
 
@@ -279,12 +279,12 @@ def main() -> int:
 ## Boundary
 
 This report validates the selected source bundle. It does not prove that the
-LocateAnything processor, GPU materialization, observers, BC/HBM, or S600
+    LocateAnything processor, GPU materialization, activation calibration, BC/HBM, or S600
 runtime have consumed these samples.
 """
     (args.report_dir / "SOURCE_QA_REPORT.md").write_text(report, encoding="utf-8")
 
-    explanations = f"""# G3 Artifact Explanations
+    explanations = f"""# Calibration Bundle Artifact Explanations
 
 ## selected.jsonl
 
@@ -303,11 +303,11 @@ runtime have consumed these samples.
 
 ### 4. 建模/实验启发
 
-固定清单与 seed 后，256/512 observer convergence 才能做受控比较。
+固定清单与 seed 后，512/1200 的 Scale 收敛差异才能做受控比较。
 
 ### 5. 风险与补充检查
 
-该文件仍是 source bundle，不是 observer calibration 或 HBM 验证证据。
+该文件仍是源数据清单，不是激活校准或 HBM 验证证据。
 
 ## qa_overlays contact sheets
 
@@ -348,7 +348,7 @@ overlay 正确是后续 672 profile 坐标转换可用的必要条件。
 
 ### 4. 建模/实验启发
 
-几何密度差异说明 observer replay 必须覆盖全部六域，不能只用 detection。
+几何密度差异说明激活校准必须覆盖全部六域，不能只用 detection。
 
 ### 5. 风险与补充检查
 
