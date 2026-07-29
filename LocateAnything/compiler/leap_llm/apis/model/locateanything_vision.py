@@ -212,7 +212,7 @@ class LocateAnythingVisionApi:
             )
             print(f"[LocateAnythingVisionApi] restored calibration: {restored}")
         else:
-            print("WARN: no 512-sample calibration scale manifest was provided")
+            print("WARN: no release calibration scale manifest was provided")
         self.model.compile_mode(True)
         self.model = self.model.to("cpu", dtype=torch.float16)
         gc.collect()

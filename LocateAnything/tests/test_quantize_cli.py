@@ -42,6 +42,30 @@ def test_config_fixes_release_contract():
     assert config["vision"]["w_bits"] == 8
     assert config["paths"]["upstream_source"] == "workspace/upstream/Embodied"
     assert config["paths"]["artifact_root"] == "workspace/builds/release_candidate"
+    assert config["calibration"]["sample_count"] == 1200
+    assert config["calibration"]["checkpoint_samples"] == 512
+    assert config["calibration"]["max_new_tokens"] == 1024
+    assert config["calibration"]["selected_manifest_sha256"] == (
+        "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+    )
+    assert config["calibration"]["task_counts"] == {
+        "detection": 620,
+        "gui": 180,
+        "referring": 120,
+        "ocr": 120,
+        "layout": 100,
+        "pointing": 60,
+    }
+    assert config["calibration"]["source_role_counts"] == {
+        "coco_multicategory_detection": 500,
+        "dense_retail_detection": 120,
+        "existing_non_detection": 580,
+    }
+    assert config["calibration"]["coco_stratum_counts"] == {
+        "single": 200,
+        "double": 220,
+        "multi": 80,
+    }
 
 
 def test_rotation_validation_uses_the_release_tensor_contract():
@@ -64,6 +88,30 @@ def test_graph_contract_rejects_duplicates_and_reordering():
         raise AssertionError("duplicate graph name was accepted")
 
 
+def test_release_config_rejects_a_legacy_calibration_count():
+    module = load_cli()
+    config = module.load_config(CONFIG)
+    config["calibration"]["sample_count"] = 820
+    try:
+        module.validate_config(config)
+    except module.ConfigurationError as error:
+        assert "sample_count=1200" in str(error)
+    else:
+        raise AssertionError("legacy calibration count was accepted")
+
+
+def test_release_config_rejects_the_legacy_generation_limit():
+    module = load_cli()
+    config = module.load_config(CONFIG)
+    config["calibration"]["max_new_tokens"] = 512
+    try:
+        module.validate_config(config)
+    except module.ConfigurationError as error:
+        assert "max_new_tokens=1024" in str(error)
+    else:
+        raise AssertionError("legacy calibration generation limit was accepted")
+
+
 def test_all_public_commands_have_help():
     assert run_cli("--help").returncode == 0
     for command in ("prepare", "calibrate", "build", "verify"):
@@ -83,6 +131,10 @@ def test_build_dry_run_forwards_fixed_contract():
     assert "W_BITS=8" in result.stdout
     assert "LM_HEAD_W_BITS=8" in result.stdout
     assert "FUSED_PBD_PROFILES=1" in result.stdout
+    assert (
+        "EXPECTED_SELECTED_MANIFEST_SHA256="
+        "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+    ) in result.stdout
     assert "WAIT=1" in result.stdout
     assert "DETACH=0" in result.stdout
     assert "language_graphs\": 13" in result.stdout
@@ -102,6 +154,11 @@ def test_build_all_plan_waits_for_vision_before_language():
     ]
     assert all(step.env["WAIT"] == "1" for step in steps)
     assert all(step.env["DETACH"] == "0" for step in steps)
+    assert all(
+        step.env["EXPECTED_SELECTED_MANIFEST_SHA256"]
+        == config["calibration"]["selected_manifest_sha256"]
+        for step in steps
+    )
 
 
 def test_build_all_executes_serially_and_stops_after_failure(monkeypatch):
@@ -130,6 +187,16 @@ def test_each_build_target_is_accepted_in_dry_run():
         )
         assert result.returncode == 0, result.stderr
         assert f"BUILD_TARGET={target}" in result.stdout
+
+
+def test_build_resume_is_forwarded_to_each_component():
+    module = load_cli()
+    config = module.load_config(CONFIG)
+    args = module.build_parser().parse_args(
+        ["build", "--component", "all", "--target", "hbm", "--resume"]
+    )
+    steps = module.build_plan(args, config)
+    assert [step.env["RESUME"] for step in steps] == ["1", "1"]
 
 
 def test_hbo_is_not_exposed_as_a_false_stop_target():
@@ -161,3 +228,16 @@ def test_cli_uses_standardized_script_layout():
     assert "compiler/scripts/validate/compare_pipeline.py" in verify_output
     assert "--scale_manifest" in verify.stdout
     assert "compiler/scripts/validate/evaluate_grounding.py" in verify_output
+
+
+def test_prepare_preflight_only_bypasses_gpu_generation_wrapper():
+    result = run_cli("prepare", "--preflight-only", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    output = result.stdout.replace("\\", "/")
+    assert "compiler/scripts/calibration/preflight.py" in output
+    assert "compiler/scripts/calibration/prepare.sh" not in output
+    assert "DEVICE=" not in output
+    assert "DTYPE=" not in output
+    assert "MAX_NEW_TOKENS=" not in output
+    assert "--report-json" in output
+    assert "no CUDA or model inference" in output

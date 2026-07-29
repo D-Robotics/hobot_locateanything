@@ -1015,13 +1015,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     select_parser.add_argument("--image-root", type=Path)
     select_parser.add_argument("--output-dir", type=Path, required=True)
-    select_parser.add_argument("--num-samples", type=int, default=512)
+    select_parser.add_argument("--num-samples", type=int, default=1200)
     select_parser.add_argument(
         "--quota",
         action="append",
-        help="explicit task quota, repeat for all six domains (for example detection=208)",
+        help="explicit task quota, repeat for all six domains (for example detection=620)",
     )
-    select_parser.add_argument("--seed", type=int, default=20260718)
+    select_parser.add_argument("--seed", type=int, default=20260729)
     select_parser.add_argument(
         "--temperature", type=float, default=0.5,
         help="paper-weight exponent; 1.0 mirrors query ratios, 0.5 improves minority coverage",
@@ -1060,9 +1060,9 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--merge-size", type=int, default=2)
     generate_parser.add_argument("--hidden-size", type=int, default=2048)
     generate_parser.add_argument("--prefill-limit", type=int, default=1024)
-    generate_parser.add_argument("--max-new-tokens", type=int, default=2048)
+    generate_parser.add_argument("--max-new-tokens", type=int, default=1024)
     generate_parser.add_argument("--slow-samples", type=int, default=64)
-    generate_parser.add_argument("--seed", type=int, default=20260718)
+    generate_parser.add_argument("--seed", type=int, default=20260729)
     generate_parser.add_argument("--temperature", type=float, default=0.7)
     generate_parser.add_argument("--top-p", type=float, default=0.9)
     generate_parser.add_argument("--top-k", type=int, default=0)

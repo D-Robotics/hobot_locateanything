@@ -275,6 +275,7 @@ hf download nvidia/LocateAnything-3B \
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate oellm_clean
 
+python -m pip install decord==0.6.0 lmdb==2.2.1
 cd ~/oe_locateanything/LocateAnything/compiler
 pip install -e . --no-deps
 
@@ -310,7 +311,7 @@ python compiler/quantize.py build --component all --target bc
 
 | Graph | Input embeds | Logits output |
 |---|---|---|
-| `prefill` | `(1,1024,2048)` | `(1,1024,152681)` |
+| `prefill` | `(1,1024,2048)` | `(1,1,152681)`，仅最后一行 |
 | `decode` | `(1,6,2048)` | `(1,6,152681)` |
 | `decode_ar` | `(1,1,2048)` | `(1,1,152681)` |
 | `decode_pbd_q7..q12` | `(1,7..12,2048)` | `(1,7..12,152681)` |
@@ -323,12 +324,11 @@ python compiler/quantize.py build --component all --target bc
 Vision 使用固定 672x672 输入、W8 权重和四个 BPU core。`build --component all`
 会在同一份配置下导出 Language 图族和 `visual` 图，避免两个组件使用不同 profile。
 
-### 6.6 编译并验证 HBM
+### 6.6 编译 HBM
 
 ```bash
 cd ~/oe_locateanything/LocateAnything
 python compiler/quantize.py build --component all --target hbm --resume
-python compiler/quantize.py verify --component all --level all
 ```
 
 统一入口按照 `compiler/config.yaml` 顺序构建 Vision 与 Language，并将日志写入
@@ -339,6 +339,40 @@ BC/HBO/HBM 与 checksum：
 python compiler/quantize.py build --component language --target hbm \
   --output-dir ~/oellm_clean/output/la_fix012 --resume
 ```
+
+`--resume` 不是按文件名跳过阶段。BC 清单同时绑定 checkpoint 元数据、Scale
+清单、隐藏域配置、编译适配源码摘要、工具链版本以及每张 BC 的 SHA256；Converted
+BC、HBO 和 HBM 另有 SHA256 sidecar。任一来源或编译参数变化后，当前命令会使下游
+缓存失效并从最近的可信阶段继续构建。Language HBM 还必须精确包含约定的 13 张图，
+Vision HBM 必须只包含 `visual`；多图、少图或输出 shape 不符均不能作为 resume 命中。
+
+### 6.7 准备验证证据
+
+HBM 构建只生成部署产物，不会自动生成 Float/Quantized-Eager/BC/HBM 的同输入
+对比结果，也不会执行板端 held-out 推理。因此，`verify --level all` 不是紧跟 build
+即可完成的命令。运行前必须具备：
+
+1. `prepare` 与 `calibrate` 生成的 selected/generated manifest、Scale manifest 和
+   graph coverage；
+2. `workspace/evaluation/release_candidate/pipeline/` 中由
+   `compare_pipeline.py` 分阶段生成的 `inputs.json`、完整 `float/stage.json`，以及
+   至少一个已完成候选阶段的 `stage.json` 和逐样本输出；各阶段必须使用同一输入集、
+   同一 phase 和同一采样数量；
+3. `workspace/evaluation/current/selected.jsonl` 的独立 held-out 标注，以及
+   `workspace/evaluation/release_candidate/predictions.jsonl` 的对应板端预测。
+
+这些前置产物齐备后再执行：
+
+```bash
+python compiler/quantize.py verify --component all --level all
+```
+
+该命令依次检查校准合同、汇总现有 pipeline 对比并计算任务指标；它不负责采集上述
+执行结果。HBM 图目录、shape 和 dtype 另由 `compiler/scripts/validate/hbm_sanity.py`
+检查，其中 Prefill 合同为 1024 个输入位置、1 行 logits 和 1024 行 KV update。
+上述第 2 条是分析器可运行的最低条件；正式发布还应确认 quantized-eager、exported BC、
+converted BC 和 HBM 四个候选阶段全部出现在报告中。分析器允许有意生成部分阶段报告，
+不能把这种报告解释为完整验证通过。
 
 ## 7. S600 部署
 

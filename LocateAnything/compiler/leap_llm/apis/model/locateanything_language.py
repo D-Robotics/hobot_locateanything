@@ -290,7 +290,7 @@ class LocateAnythingLanguageApi:
             )
             print(f"[LocateAnythingLanguageApi] restored calibration: {restored}")
         else:
-            print("WARN: no 512-sample calibration scale manifest was provided")
+            print("WARN: no release calibration scale manifest was provided")
         self.text_model.compile_mode(True)
         self.text_model = self.text_model.to("cpu", dtype=torch.float16)
         gc.collect()

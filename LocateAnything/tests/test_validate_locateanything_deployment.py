@@ -177,7 +177,7 @@ def test_preflight_rejects_stale_language_observer_profile(tmp_path, monkeypatch
     assert run(monkeypatch, paths) == 2
 
 
-def test_preflight_rejects_disabling_d4_hidden_rotation(tmp_path, monkeypatch):
+def test_preflight_rejects_disabling_calibration_hidden_rotation(tmp_path, monkeypatch):
     paths = fixtures(tmp_path)
     selected, generated, scale, coverage = paths
     monkeypatch.setattr(sys, "argv", [
@@ -191,3 +191,48 @@ def test_preflight_rejects_disabling_d4_hidden_rotation(tmp_path, monkeypatch):
         "--decode-seq-len", "6", "--disable-hidden-rotation",
     ])
     assert deployment.main() == 2
+
+
+def test_release_distribution_gate_requires_frozen_task_and_detection_mix():
+    assert deployment.release_distribution_errors(
+        1200,
+        deployment.RELEASE_TASK_COUNTS,
+        deployment.RELEASE_DETECTION_SOURCE_COUNTS,
+    ) == []
+
+    wrong_tasks = dict(deployment.RELEASE_TASK_COUNTS)
+    wrong_tasks["detection"] -= 1
+    wrong_tasks["gui"] += 1
+    errors = deployment.release_distribution_errors(
+        1200,
+        wrong_tasks,
+        {"coco_multicategory_detection": 620},
+    )
+    assert any("release task counts mismatch" in error for error in errors)
+    assert any("release Detection source counts mismatch" in error for error in errors)
+
+
+def test_non_release_fixture_does_not_inherit_release_distribution_gate():
+    assert deployment.release_distribution_errors(
+        None,
+        {task: 50 for task in deployment.TASKS},
+        {"missing": 50},
+    ) == []
+
+
+def test_release_checkpoint_gate_requires_512_samples():
+    assert deployment.release_checkpoint_errors(1200, 512) == []
+    assert "expected=512" in deployment.release_checkpoint_errors(1200, 256)[0]
+    assert deployment.release_checkpoint_errors(None, 256) == []
+
+
+def test_release_manifest_gate_requires_and_matches_frozen_sha():
+    digest = "a" * 64
+    assert deployment.selected_manifest_sha_errors(1200, digest, digest) == []
+    assert "is required" in deployment.selected_manifest_sha_errors(1200, None, digest)[0]
+    assert "mismatch" in deployment.selected_manifest_sha_errors(1200, "b" * 64, digest)[0]
+    assert "is invalid" in deployment.selected_manifest_sha_errors(None, "short", digest)[0]
+
+
+def test_non_release_manifest_gate_is_optional():
+    assert deployment.selected_manifest_sha_errors(None, None, "a" * 64) == []

@@ -59,10 +59,12 @@ embedding stream. No additional runtime projection is required.
 | 36 key caches | `(1, 4096, 2, 128)` each | artifact-declared (current W8/W8: S8) |
 | 36 value caches | `(1, 4096, 2, 128)` each | artifact-declared (current W8/W8: S8) |
 
-The graph returns logits `(1, 1024, 152681)` and one key/value update per
-decoder layer. The KV dtype is part of the HBM contract; the current W8/W8
-artifact declares `S8` for both cache inputs and updates, so the host must
-discover and preserve that dtype rather than hard-code `F32`.
+The graph consumes all 1024 positions and returns one key/value update per
+decoder layer for those positions. Only the final hidden row is projected by
+`lm_head`, so the primary logits output is `(1, 1, 152681)`, not
+`(1, 1024, 152681)`. The KV dtype is part of the HBM contract; the current
+W8/W8 artifact declares `S8` for both cache inputs and updates, so the host
+must discover and preserve that dtype rather than hard-code `F32`.
 
 ### Language `decode`
 

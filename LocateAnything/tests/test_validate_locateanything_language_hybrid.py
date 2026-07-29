@@ -47,6 +47,25 @@ def test_generation_config_defaults_to_official_output_budget():
     assert config.max_new_tokens == 2048
 
 
+def test_generation_metadata_prefers_prepare_metadata_over_generation_summary(tmp_path):
+    tensor_dir = tmp_path / "generated" / "tensors"
+    tensor_dir.mkdir(parents=True)
+    (tensor_dir.parent / "prepare_job_metadata.json").write_text(
+        json.dumps({"max_new_tokens": 64}), encoding="utf-8"
+    )
+    (tensor_dir.parent / "generation_summary.json").write_text(
+        json.dumps({"max_new_tokens": 96}), encoding="utf-8"
+    )
+
+    metadata, provenance = validation.load_generation_metadata(tensor_dir)
+    config, source = validation.generation_config_from_payload({}, metadata)
+
+    assert metadata["max_new_tokens"] == 64
+    assert config.max_new_tokens == 64
+    assert source.startswith("prepare_job_metadata.json:max_new_tokens")
+    assert len(provenance) == 2
+
+
 def test_manifest_discovery_and_sequence_comparison(tmp_path):
     tensor_dir = tmp_path / "generated" / "tensors"
     tensor_dir.mkdir(parents=True)

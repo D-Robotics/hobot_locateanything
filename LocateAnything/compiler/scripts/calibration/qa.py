@@ -18,12 +18,12 @@ from PIL import Image, ImageDraw
 BOX_RE = re.compile(r"<box>((?:<\d+>){2}|(?:<\d+>){4})</box>")
 COORD_RE = re.compile(r"<(\d+)>")
 EXPECTED_COUNTS = {
-    "detection": 208,
-    "gui": 102,
-    "referring": 68,
-    "ocr": 48,
-    "layout": 48,
-    "pointing": 38,
+    "detection": 620,
+    "gui": 180,
+    "referring": 120,
+    "ocr": 120,
+    "layout": 100,
+    "pointing": 60,
 }
 COLORS = ["#e53935", "#00897b", "#3949ab", "#f9a825", "#8e24aa"]
 

@@ -8,6 +8,13 @@ MoonViT features, structured coordinate tokens, long object lists, PBD windows,
 and AR fallback. Calibration data must represent those execution paths instead
 of reusing a generic VLM question-answering corpus by default.
 
+The active lifecycle is `source -> prepare -> calibrate -> build -> verify`.
+Source freezes the selected image, prompt, and target manifest. Prepare runs
+the original Float processor and model to materialize replay tensors.
+Calibrate replays those tensors through the OELLM models and freezes activation
+scales. Build consumes the frozen scale contract, and Verify checks data,
+numerical, artifact, and task-level evidence.
+
 The release build consumes the frozen Scale manifest and graph-coverage record
 produced by `compiler/quantize.py calibrate`. Merely passing a dataset path to a
 compiler process is not evidence that calibration occurred. A valid build must
@@ -108,22 +115,38 @@ python compiler/scripts/calibration/materialize_coco.py \
   --seed 20260728
 ```
 
-Materialize a self-contained Detection bundle before transferring data to the
-compiler host:
+Combine those 500 COCO records with 120 SKU110K records from the frozen
+six-domain source bundle. The remaining 580 records are carried forward from
+the GUI, Referring, OCR, Layout, and Pointing training sources:
+
+```bash
+python compiler/scripts/calibration/compose_detection.py \
+  --coco-jsonl /data/COCO2017/detection_v7/coco_detection.jsonl \
+  --baseline-selected-jsonl /data/calibration/la_820_hq_v6/selected.jsonl \
+  --output-dir workspace/calibration/sources_release \
+  --seed 20260729
+```
+
+Freeze and materialize the complete release manifest with explicit quotas:
 
 ```bash
 python compiler/scripts/calibration/prepare.py select \
-  --input-jsonl workspace/calibration/la_sources_v7/coco_detection.jsonl \
-  --output-dir workspace/calibration/la_detection_coco_v7 \
-  --num-samples 500 \
-  --quota detection=500 \
-  --quota gui=0 \
-  --quota referring=0 \
-  --quota ocr=0 \
-  --quota layout=0 \
-  --quota pointing=0 \
-  --seed 20260728
+  --input-jsonl workspace/calibration/sources_release/detection_coco.jsonl \
+  --input-jsonl workspace/calibration/sources_release/detection_retail.jsonl \
+  --input-jsonl workspace/calibration/sources_release/other_tasks.jsonl \
+  --output-dir workspace/calibration/current \
+  --num-samples 1200 \
+  --quota detection=620 \
+  --quota gui=180 \
+  --quota referring=120 \
+  --quota ocr=120 \
+  --quota layout=100 \
+  --quota pointing=60 \
+  --seed 20260729
 ```
+
+The generated `selection_summary.json` is the source of truth for counts and
+input hashes. Do not infer the release mix from filenames alone.
 
 The generated prompt uses the tokenizer's category separator:
 
@@ -139,7 +162,7 @@ The target response groups boxes by category:
 
 Do not replace `</c>` with a comma and do not rewrite Detection labels to the
 generic word `object`. Both transformations remove the multi-category path
-that V7 is intended to calibrate.
+that the detection-primary release is intended to calibrate.
 
 ## 4. Dataset Contract
 
@@ -217,7 +240,23 @@ revision and the applicable upstream license pointer.
 The selected COCO and retained records are composed into
 `workspace/calibration/current/selected.jsonl`. Its record count, task counts,
 source splits, and content hashes are checked before native LocateAnything
-inference and tensor materialization begin:
+inference and tensor materialization begin. Run the static gate first:
+
+```bash
+python compiler/quantize.py prepare --preflight-only \
+  --selected-jsonl workspace/calibration/current/selected.jsonl \
+  --upstream-source /path/to/Eagle/Embodied \
+  --model-path workspace/models/LocateAnything-3B
+```
+
+This gate checks the frozen manifest SHA256, all 1,200 image hashes, task and
+source quotas, checkpoint shards, tokenizer IDs, processor geometry, 576 image
+placeholders, and the 1,024-token Prefill limit. It imports the processor and
+tokenizer metadata but never loads the 3B weights, initializes CUDA, or runs
+model inference. A passing report is written beside the generated bundle as
+`prepare_preflight.json`.
+
+After the static gate passes, materialize the PyTorch replay tensors:
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -229,6 +268,7 @@ python compiler/quantize.py prepare \
   --upstream-source /path/to/Eagle/Embodied \
   --model-path workspace/models/LocateAnything-3B \
   --device cuda:0 \
+  --max-new-tokens 1024 \
   --slow-samples 128 \
   --resume
 ```
@@ -251,7 +291,7 @@ not a separate release stage:
 python compiler/scripts/calibration/validate.py \
   --selected-jsonl workspace/calibration/current/selected.jsonl \
   --generated-jsonl workspace/calibration/current/generated/generated.jsonl \
-  --output-json workspace/calibration/current/generated/d3_acceptance.json
+  --output-json workspace/calibration/current/generated/prepared_bundle_validation.json
 ```
 
 The generation phase imports the original `locateanything_worker.py`, calls

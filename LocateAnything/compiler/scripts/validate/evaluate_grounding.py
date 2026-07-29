@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate LocateAnything grounding responses from D3 or S600 JSONL output.
+"""Evaluate LocateAnything grounding responses from prepared Float or S600 JSONL.
 
 The evaluator uses only the Python standard library.  Coordinates are expected
 on LocateAnything's normalized 0..1000 grid.  A malformed prediction is kept in

@@ -107,6 +107,7 @@ adapter in the SDK environment:
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate oellm_clean
 
+python -m pip install decord==0.6.0 lmdb==2.2.1
 cd compiler
 pip install -e . --no-deps
 cd ..
@@ -114,7 +115,12 @@ cd ..
 
 ### 3. Prepare and calibrate
 
+The compiler lifecycle is `source -> prepare -> calibrate -> build -> verify`.
+The Source stage freezes `workspace/calibration/current/selected.jsonl`; the
+commands below consume that manifest and do not recollect datasets.
+
 ```bash
+python compiler/quantize.py prepare --preflight-only
 python compiler/quantize.py prepare
 python compiler/quantize.py calibrate
 ```
@@ -125,15 +131,33 @@ python compiler/quantize.py calibrate
 python compiler/quantize.py build --component all --target bc
 ```
 
-### 5. Compile and verify the HBM artifacts
+### 5. Compile the HBM artifacts
 
 The unified entrypoint builds Vision and Language sequentially. `--resume`
 reuses completed stage artifacts after an interrupted build.
 
 ```bash
 python compiler/quantize.py build --component all --target hbm --resume
+```
+
+### 6. Verify prepared evidence
+
+`verify --level all` summarizes existing evidence; it does not generate
+cross-stage outputs or run the S600 workload. First collect a coherent
+Float/Quantized-Eager/BC/HBM pipeline under
+`workspace/evaluation/release_candidate/pipeline/`, and provide both the
+configured held-out reference JSONL and its matching board predictions JSONL.
+Then run:
+
+```bash
 python compiler/quantize.py verify --component all --level all
 ```
+
+Pipeline analysis rejects a missing Float stage, the absence of every candidate
+stage, mixed phases, and mismatched input fingerprints; task evaluation requires
+both JSONL files. A release report must additionally show that every intended
+stage is present, because the analyzer can intentionally summarize a partial
+pipeline.
 
 The complete environment setup, source changes, mathematical derivation, build
 commands, and validation gates are documented in the

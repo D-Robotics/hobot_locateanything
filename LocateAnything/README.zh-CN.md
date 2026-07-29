@@ -98,6 +98,7 @@ hf download nvidia/LocateAnything-3B \
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate oellm_clean
 
+python -m pip install decord==0.6.0 lmdb==2.2.1
 cd compiler
 pip install -e . --no-deps
 cd ..
@@ -105,7 +106,12 @@ cd ..
 
 ### 3. 准备并校准
 
+编译流程统一为 `source -> prepare -> calibrate -> build -> verify`。Source 阶段冻结
+`workspace/calibration/current/selected.jsonl`；下面的命令只消费该清单，不会重新采集
+数据集。
+
 ```bash
+python compiler/quantize.py prepare --preflight-only
 python compiler/quantize.py prepare
 python compiler/quantize.py calibrate
 ```
@@ -116,15 +122,29 @@ python compiler/quantize.py calibrate
 python compiler/quantize.py build --component all --target bc
 ```
 
-### 5. 编译并验证 HBM
+### 5. 编译 HBM
 
 统一入口会顺序构建 Vision 与 Language，避免两个 HBDK 作业争抢资源。中断后使用
 `--resume` 复用已经完成的阶段产物。
 
 ```bash
 python compiler/quantize.py build --component all --target hbm --resume
+```
+
+### 6. 验证已准备的证据
+
+`verify --level all` 只汇总已有验证证据，不会生成跨阶段输出，也不会自动执行 S600
+推理。运行前应先在 `workspace/evaluation/release_candidate/pipeline/` 中完成同一输入集的
+Float/Quantized-Eager/BC/HBM 分阶段采集，并准备配置中指定的独立 held-out 标注 JSONL
+和对应板端预测 JSONL。随后执行：
+
+```bash
 python compiler/quantize.py verify --component all --level all
 ```
+
+Pipeline 分析会拒绝缺少 Float、没有任何候选阶段、phase 混用或输入指纹不一致；任务
+评测要求两份 JSONL 均存在。分析器也允许主动汇总部分 pipeline，因此发布时还必须从
+报告中确认所有计划阶段均已完成，不能将“HBM 构建完成”视为“模型验证通过”。
 
 环境搭建、源码修改、数学原理、完整命令和验证标准见
 [从零编译与适配原理](docs/COMPILER_PORTING_GUIDE.zh-CN.md)。

@@ -29,6 +29,16 @@ LANGUAGE_GRAPH_QUERIES = {
 GRAPH_ORDER = ("visual", *LANGUAGE_GRAPH_QUERIES)
 
 
+def _expected_logits_query(graph_name: str, input_query: int) -> int:
+    """Return the compiled logits length for a Language graph.
+
+    Prefill consumes the full static chunk to build KV state, but its compiled
+    graph projects only the final hidden row through lm_head. Decode graphs
+    retain one logits row per input position.
+    """
+    return 1 if graph_name == "prefill" else input_query
+
+
 @dataclass(frozen=True)
 class TensorDescriptor:
     name: str
@@ -105,6 +115,8 @@ def validate_descriptor_contract(
     """Validate the complete release graph contract using metadata only."""
     missing = [name for name in GRAPH_ORDER if name not in graphs]
     _require(not missing, f"required graph(s) missing: {', '.join(missing)}")
+    unexpected = sorted(set(graphs) - set(GRAPH_ORDER))
+    _require(not unexpected, f"unexpected graph(s): {', '.join(unexpected)}")
 
     visual = graphs["visual"]
     _require(len(visual.inputs) == 1, "visual: expected exactly one input")
@@ -128,6 +140,7 @@ def validate_descriptor_contract(
     }
     for graph_name, expected_q in expected_queries.items():
         graph = graphs[graph_name]
+        expected_logits_q = _expected_logits_query(graph_name, expected_q)
         expected_io = 3 + profile.cache_tensor_count
         _require(len(graph.inputs) == expected_io,
                  f"{graph_name}: expected {expected_io} inputs, got {len(graph.inputs)}")
@@ -162,8 +175,9 @@ def validate_descriptor_contract(
                  f"{graph_name}: cache dtype {cache_dtype} differs from {common_cache_dtype}")
 
         logits = _shape(graph.outputs[0])
-        _require(logits == (1, expected_q, profile.vocab_size),
-                 f"{graph_name} logits: expected {(1, expected_q, profile.vocab_size)}, got {logits}")
+        expected_logits = (1, expected_logits_q, profile.vocab_size)
+        _require(logits == expected_logits,
+                 f"{graph_name} logits: expected {expected_logits}, got {logits}")
         _require(_canonical_dtype(graph.outputs[0]) == "float16",
                  f"{graph_name} logits must be float16")
         expected_update = (1, expected_q, profile.cache_groups, profile.head_dim)
@@ -174,6 +188,7 @@ def validate_descriptor_contract(
                  f"{graph_name}: cache update dtype must match cache input dtype {cache_dtype}")
         language_summary[graph_name] = {
             "query_length": expected_q,
+            "logits_query_length": expected_logits_q,
             "input_count": len(graph.inputs),
             "output_count": len(graph.outputs),
             "cache_dtype": cache_dtype,
@@ -250,6 +265,16 @@ def load_hbm_descriptors(vision_hbm: Path, language_hbm: Path) -> tuple[dict[str
     lhbm = hb.Hbm(str(language_hbm))
     vgraphs = {str(g.name): g for g in vhbm.graphs}
     lgraphs = {str(g.name): g for g in lhbm.graphs}
+    unexpected_vision = sorted(set(vgraphs) - {"visual"})
+    unexpected_language = sorted(set(lgraphs) - set(LANGUAGE_GRAPH_QUERIES))
+    _require(
+        not unexpected_vision,
+        f"Vision HBM contains unexpected graph(s): {', '.join(unexpected_vision)}",
+    )
+    _require(
+        not unexpected_language,
+        f"Language HBM contains unexpected graph(s): {', '.join(unexpected_language)}",
+    )
     graphs: dict[str, GraphDescriptor] = {}
     runtime_graphs: dict[str, Any] = {}
     for name in GRAPH_ORDER:

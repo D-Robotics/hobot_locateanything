@@ -54,11 +54,56 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def discover_bc(bc_dir: Path) -> dict[str, Path]:
+def digest_path(path: Path) -> Path:
+    return path.with_name(path.name + ".sha256")
+
+
+def write_digest(path: Path) -> None:
+    sidecar = digest_path(path)
+    temporary = sidecar.with_name(sidecar.name + ".tmp")
+    temporary.write_text(sha256_file(path) + "\n", encoding="ascii")
+    os.replace(temporary, sidecar)
+
+
+def digest_matches(path: Path) -> bool:
+    sidecar = digest_path(path)
+    if not sidecar.is_file():
+        return False
+    try:
+        return sidecar.read_text(encoding="ascii").strip() == sha256_file(path)
+    except OSError:
+        return False
+
+
+def invalidate_stage_digests(root: Path, artifact_prefix: str | None) -> int:
+    pattern = f"{artifact_prefix}*.sha256" if artifact_prefix else "*.sha256"
+    removed = 0
+    for sidecar in root.rglob(pattern):
+        if sidecar.is_file():
+            sidecar.unlink()
+            removed += 1
+    return removed
+
+
+def discover_bc(
+    bc_dir: Path,
+    *,
+    artifact_prefix: str | None = None,
+    require_fused: bool = False,
+) -> dict[str, Path]:
     discovered: dict[str, Path] = {}
-    for path in sorted(bc_dir.glob("*.bc")):
-        if path.name.endswith("_convert.bc"):
-            continue
+    if artifact_prefix:
+        candidates = [
+            bc_dir / f"{artifact_prefix}.{name}.bc"
+            for name in sorted(KNOWN_STAGES)
+            if (bc_dir / f"{artifact_prefix}.{name}.bc").is_file()
+        ]
+    else:
+        candidates = [
+            path for path in sorted(bc_dir.glob("*.bc"))
+            if not path.name.endswith(("_convert.bc", ".partial.bc"))
+        ]
+    for path in candidates:
         module = load(str(path))
         functions = list(module.functions)
         if len(functions) != 1:
@@ -98,6 +143,12 @@ def discover_bc(bc_dir: Path) -> dict[str, Path]:
             "fused PBD graph family is incomplete: "
             f"present={sorted(fused_present)} missing={missing_fused}"
         )
+    if require_fused and fused_present != set(FUSED_STAGES):
+        missing_fused = sorted(set(FUSED_STAGES) - fused_present)
+        raise RuntimeError(
+            "release Language BC requires the complete fused graph family; "
+            f"missing={missing_fused}"
+        )
     return discovered
 
 
@@ -111,9 +162,9 @@ def validate_or_create_manifest(
     path: Path,
     source_bc: dict[str, Path],
     args: argparse.Namespace,
-) -> dict[str, Any]:
+) -> bool:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_bc": {
             name: {
                 "path": str(source),
@@ -127,21 +178,24 @@ def validate_or_create_manifest(
         "decode_core_num": args.decode_core_num,
         "ar_core_nums": args.ar_core_nums,
         "jobs": args.jobs,
+        "require_fused": args.require_fused,
+        "hbm_path": str(args.hbm_path) if args.hbm_path else None,
     }
     if path.is_file():
-        previous = json.loads(path.read_text(encoding="utf-8"))
-        if previous != payload:
-            raise RuntimeError(
-                f"{path} belongs to a different source/configuration; "
-                "use a new output directory"
-            )
-    else:
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = None
+        if previous == payload:
+            return True
         atomic_json(path, payload)
-    return payload
+        return False
+    atomic_json(path, payload)
+    return False
 
 
 def valid_function(path: Path, expected_name: str) -> bool:
-    if not path.is_file() or path.stat().st_size == 0:
+    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
         return False
     try:
         module = load(str(path))
@@ -170,11 +224,12 @@ def convert_stage(source: Path, destination: Path, name: str,
     temporary = destination.with_name(destination.stem + ".partial.bc")
     save(converted, str(temporary))
     os.replace(temporary, destination)
+    write_digest(destination)
     print(f"[PASS] converted {name}: {destination}", flush=True)
 
 
 def valid_hbo(path: Path) -> bool:
-    if not path.is_file() or path.stat().st_size == 0:
+    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
         return False
     try:
         Hbo(str(path))
@@ -210,23 +265,53 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
     Model.compile_hbo(module, save_path=str(temporary), **kwargs)
     os.replace(temporary, destination)
     Hbo(str(destination))
+    write_digest(destination)
     print(f"[PASS] HBO {name} core={core_num}: {destination}", flush=True)
 
 
+def hbm_contract_matches(path: Path, expected_names: list[str]) -> bool:
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    try:
+        model = Hbm(str(path))
+        graphs = {str(graph.name): graph for graph in model.graphs}
+        if set(graphs) != set(expected_names):
+            return False
+        for name in expected_names:
+            graph = graphs[name]
+            if len(graph.inputs) != 75 or len(graph.outputs) != 73:
+                return False
+            logits_shape = tuple(graph.outputs[0].type.shape)
+            cache_shape = tuple(graph.outputs[1].type.shape)
+            if (logits_shape, cache_shape) != expected_contract(name):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def valid_hbm(path: Path, expected_names: list[str]) -> bool:
+    return digest_matches(path) and hbm_contract_matches(path, expected_names)
+
+
 def link_variant(hbos: list[Path], destination: Path,
-                 resume: bool) -> None:
+                 resume: bool, expected_names: list[str]) -> None:
+    if resume and valid_hbm(destination, expected_names):
+        print(f"[RESUME] HBM: {destination}", flush=True)
+        return
     if resume and destination.is_file() and destination.stat().st_size > 0:
         try:
             Hbm(str(destination))
-            print(f"[RESUME] HBM: {destination}", flush=True)
-            return
+            print(f"[STALE] HBM contract or digest mismatch: {destination}", flush=True)
         except Exception:
             pass
     heading(f"LINK {destination.name}")
     temporary = destination.with_name(destination.stem + ".partial.hbm")
     Model.link_models([Hbo(str(path)) for path in hbos], str(temporary))
     os.replace(temporary, destination)
-    Hbm(str(destination))
+    if not hbm_contract_matches(destination, expected_names):
+        raise RuntimeError(f"linked HBM graph contract mismatch: {destination}")
+    write_digest(destination)
     print(f"[PASS] HBM: {destination}", flush=True)
 
 
@@ -244,6 +329,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jobs", type=int, default=16)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--convert_only", action="store_true")
+    parser.add_argument("--check_only", action="store_true")
+    parser.add_argument("--require_fused", action="store_true")
+    parser.add_argument(
+        "--hbm_path", type=Path,
+        help="Exact release HBM path; also selects its matching BC prefix.",
+    )
+    parser.add_argument("--embedding_path", type=Path)
+    parser.add_argument("--expected_embedding_bytes", type=int)
     return parser.parse_args()
 
 
@@ -251,62 +344,127 @@ def main() -> int:
     args = parse_args()
     args.bc_dir = args.bc_dir.resolve()
     args.output_dir = args.output_dir.resolve()
+    if args.hbm_path:
+        args.hbm_path = args.hbm_path.resolve()
+    if args.embedding_path:
+        args.embedding_path = args.embedding_path.resolve()
     args.ar_core_nums = sorted(set(args.ar_core_nums))
+    if args.hbm_path and len(args.ar_core_nums) != 1:
+        raise RuntimeError("--hbm_path requires exactly one --ar_core_nums value")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    converted_dir = args.output_dir / "converted_bc"
-    hbo_dir = args.output_dir / "hbo"
-    converted_dir.mkdir(exist_ok=True)
-    hbo_dir.mkdir(exist_ok=True)
+    if args.hbm_path:
+        args.hbm_path.parent.mkdir(parents=True, exist_ok=True)
+        converted_dir = args.hbm_path.parent
+        hbo_dir = args.hbm_path.parent
+        artifact_prefix = args.hbm_path.stem
+        manifest_path = args.hbm_path.with_suffix(".compile_manifest.json")
+    else:
+        converted_dir = args.output_dir / "converted_bc"
+        hbo_dir = args.output_dir / "hbo"
+        converted_dir.mkdir(exist_ok=True)
+        hbo_dir.mkdir(exist_ok=True)
+        artifact_prefix = None
+        manifest_path = args.output_dir / "compile_manifest.json"
 
     heading("SOURCE CONTRACT")
-    source_bc = discover_bc(args.bc_dir)
-    validate_or_create_manifest(
-        args.output_dir / "compile_manifest.json", source_bc, args,
+    source_bc = discover_bc(
+        args.bc_dir,
+        artifact_prefix=artifact_prefix,
+        require_fused=args.require_fused,
     )
+    if args.embedding_path:
+        if not args.embedding_path.is_file():
+            raise RuntimeError(f"token embedding is missing: {args.embedding_path}")
+        if (
+            args.expected_embedding_bytes is not None
+            and args.embedding_path.stat().st_size != args.expected_embedding_bytes
+        ):
+            raise RuntimeError(
+                f"token embedding size is {args.embedding_path.stat().st_size}; "
+                f"expected {args.expected_embedding_bytes}"
+            )
+    if args.check_only:
+        heading("SOURCE CONTRACT PASSED")
+        return 0
+    manifest_compatible = validate_or_create_manifest(
+        manifest_path, source_bc, args,
+    )
+    if args.resume and not manifest_compatible:
+        removed = invalidate_stage_digests(args.output_dir, artifact_prefix)
+        print(
+            "[RESUME] source or compile contract changed; rebuilding Converted BC, "
+            f"HBO, and HBM from the reusable source BC (invalidated={removed})",
+            flush=True,
+        )
+        args.resume = False
 
     stage_order = [
         name
-        for name in ("prefill", "decode", *FUSED_PBD_STAGES,
-                     "decode_ar", *FUSED_AR_STAGES)
+        for name in ("prefill", "decode", "decode_ar",
+                     *FUSED_PBD_STAGES, *FUSED_AR_STAGES)
         if name in source_bc
     ]
-    converted = {
-        name: converted_dir / f"{name}_convert.bc" for name in stage_order
-    }
+    if args.hbm_path:
+        converted = {
+            name: args.hbm_path.with_suffix(f".{name}_convert.bc")
+            for name in stage_order
+        }
+    else:
+        converted = {
+            name: converted_dir / f"{name}_convert.bc" for name in stage_order
+        }
     for name in stage_order:
         convert_stage(source_bc[name], converted[name], name, args.march, args.resume)
     if args.convert_only:
         heading("CONVERT ONLY COMPLETED")
         return 0
 
-    prefill_hbo = hbo_dir / f"prefill_core{args.prefill_core_num}.hbo"
+    prefill_hbo = (
+        args.hbm_path.with_suffix(".prefill.hbo")
+        if args.hbm_path
+        else hbo_dir / f"prefill_core{args.prefill_core_num}.hbo"
+    )
     compile_stage(
         converted["prefill"], prefill_hbo, "prefill",
         args.prefill_core_num, args,
     )
-    shared_hbos = [prefill_hbo]
+    shared_hbos = {"prefill": prefill_hbo}
     for name in ("decode", *FUSED_PBD_STAGES):
         if name not in converted:
             continue
-        hbo = hbo_dir / f"{name}_core{args.decode_core_num}.hbo"
+        hbo = (
+            args.hbm_path.with_suffix(f".{name}.hbo")
+            if args.hbm_path
+            else hbo_dir / f"{name}_core{args.decode_core_num}.hbo"
+        )
         compile_stage(converted[name], hbo, name, args.decode_core_num, args)
-        shared_hbos.append(hbo)
+        shared_hbos[name] = hbo
     for ar_core in args.ar_core_nums:
-        ar_hbos: list[Path] = []
+        ar_hbos: dict[str, Path] = {}
         for name in ("decode_ar", *FUSED_AR_STAGES):
             if name not in converted:
                 continue
-            ar_hbo = hbo_dir / f"{name}_core{ar_core}.hbo"
+            ar_hbo = (
+                args.hbm_path.with_suffix(f".{name}.hbo")
+                if args.hbm_path
+                else hbo_dir / f"{name}_core{ar_core}.hbo"
+            )
             compile_stage(converted[name], ar_hbo, name, ar_core, args)
-            ar_hbos.append(ar_hbo)
+            ar_hbos[name] = ar_hbo
         fused_suffix = "_fusedpbd" if set(FUSED_STAGES) <= set(source_bc) else ""
-        hbm = args.output_dir / (
+        hbm = args.hbm_path or args.output_dir / (
             "LocateAnything-3B_language_chunk_1024_cache_4096_"
             "decoder_w8_lmhead_w8_nash-p_"
             f"prefill{args.prefill_core_num}_pbd{args.decode_core_num}_ar{ar_core}"
             f"{fused_suffix}.hbm"
         )
-        link_variant([*shared_hbos, *ar_hbos], hbm, args.resume)
+        all_hbos = {**shared_hbos, **ar_hbos}
+        link_variant(
+            [all_hbos[name] for name in stage_order],
+            hbm,
+            args.resume,
+            stage_order,
+        )
 
     heading("ALL VARIANTS COMPLETED")
     return 0

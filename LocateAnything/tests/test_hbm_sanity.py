@@ -42,7 +42,8 @@ def release_graphs(profile=None):
             tensor("attention_mask", (1, q_len, profile.cache_length)),
         ]
         inputs.extend(tensor(f"cache_{i}", cache, "float32") for i in range(profile.cache_tensor_count))
-        outputs = [tensor("logits", (1, q_len, profile.vocab_size))]
+        logits_q = sanity._expected_logits_query(name, q_len)
+        outputs = [tensor("logits", (1, logits_q, profile.vocab_size))]
         outputs.extend(
             tensor(f"update_{i}", (1, q_len, profile.cache_groups, profile.head_dim), "float32")
             for i in range(profile.cache_tensor_count)
@@ -60,6 +61,9 @@ def test_release_descriptor_contract_passes_and_records_derived_geometry():
         "cache_tensor_count": 72,
     }
     assert summary["language_graphs"]["decode"]["query_length"] == 6
+    assert summary["language_graphs"]["prefill"]["query_length"] == 1024
+    assert summary["language_graphs"]["prefill"]["logits_query_length"] == 1
+    assert summary["language_graphs"]["decode"]["logits_query_length"] == 6
     assert summary["language_graphs"]["decode_ar"]["query_length"] == 1
     assert summary["language_graphs"]["decode_pbd_q12"]["query_length"] == 12
     assert summary["language_graphs"]["decode_ar_q5"]["query_length"] == 5
@@ -112,6 +116,27 @@ def test_cache_updates_must_match_each_graph_query_length():
     graphs["decode"] = sanity.GraphDescriptor(graph.name, graph.inputs, tuple(outputs))
     with pytest.raises(ValueError, match="cache update shapes"):
         sanity.validate_descriptor_contract(graphs, sanity.ExpectedProfile())
+
+
+def test_prefill_full_sequence_logits_are_rejected():
+    profile = sanity.ExpectedProfile()
+    graphs = release_graphs(profile)
+    graph = graphs["prefill"]
+    outputs = list(graph.outputs)
+    outputs[0] = tensor("logits", (1, profile.prefill_query, profile.vocab_size))
+    graphs["prefill"] = sanity.GraphDescriptor(graph.name, graph.inputs, tuple(outputs))
+
+    with pytest.raises(ValueError, match=r"prefill logits: expected \(1, 1, 152681\)"):
+        sanity.validate_descriptor_contract(graphs, profile)
+
+
+def test_release_descriptor_contract_rejects_extra_graphs():
+    profile = sanity.ExpectedProfile()
+    graphs = release_graphs(profile)
+    graphs["decode_ar_q6"] = graphs["decode"]
+
+    with pytest.raises(ValueError, match=r"unexpected graph\(s\): decode_ar_q6"):
+        sanity.validate_descriptor_contract(graphs, profile)
 
 
 def test_embed_file_size_is_derived_from_profile(tmp_path):

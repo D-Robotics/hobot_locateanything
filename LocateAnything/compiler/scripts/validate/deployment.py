@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed preflight tying selected data, D3, D4, and compile profiles."""
+"""Fail-closed preflight tying source, prepare, calibrate, and build contracts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,20 @@ from pathlib import Path
 from typing import Any
 
 TASKS = ("detection", "gui", "referring", "ocr", "layout", "pointing")
+RELEASE_SAMPLE_COUNT = 1200
+RELEASE_CHECKPOINT_SAMPLES = 512
+RELEASE_TASK_COUNTS = {
+    "detection": 620,
+    "gui": 180,
+    "referring": 120,
+    "ocr": 120,
+    "layout": 100,
+    "pointing": 60,
+}
+RELEASE_DETECTION_SOURCE_COUNTS = {
+    "coco_multicategory_detection": 500,
+    "dense_retail_detection": 120,
+}
 PBD_STAGES = tuple(f"pbd_q{q_len}" for q_len in range(6, 13))
 AR_STAGES = tuple(f"ar_q{q_len}" for q_len in range(1, 6))
 LANGUAGE_STAGES = ("prefill", *PBD_STAGES, *AR_STAGES)
@@ -82,6 +96,64 @@ def record_ids(records: list[dict[str, Any]], label: str, errors: list[str]) -> 
     return values
 
 
+def release_distribution_errors(
+    expected_samples: int | None,
+    task_counts: dict[str, int],
+    detection_source_counts: dict[str, int],
+) -> list[str]:
+    if expected_samples != RELEASE_SAMPLE_COUNT:
+        return []
+    errors = []
+    if task_counts != RELEASE_TASK_COUNTS:
+        errors.append(
+            "release task counts mismatch: "
+            f"selected={task_counts} expected={RELEASE_TASK_COUNTS}"
+        )
+    if detection_source_counts != RELEASE_DETECTION_SOURCE_COUNTS:
+        errors.append(
+            "release Detection source counts mismatch: "
+            f"selected={detection_source_counts} "
+            f"expected={RELEASE_DETECTION_SOURCE_COUNTS}"
+        )
+    return errors
+
+
+def release_checkpoint_errors(
+    expected_samples: int | None,
+    checkpoint_samples: Any,
+) -> list[str]:
+    if (
+        expected_samples == RELEASE_SAMPLE_COUNT
+        and checkpoint_samples != RELEASE_CHECKPOINT_SAMPLES
+    ):
+        return [
+            "release checkpoint_samples mismatch: "
+            f"selected={checkpoint_samples} expected={RELEASE_CHECKPOINT_SAMPLES}"
+        ]
+    return []
+
+
+def selected_manifest_sha_errors(
+    expected_samples: int | None,
+    expected_sha256: str | None,
+    actual_sha256: str | None,
+) -> list[str]:
+    """Validate the frozen release manifest identity, not only its row count."""
+    if expected_samples == RELEASE_SAMPLE_COUNT and not expected_sha256:
+        return ["release selected manifest SHA256 is required"]
+    if not expected_sha256:
+        return []
+    normalized = expected_sha256.strip().lower()
+    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+        return ["expected selected manifest SHA256 is invalid"]
+    if actual_sha256 != normalized:
+        return [
+            "selected manifest SHA256 mismatch: "
+            f"actual={actual_sha256} expected={normalized}"
+        ]
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selected-jsonl", type=Path, required=True)
@@ -98,6 +170,7 @@ def main() -> int:
     parser.add_argument("--decode-seq-len", type=int, required=True)
     parser.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--expected-samples", type=int)
+    parser.add_argument("--expected-selected-sha256")
     parser.add_argument("--hidden-rotation-path", type=Path)
     parser.add_argument("--disable-hidden-rotation", action="store_true")
     args = parser.parse_args()
@@ -107,8 +180,14 @@ def main() -> int:
     errors: list[str] = []
     selected = read_jsonl(args.selected_jsonl, errors, "selected manifest")
     generated = read_jsonl(args.generated_jsonl, errors, "generated manifest")
-    scale = read_json(args.scale_manifest, errors, "D4 scale manifest")
-    coverage = read_json(args.coverage_json, errors, "D4 graph coverage")
+    scale = read_json(args.scale_manifest, errors, "calibration scale manifest")
+    coverage = read_json(args.coverage_json, errors, "calibration graph coverage")
+    selected_sha = sha256(args.selected_jsonl) if args.selected_jsonl.is_file() else None
+    errors.extend(selected_manifest_sha_errors(
+        args.expected_samples,
+        args.expected_selected_sha256,
+        selected_sha,
+    ))
 
     selected_ids = record_ids(selected, "selected manifest", errors)
     generated_ids = record_ids(generated, "generated manifest", errors)
@@ -135,6 +214,17 @@ def main() -> int:
     selected_tasks = dict(Counter(str(row.get("task")) for row in selected))
     if set(selected_tasks) != set(TASKS):
         errors.append(f"selected manifest does not cover all six tasks: {selected_tasks}")
+    selected_detection_sources = dict(Counter(
+        str((row.get("metadata") or {}).get("calibration_source_role") or "missing")
+        for row in selected
+        if row.get("task") == "detection"
+    ))
+    release_gate = args.expected_samples == RELEASE_SAMPLE_COUNT
+    errors.extend(release_distribution_errors(
+        args.expected_samples,
+        selected_tasks,
+        selected_detection_sources,
+    ))
 
     expected_profile = {
         "image_width": args.image_width,
@@ -169,27 +259,32 @@ def main() -> int:
     generated_sha = sha256(args.generated_jsonl) if args.generated_jsonl.is_file() else None
     if scale:
         if scale.get("generated_manifest_sha256") != generated_sha:
-            errors.append("D4 scale manifest generated SHA256 mismatch")
+            errors.append("calibration scale manifest generated SHA256 mismatch")
         scale_count = scale.get("sample_count")
         if scale_count != len(generated):
-            errors.append("D4 scale manifest sample_count mismatch")
+            errors.append("calibration scale manifest sample_count mismatch")
         if scale.get("task_counts") != selected_tasks:
-            errors.append("D4 scale manifest task_counts mismatch")
+            errors.append("calibration scale manifest task_counts mismatch")
         checkpoint = scale.get("checkpoint_samples")
         if type(checkpoint) is not int or not 0 < checkpoint < len(generated):
-            errors.append("D4 scale manifest checkpoint_samples is invalid")
+            errors.append("calibration scale manifest checkpoint_samples is invalid")
+        errors.extend(release_checkpoint_errors(args.expected_samples, checkpoint))
         for group in required_groups:
             snapshots = scale.get(group)
             if not isinstance(snapshots, dict):
-                errors.append(f"D4 scale manifest lacks {group} snapshots")
+                errors.append(f"calibration scale manifest lacks {group} snapshots")
                 continue
             full_snapshot = snapshots.get(str(len(generated)))
             if not isinstance(full_snapshot, dict) or not full_snapshot:
-                errors.append(f"D4 scale manifest lacks full {group}/{len(generated)} snapshot")
+                errors.append(
+                    f"calibration scale manifest lacks full {group}/{len(generated)} snapshot"
+                )
             else:
                 for name, observer in full_snapshot.items():
                     if not isinstance(observer, dict):
-                        errors.append(f"D4 {group} observer is invalid: {name}")
+                        errors.append(
+                            f"calibration {group} activation-statistics entry is invalid: {name}"
+                        )
                     elif observer.get("kind") == "ConstFakeQuant":
                         absmax = observer.get("absmax")
                         if (
@@ -197,7 +292,10 @@ def main() -> int:
                             or not math.isfinite(absmax)
                             or absmax <= 0
                         ):
-                            errors.append(f"D4 {group} observer has invalid absmax: {name}")
+                            errors.append(
+                                f"calibration {group} activation-statistics entry "
+                                f"has invalid absmax: {name}"
+                            )
                     else:
                         norm_scale = observer.get("scale")
                         summax = observer.get("summax_hidden")
@@ -209,39 +307,57 @@ def main() -> int:
                             or not math.isfinite(summax)
                             or summax <= 0
                         ):
-                            errors.append(f"D4 {group} observer has invalid norm scale: {name}")
+                            errors.append(
+                                f"calibration {group} activation-statistics entry "
+                                f"has invalid norm scale: {name}"
+                            )
             if type(checkpoint) is int and (
                 not isinstance(snapshots.get(str(checkpoint)), dict)
                 or not snapshots.get(str(checkpoint))
             ):
-                errors.append(f"D4 scale manifest lacks checkpoint {group}/{checkpoint} snapshot")
+                errors.append(
+                    f"calibration scale manifest lacks checkpoint "
+                    f"{group}/{checkpoint} snapshot"
+                )
 
         rotation_source = scale.get("rotation_source")
         rotation_file_sha = scale.get("rotation_file_sha256")
         if args.disable_hidden_rotation:
-            errors.append("release compile cannot disable the hidden rotation used by D4")
+            errors.append(
+                "release build cannot disable the hidden rotation used during calibration"
+            )
         elif args.hidden_rotation_path is not None:
             if not args.hidden_rotation_path.is_file():
                 errors.append(f"hidden rotation file missing: {args.hidden_rotation_path}")
             else:
                 if rotation_file_sha != sha256(args.hidden_rotation_path):
-                    errors.append("D4 scale manifest hidden rotation SHA256 mismatch")
+                    errors.append(
+                        "calibration scale manifest hidden rotation SHA256 mismatch"
+                    )
                 if rotation_source != str(args.hidden_rotation_path.resolve()):
-                    errors.append("D4 scale manifest hidden rotation path mismatch")
+                    errors.append(
+                        "calibration scale manifest hidden rotation path mismatch"
+                    )
         elif rotation_source not in {DEFAULT_ROTATION_NAME, *LEGACY_ROTATION_NAMES}:
-            errors.append("D4 scale manifest was not collected with the built-in release rotation")
+            errors.append(
+                "calibration scale manifest was not collected with the built-in "
+                "release rotation"
+            )
         elif rotation_file_sha not in (None, ""):
-            errors.append("built-in D4 rotation must not declare an external rotation file SHA256")
+            errors.append(
+                "built-in calibration rotation must not declare an external "
+                "rotation file SHA256"
+            )
 
     if coverage:
         if coverage.get("generated_manifest_sha256") != generated_sha:
-            errors.append("D4 coverage generated SHA256 mismatch")
+            errors.append("calibration graph coverage generated SHA256 mismatch")
         if coverage.get("sample_count") != len(generated):
-            errors.append("D4 coverage sample_count mismatch")
+            errors.append("calibration graph coverage sample_count mismatch")
         if coverage.get("checkpoint_samples") != scale.get("checkpoint_samples"):
-            errors.append("D4 coverage/scale checkpoint_samples mismatch")
+            errors.append("calibration coverage/scale checkpoint_samples mismatch")
         if coverage.get("task_counts") != selected_tasks:
-            errors.append("D4 coverage task_counts mismatch")
+            errors.append("calibration graph coverage task_counts mismatch")
         if "language" in required_groups:
             expected_language_profile = {
                 "language_decoder_weight_bits": 8,
@@ -258,7 +374,7 @@ def main() -> int:
                 ("coverage", coverage.get("profile")),
             ):
                 if not isinstance(profile, dict):
-                    errors.append(f"D4 {source_name} lacks Language profile")
+                    errors.append(f"calibration {source_name} lacks Language profile")
                     continue
                 mismatches = {
                     key: profile.get(key)
@@ -267,48 +383,56 @@ def main() -> int:
                 }
                 if mismatches:
                     errors.append(
-                        f"D4 {source_name} Language profile mismatch: {mismatches}"
+                        f"calibration {source_name} Language profile mismatch: {mismatches}"
                     )
         if coverage.get("expected_stages") != list(required_stages):
-            errors.append("D4 coverage expected_stages mismatch")
+            errors.append("calibration graph coverage expected_stages mismatch")
         stage_counts = coverage.get("stage_sample_counts")
         if not isinstance(stage_counts, dict):
-            errors.append("D4 coverage lacks stage_sample_counts")
+            errors.append("calibration graph coverage lacks stage_sample_counts")
             stage_counts = {}
         for stage in required_stages:
             if stage_counts.get(stage) != len(generated):
                 errors.append(
-                    f"D4 coverage {stage} count={stage_counts.get(stage)} "
+                    f"calibration graph coverage {stage} count={stage_counts.get(stage)} "
                     f"expected={len(generated)}"
                 )
         if coverage.get("all_stages_executed") is not True:
-            errors.append("D4 did not execute all graph stages")
+            errors.append("calibration did not execute all required graph paths")
         audit_passed = coverage.get(
             "activation_statistics_audit_passed",
             coverage.get("observer_audit_passed"),
         )
         if audit_passed is not True:
-            errors.append("D4 activation statistics audit did not pass")
+            errors.append("calibration activation-statistics audit did not pass")
         audits = coverage.get(
             "activation_statistics_audit",
             coverage.get("observer_audit"),
         )
         if not isinstance(audits, dict):
-            errors.append("D4 coverage lacks activation_statistics_audit details")
+            errors.append(
+                "calibration graph coverage lacks activation_statistics_audit details"
+            )
             audits = {}
         for group in required_groups:
             audit = audits.get(group)
             if not isinstance(audit, dict) or audit.get("passed") is not True:
-                errors.append(f"D4 {group} activation statistics audit did not pass")
+                errors.append(
+                    f"calibration {group} activation-statistics audit did not pass"
+                )
                 continue
             for issue_key in ("unexecuted", "zero_absmax", "invalid_norm"):
                 if audit.get(issue_key) != []:
                     errors.append(
-                        f"D4 {group} activation statistics audit has non-empty {issue_key}"
+                        f"calibration {group} activation-statistics audit "
+                        f"has non-empty {issue_key}"
                     )
             snapshot = scale.get(group, {}).get(str(len(generated)), {})
             if audit.get("observer_count") != len(snapshot):
-                errors.append(f"D4 {group} observer count does not match full snapshot")
+                errors.append(
+                    f"calibration {group} activation-statistics count "
+                    "does not match full snapshot"
+                )
 
     if (args.image_width, args.image_height) != (672, 672):
         errors.append("LA release profile requires 672x672 letterbox")
@@ -321,9 +445,11 @@ def main() -> int:
         for error in errors:
             print(f"[FAIL] {error}")
         return 2
-    print(f"[PASS] selected_records={len(selected)} sha256={sha256(args.selected_jsonl)}")
+    print(f"[PASS] selected_records={len(selected)} sha256={selected_sha}")
     print(f"[PASS] generated_records={len(generated)} sha256={generated_sha}")
     print(f"[PASS] task_counts={selected_tasks}")
+    if release_gate:
+        print(f"[PASS] detection_source_counts={selected_detection_sources}")
     print(f"[PASS] generation_mode_counts={dict(generated_mode_counts)}")
     print(f"[PASS] scale_manifest={args.scale_manifest}")
     print(f"[PASS] coverage={args.coverage_json}")

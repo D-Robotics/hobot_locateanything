@@ -57,7 +57,7 @@ STARTED_AT=$(date --iso-8601=seconds)
 mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"
 
 if [[ "${DETACH:-0}" == "1" ]]; then
-  setsid nohup env DETACH=0 "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
+  setsid nohup env DETACH=0 bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
   printf '%s\n' "$child_pid" > "$PID_PATH"
   echo "[calibrate] detached_pid=$child_pid"
@@ -65,7 +65,26 @@ if [[ "${DETACH:-0}" == "1" ]]; then
   exit 0
 fi
 
-printf 'status=running\nstarted_at=%s\n' "$STARTED_AT" > "$EXIT_PATH"
+ACTIVE_CHILD_PID=""
+CANCEL_SIGNAL=""
+CANCEL_EXIT_CODE=""
+
+write_exit_record() {
+  local state=$1
+  local exit_code=${2:-}
+  local signal_name=${3:-}
+  local completed_at=${4:-}
+  local temporary="${EXIT_PATH}.tmp.$$"
+  {
+    printf 'status=%s\nexecution_mode=%s\nstarted_at=%s\n' \
+      "$state" "$([[ "$PREFLIGHT_ONLY" == "1" ]] && echo preflight_only || echo replay)" \
+      "$STARTED_AT"
+    [[ -z "$exit_code" ]] || printf 'exit_code=%s\n' "$exit_code"
+    [[ -z "$signal_name" ]] || printf 'signal=%s\n' "$signal_name"
+    [[ -z "$completed_at" ]] || printf 'completed_at=%s\n' "$completed_at"
+  } > "$temporary"
+  mv -f "$temporary" "$EXIT_PATH"
+}
 
 write_initial_metadata() {
   "$PYTHON_BIN" - "$META_PATH" "$STARTED_AT" "$GENERATED_JSONL" "$MODEL_PATH" \
@@ -124,37 +143,60 @@ PY
 }
 
 finish_job() {
-  status=$?
-  trap - EXIT
+  local exit_code=$?
+  trap - EXIT TERM INT HUP
+  set +e
+  local state=failed
+  local signal_name=""
+  if [[ -n "$CANCEL_SIGNAL" ]]; then
+    state=cancelled
+    signal_name=$CANCEL_SIGNAL
+    exit_code=$CANCEL_EXIT_CODE
+  elif [[ "$exit_code" -eq 0 ]]; then
+    state=succeeded
+  fi
+  local completed_at
   completed_at=$(date --iso-8601=seconds)
-  printf 'exit_code=%s\nexecution_mode=%s\nstarted_at=%s\ncompleted_at=%s\n' \
-    "$status" "$([[ "$PREFLIGHT_ONLY" == "1" ]] && echo preflight_only || echo replay)" \
-    "$STARTED_AT" "$completed_at" > "$EXIT_PATH"
-  "$PYTHON_BIN" - "$META_PATH" "$status" "$completed_at" "$PREFLIGHT_ONLY" <<'PY' || true
+  write_exit_record "$state" "$exit_code" "$signal_name" "$completed_at"
+  "$PYTHON_BIN" - "$META_PATH" "$state" "$exit_code" "$signal_name" "$completed_at" <<'PY' || true
 import json, os, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 if path.is_file():
     value = json.loads(path.read_text(encoding="utf-8"))
-    succeeded = int(sys.argv[2]) == 0
-    preflight_only = sys.argv[4] == "1"
-    value.update({
-        "status": "preflight_passed" if succeeded and preflight_only else (
-            "passed" if succeeded else "failed"
-        ),
-        "exit_code": int(sys.argv[2]),
-        "completed_at": sys.argv[3],
-    })
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+else:
+    value = {"schema_version": 1, "phase": "calibrate"}
+value.update({
+    "status": sys.argv[2],
+    "exit_code": int(sys.argv[3]),
+    "signal": sys.argv[4] or None,
+    "completed_at": sys.argv[5],
+})
+temporary = path.with_suffix(path.suffix + ".tmp")
+temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(temporary, path)
 PY
-  echo "[calibrate] exit_code=$status exit_record=$EXIT_PATH" | tee -a "$LOG_PATH"
-  exit "$status"
+  echo "[calibrate] status=$state exit_code=$exit_code exit_record=$EXIT_PATH" | tee -a "$LOG_PATH"
+  exit "$exit_code"
+}
+
+cancel_job() {
+  CANCEL_SIGNAL=$1
+  CANCEL_EXIT_CODE=$2
+  if [[ -n "$ACTIVE_CHILD_PID" ]] && kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then
+    kill -s "$CANCEL_SIGNAL" "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    ACTIVE_CHILD_PID=""
+  fi
+  exit "$CANCEL_EXIT_CODE"
 }
 trap finish_job EXIT
+trap 'cancel_job SIGTERM 143' TERM
+trap 'cancel_job SIGINT 130' INT
+trap 'cancel_job SIGHUP 129' HUP
 
+write_exit_record running
 write_initial_metadata
 
 echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
@@ -221,9 +263,13 @@ if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   replay_args+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
 fi
 
+PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$REPLAY_SCRIPT" "${replay_args[@]}" \
+  > >(tee -a "$LOG_PATH") 2>&1 &
+ACTIVE_CHILD_PID=$!
 set +e
-PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$REPLAY_SCRIPT" "${replay_args[@]}" 2>&1 | tee -a "$LOG_PATH"
-replay_status=${PIPESTATUS[0]}
+wait "$ACTIVE_CHILD_PID"
+replay_status=$?
+ACTIVE_CHILD_PID=""
 set -e
 if [[ "$replay_status" -ne 0 ]]; then
   echo "[calibrate] replay failed with exit_code=$replay_status" | tee -a "$LOG_PATH"

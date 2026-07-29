@@ -1,6 +1,6 @@
-"""Additional D1 tests covering gaps in the parallel-process test suite.
+"""Source-stage tests covering local dataset edge cases.
 
-These tests focus on the requirements called out in the D1 task spec that
+These tests focus on source provenance and offline-reader requirements that
 ``test_collect_local_sources.py`` does not yet cover:
 
   * Real headerless SKU110K CSV (the G1-verified format — the existing fixture
@@ -703,12 +703,12 @@ class TestStratificationKeepsSmallBoxes:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-A: Local source provenance — LOCAL_SOURCE_SPECS
+# Local source provenance and LOCAL_SOURCE_SPECS.
 # ---------------------------------------------------------------------------
 
 
 class TestLocalSourceProvenance:
-    """D1.5-A: LOCAL_SOURCE_SPECS maps each domain to its real local provenance."""
+    """LOCAL_SOURCE_SPECS maps each domain to its real local provenance."""
 
     def test_all_six_domains_have_local_specs(self):
         assert set(coll.LOCAL_SOURCE_SPECS.keys()) == set(coll.SOURCE_SPECS.keys())
@@ -752,7 +752,7 @@ class TestLocalSourceProvenance:
             resume=False,
             source_dir=headerless_sku_dir,
         )
-        # D1.5-A: local_provenance now carries the identity-bound fields.
+        # local_provenance carries the identity-bound fields.
         assert result["local_provenance"]["source_dataset"] == "SKU110K_fixed"
         assert result["local_provenance"]["source_revision"] == "local-csv-jpeg"
         assert result["local_provenance"]["split"] == "train"
@@ -783,7 +783,7 @@ class TestLocalSourceProvenance:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-A: sionic-ai referring adapter
+# sionic-ai referring adapter.
 # ---------------------------------------------------------------------------
 
 
@@ -843,7 +843,7 @@ class TestSionicReferringAdapter:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-A: Schema auto-detection for referring
+# Referring schema auto-detection.
 # ---------------------------------------------------------------------------
 
 
@@ -928,7 +928,7 @@ class TestReferringSchemaDetection:
             )
             assert result["accepted"] == 1
             assert result["inventory"]["referring_schema"] == "sionic-ai/refcocog_object_detection"
-            # D1.5-A (GATE1 §4.2 fix): when the sionic schema is detected,
+            # When the sionic schema is detected,
             # the manifest MUST record sionic provenance — NOT lmms-lab.
             # Previously the collector wrote lmms-lab/RefCOCOg onto
             # sionic-schema rows, which was the mis-attribution bug.
@@ -956,7 +956,7 @@ class TestReferringSchemaDetection:
     def test_lmms_schema_detected_fail_closed(self, tmp_output_dir):
         """lmms-lab/RefCOCOg (val/test only) MUST fail closed for formal calibration.
 
-        GATE1 §4.2 / README §3: formal calibration is train-only. The local
+        Formal calibration is train-only. The local
         lmms-lab/RefCOCOg snapshot has no train split, so its identity is
         ``enabled=False`` and ``collect_domain_local`` must refuse to emit
         records rather than silently writing lmms data into the manifest
@@ -1010,7 +1010,7 @@ class TestReferringSchemaDetection:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-A: val/test still rejected when present in local dataset
+# Reject val/test splits even when they are present locally.
 # ---------------------------------------------------------------------------
 
 
@@ -1035,19 +1035,19 @@ class TestValTestStillRejected:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-A: Fail-closed provenance / schema-mismatch tests
+# Fail-closed provenance and schema-mismatch tests.
 # ---------------------------------------------------------------------------
 
 
 class TestLocalSourceIdentityRegistry:
-    """D1.5-A: ``LOCAL_SOURCE_IDENTITIES`` + ``LOCAL_SOURCE_DEFAULT_KEYS``
+    """``LOCAL_SOURCE_IDENTITIES`` + ``LOCAL_SOURCE_DEFAULT_KEYS``
     expose the full provenance per task and bind schema → identity."""
 
     def test_all_six_tasks_have_default_keys(self):
         assert set(coll.LOCAL_SOURCE_DEFAULT_KEYS.keys()) == set(coll.SOURCE_SPECS.keys())
 
     def test_referring_has_two_identities(self):
-        # The whole point of D1.5-A: referring has an audit (lmms) identity
+        # Referring has an audit (lmms) identity
         # AND a calibration (sionic) identity.
         audit = coll.LOCAL_SOURCE_IDENTITIES["referring_lmms_refcocog_audit"]
         sionic = coll.LOCAL_SOURCE_IDENTITIES["referring_sionic_train"]
@@ -1123,7 +1123,7 @@ class TestLocalSourceIdentityRegistry:
 
 
 class TestProvenanceConsistency:
-    """D1.5-A: the manifest provenance must match the actual input dataset,
+    """The manifest provenance must match the actual input dataset,
     never the streaming reference, and sionic rows must never be labelled as
     lmms-lab (and vice versa)."""
 
@@ -1146,7 +1146,7 @@ class TestProvenanceConsistency:
         assert records[0]["source_revision"] != coll.SOURCE_SPECS["detection"]["revision"]
 
     def test_sionic_data_is_not_labelled_as_lmms(self, tmp_output_dir):
-        """The exact GATE1 §4.2 mis-attribution: sionic-schema rows written
+        """Regression for sionic-schema rows written
         out as lmms-lab/RefCOCOg. The collector must now refuse to do this."""
         buf = io.BytesIO()
         Image.new("RGB", (640, 480), (100, 100, 100)).save(buf, format="PNG")
@@ -1339,7 +1339,7 @@ class TestProvenanceConsistency:
 
 
 class TestParseLocalSourceTaskKeys:
-    """D1.5-A: --local-source-task-key parser validates identity keys."""
+    """--local-source-task-key parser validates identity keys."""
 
     def test_valid_sionic_key_parsed(self):
         result = coll.parse_local_source_task_keys(
@@ -1385,7 +1385,7 @@ class TestParseLocalSourceTaskKeys:
 
 
 class TestCLILocalSourceTaskKey:
-    """D1.5-A: --local-source-task-key is wired into the CLI."""
+    """--local-source-task-key is wired into the CLI."""
 
     def test_help_includes_local_source_task_key(self):
         parser = coll.build_parser()
@@ -1402,7 +1402,7 @@ class TestCLILocalSourceTaskKey:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-B: Local GroundCUA adapter
+# Local GroundCUA adapter.
 # ---------------------------------------------------------------------------
 
 
@@ -1493,13 +1493,13 @@ class TestLocalGUIAdapter:
             coll._local_gui_adapter(row, 0, None, rng)
             mock_urlopen.assert_not_called()
 
-    # --- D1.5-B / GATE1 §4.1: "无点" scenario — degenerate/inverted box
+    # Degenerate or inverted GroundCUA boxes must fail closed.
     #     must fail closed in point mode rather than silently emit a
     #     nonsense center point.
 
     def test_rejects_inverted_box_x(self):
         """A box with x1 > x2 is inverted; the point-mode center would be
-        meaningless. Fail closed (GATE1 §4.1 无点 scenario)."""
+        meaningless. Fail closed instead of emitting invalid geometry."""
         row = self._make_row(bboxes=[[300.0, 200.0, 100.0, 250.0]])
         rng = random.Random(0)
         with pytest.raises(ValueError, match="inverted"):
@@ -1570,7 +1570,7 @@ class TestLocalGUIAdapter:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-B: GUI loader — empty dir fail-closed, data present succeeds
+# GUI loader: empty directory fails closed; valid data succeeds.
 # ---------------------------------------------------------------------------
 
 
@@ -1596,7 +1596,7 @@ class TestGUILoader:
             ds, inv = coll._load_local_gui(tmp_path, seed=42)
             assert inv["loaded_split"] == "train"
 
-    # --- D1.5-B / GATE1 §4.1: required-features validation at load time ---
+    # Validate required features at load time.
 
     def test_rejects_dataset_missing_required_features(self, tmp_path):
         """If the loaded dataset lacks image/instructions/bboxes, fail closed
@@ -1676,7 +1676,7 @@ class TestGUILoader:
 
 
 # ---------------------------------------------------------------------------
-# D1.5-D: Local PixMo image-cache adapter
+# Local PixMo image-cache adapter.
 # ---------------------------------------------------------------------------
 
 

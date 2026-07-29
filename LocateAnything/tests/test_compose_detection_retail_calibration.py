@@ -91,3 +91,16 @@ def test_composes_coco_retail_and_non_detection_with_table9_prompts(tmp_path):
         "Detect all the objects in the image that belong to the category set: "
         "title</c>table."
     )
+
+
+def test_default_source_counts_match_the_detection_primary_release():
+    assert composer.DEFAULT_COCO_SINGLE == 200
+    assert composer.DEFAULT_COCO_DOUBLE == 220
+    assert composer.DEFAULT_COCO_MULTI == 80
+    assert composer.DEFAULT_RETAIL == 120
+    assert (
+        composer.DEFAULT_COCO_SINGLE
+        + composer.DEFAULT_COCO_DOUBLE
+        + composer.DEFAULT_COCO_MULTI
+        + composer.DEFAULT_RETAIL
+    ) == 620

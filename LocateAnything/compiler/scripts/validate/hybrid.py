@@ -127,7 +127,7 @@ def _metadata_candidates(input_dir: Path) -> list[Path]:
                 path.resolve()
                 for root in roots
                 for path in (
-                    root / "d3_job_metadata.json",
+                    root / "prepare_job_metadata.json",
                     root / "generation_summary.json",
                 )
             ]
@@ -144,7 +144,10 @@ def load_generation_metadata(input_dir: Path) -> tuple[dict[str, Any], list[dict
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             for key, value in data.items():
-                metadata.setdefault(key, value)
+                if key not in metadata:
+                    metadata[key] = value
+                    if key == "max_new_tokens":
+                        metadata["_max_new_tokens_source"] = path.name
             provenance.append({"path": str(path), "sha256": sha256(path)})
     return metadata, provenance
 
@@ -179,9 +182,11 @@ def generation_config_from_payload(
         max_new_tokens = int(
             metadata.get("max_new_tokens", HybridGenerationConfig().max_new_tokens)
         )
+        metadata_source = metadata.get(
+            "_max_new_tokens_source", "prepare_job_metadata.json"
+        )
         source = (
-            "d3_job_metadata.json:max_new_tokens + "
-            f"{GENERATION_CONFIG_SOURCE}"
+            f"{metadata_source}:max_new_tokens + {GENERATION_CONFIG_SOURCE}"
             if "max_new_tokens" in metadata
             else GENERATION_CONFIG_SOURCE
         )

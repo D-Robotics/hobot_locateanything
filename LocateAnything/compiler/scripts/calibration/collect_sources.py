@@ -158,7 +158,7 @@ LOCAL_SOURCE_SPECS: dict[str, dict[str, str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Local source identity registry (D1.5-A)
+# Local source identity registry.
 #
 # ``LOCAL_SOURCE_SPECS`` above pins the *default* local identity per task —
 # i.e. the dataset currently sitting on disk under ``dataset/<name>``. Some
@@ -166,8 +166,8 @@ LOCAL_SOURCE_SPECS: dict[str, dict[str, str]] = {
 #
 #   referring — the on-disk default is ``lmms-lab/RefCOCOg`` (val/test only,
 #     audit/held-out), but formal calibration MUST use
-#     ``sionic-ai/refcocog_object_detection`` train (user gate U1 will
-#     populate ``dataset/RefCOCOg-train-sionic``).
+#     ``sionic-ai/refcocog_object_detection`` train once it is populated under
+#     ``dataset/RefCOCOg-train-sionic``.
 #
 # ``LOCAL_SOURCE_IDENTITIES`` binds each identity key to its full provenance
 # (dataset / revision / split / source label / license) plus the schema the
@@ -175,12 +175,12 @@ LOCAL_SOURCE_SPECS: dict[str, dict[str, str]] = {
 # "audit / held-out only" — ``collect_domain_local`` fail-closes rather than
 # emit formal-calibration records. This is how lmms-lab/RefCOCOg val/test
 # stays available for audit while being forbidden from calibration
-# (README §3, GATE1 §4.2).
+# according to the train-only source contract.
 #
 # ``LOCAL_SOURCE_ALTERNATES`` maps a detected schema label to the identity
 # key the collector must use when that schema is observed at load time. This
-# is the binding that was missing before D1.5-A: sionic-schema rows were
-# written out labelled as ``lmms-lab/RefCOCOg``. Now the detected schema
+# prevents sionic-schema rows from being written out as the unrelated
+# ``lmms-lab/RefCOCOg`` source. The detected schema
 # selects the matching identity and the manifest's
 # ``source_dataset`` / ``source_revision`` reflect the actual input.
 # ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ LOCAL_SOURCE_IDENTITIES: dict[str, dict[str, Any]] = {
         "schema": "groundcua_arrow",
         "adapter": "_local_gui_adapter",
         "enabled": True,
-        "description": "Local GroundCUA train (D1.5-B adapter).",
+        "description": "Local GroundCUA training split adapter.",
     },
     "referring_lmms_refcocog_audit": {
         # Identity for the lmms-lab/RefCOCOg snapshot currently on disk.
@@ -214,7 +214,7 @@ LOCAL_SOURCE_IDENTITIES: dict[str, dict[str, Any]] = {
         # dataset_name="ref_coc_og", splits=["val","test"], no train. This
         # is NOT sionic-ai/refcocog_object_detection. Keeping the identity
         # explicit prevents lmms data from ever being written out labelled
-        # as sionic (the GATE1 §4.2 error).
+        # as sionic.
         "dataset": "lmms-lab/RefCOCOg",
         "revision": "local-arrow",
         "split": "val+test",
@@ -231,8 +231,8 @@ LOCAL_SOURCE_IDENTITIES: dict[str, dict[str, Any]] = {
     },
     "referring_sionic_train": {
         # Identity formal calibration MUST use for referring. The actual
-        # sionic train arrow is not yet downloaded (GATE1 §5 Task D1.5-A /
-        # user gate U1 will populate dataset/RefCOCOg-train-sionic). The
+        # The sionic training Arrow data may not be present locally. Once it is
+        # populated under dataset/RefCOCOg-train-sionic, the
         # schema mirrors what the streaming referring_adapter already
         # expects from sionic-ai/refcocog_object_detection:
         #   question starts with '[detect]', answer contains a literal
@@ -317,7 +317,7 @@ LOCAL_SOURCE_DEFAULT_KEYS: dict[str, str] = {
 # When the loader observes ``answer`` as a str-with-<bbox>, that signals the
 # sionic schema and the collector MUST use the sionic identity (and write
 # sionic provenance), not the lmms-lab default. This is the fix for the
-# GATE1 §4.2 mis-attribution bug.
+# This prevents source-provenance mis-attribution.
 LOCAL_SOURCE_ALTERNATES: dict[str, dict[str, str]] = {
     "referring": {
         # schema_label → identity_key
@@ -391,7 +391,7 @@ def ensure_identity_enabled(task: str, identity: dict[str, Any]) -> None:
 
     Disabled identities are kept in the registry so audit code can still
     load and inspect the data, but ``collect_domain_local`` must refuse to
-    emit formal-calibration records from them (README §3, GATE1 §4.2).
+    emit formal-calibration records from them.
     """
     if not identity.get("enabled", False):
         raise RuntimeError(
@@ -1269,9 +1269,9 @@ def _local_gui_adapter(
     width, height = image.size
     # Validate box coordinates are within image bounds before normalization.
     # Also reject inverted boxes (x1 > x2 or y1 > y2): these produce a
-    # nonsensical center point in point mode (GATE1 §4.1 "无点" scenario) and
+    # nonsensical center point in point mode and
     # an inside-out box in box mode. Failing closed here is the explicit
-    # D1.5-B requirement that degenerate boxes must not silently produce an
+    # Degenerate boxes must not silently produce an
     # invalid geometry.
     raw_x1, raw_y1, raw_x2, raw_y2 = [float(v) for v in bboxes[choice]]
     if raw_x1 < 0 or raw_y1 < 0 or raw_x2 > width or raw_y2 > height:
@@ -1471,7 +1471,7 @@ def parse_local_sources(
 def parse_local_source_task_keys(
     values: list[str] | None,
 ) -> dict[str, str]:
-    """Parse --local-source-task-key task=identity_key entries (D1.5-A).
+    """Parse --local-source-task-key task=identity_key entries.
 
     Returns a map of task → identity_key. Validates that each key is a
     registered identity for the task (the identity must be the task default
@@ -1698,13 +1698,13 @@ def _load_local_gui(source_dir: Path, seed: int) -> tuple[Any, dict[str, Any]]:
     message).  When data is present it delegates to ``_load_local_arrow``
     which enforces train-only.
 
-    Required-features check (D1.5-B / GATE1 §4.1): after loading, the dataset
+    Required-features check: after loading, the dataset
     MUST expose the fields the GroundCUA adapter expects — ``image``,
     ``instructions``, ``bboxes``. Without this check a malformed or wrong-schema
     snapshot (e.g. a partial download, or a different GroundCUA revision with
     renamed columns) would only blow up inside the adapter on the first row,
     masking the real problem as a per-row ``KeyError``. Failing at load time
-    with an explicit message is the fail-closed behaviour GATE1 §4.1 requires.
+    with an explicit message is the required fail-closed behaviour.
     """
     # Check for a dataset_dict.json first — the definitive sign of a
     # loadable Arrow dataset.
@@ -1788,11 +1788,11 @@ def collect_domain_local(
     to fetch. The local adapters additionally call ``image_from_value`` with
     ``allow_network=False`` so URL-valued images raise instead of downloading.
 
-    Provenance (D1.5-A): the emitted ``source_dataset`` / ``source_revision``
+    Provenance contract: the emitted ``source_dataset`` / ``source_revision``
     / ``split`` / ``source`` / ``license`` come from the *selected local
     source identity* (``LOCAL_SOURCE_IDENTITIES``), NOT from the streaming
-    ``SOURCE_SPECS``. This is the fix for the GATE1 §4.2 mis-attribution
-    bug where lmms-lab/RefCOCOg data was written out labelled as
+    ``SOURCE_SPECS``. This prevents the source mis-attribution where
+    lmms-lab/RefCOCOg data was written out labelled as
     ``sionic-ai/refcocog_object_detection``.
 
     Identity selection:
@@ -1866,7 +1866,7 @@ def collect_domain_local(
         # containing ``<bbox>`` tokens; lmms-lab/RefCOCOg has ``answer``
         # as a List[str] of natural-language captions.
         #
-        # D1.5-A: the detected schema MUST re-bind the identity (and therefore
+        # The detected schema MUST re-bind the identity (and therefore
         # the provenance written to the manifest). If the user explicitly
         # passed --local-source-task-key we still validate that it is
         # consistent with the detected schema (a mismatch is a hard error
@@ -1913,7 +1913,7 @@ def collect_domain_local(
             inventory["referring_schema"] = detected_schema_label
             inventory["referring_identity_key"] = selected_identity_key
 
-    # D1.5-A: fail closed if the resolved identity is disabled
+    # Fail closed if the resolved identity is disabled.
     # (audit/held-out only). This keeps lmms-lab/RefCOCOg val/test
     # available for inspection while forbidding it from calibration.
     ensure_identity_enabled(task, identity)
@@ -2150,7 +2150,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TASK=KEY",
         help=(
             "explicitly select a local source identity key for a task "
-            "(D1.5-A provenance override). Only meaningful together with "
+            "(source provenance override). Only meaningful together with "
             "--local-source. For referring, use "
             "'referring=referring_sionic_train' once the pinned sionic train "
             "arrow is on disk. If omitted, referring schema is auto-detected "
@@ -2209,7 +2209,7 @@ def main() -> int:
 
     # --- Resolve local sources ---
     local_sources = parse_local_sources(args.local_source)
-    # --- Resolve explicit local source identity keys (D1.5-A) ---
+    # Resolve explicit local source identity keys.
     local_source_task_keys = parse_local_source_task_keys(args.local_source_task_key)
     # An identity key without a matching --local-source is a usage error.
     for task in local_source_task_keys:

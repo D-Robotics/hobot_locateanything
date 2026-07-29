@@ -445,7 +445,7 @@ def run(args: argparse.Namespace) -> int:
     )
     print(json.dumps(coverage, sort_keys=True), flush=True)
     if not coverage["all_stages_executed"]:
-        raise RuntimeError("not all D4 graph stages executed")
+        raise RuntimeError("not all required calibration graph paths were executed")
     if not coverage["activation_statistics_audit_passed"]:
         raise RuntimeError(
             "activation statistics audit found unexecuted, non-finite, or invalid scales"

@@ -1,11 +1,11 @@
 # LocateAnything grounding accuracy evaluation
 
 The task stage of `compiler/quantize.py verify` measures grounding response
-quality independently from D3 tensor integrity and S600 runtime stability. Its
-internal evaluator accepts both current D3 `generated.jsonl` records and flat
+quality independently from prepared-bundle integrity and S600 runtime stability. Its
+internal evaluator accepts both current Prepare `generated.jsonl` records and flat
 device prediction records.
 
-## D3 evaluation
+## Prepared Float evaluation
 
 ```bash
 python compiler/quantize.py verify --component all --level task \
@@ -20,7 +20,7 @@ The evaluator discovers `prediction.hybrid.answer` and
 specific modes. A requested but missing mode is retained in the end-to-end
 `overall` denominator as an invalid response, not silently omitted.
 
-D3 normally generates `slow` for only a sampled subset. For that reason every
+Prepare normally generates `slow` for only a sampled subset. For that reason every
 mode has three related outputs:
 
 - `prediction_coverage`: how many rows actually contain that mode;
@@ -40,7 +40,7 @@ The recommended device-side JSONL format is one row per sample and mode:
 {"bundle_id":"0000-detection-...","mode":"s600_hybrid","answer":"<ref>object</ref><box><10><20><30><40></box>"}
 ```
 
-Join it to the D3 manifest so evaluation uses the 672x672 profile-adjusted
+Join it to the prepared manifest so evaluation uses the 672x672 profile-adjusted
 reference coordinates:
 
 ```bash

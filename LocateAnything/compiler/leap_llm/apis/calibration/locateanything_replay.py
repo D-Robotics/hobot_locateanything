@@ -80,7 +80,7 @@ def build_prefill_inputs(
     input_ids = payload["prompt_input_ids"].reshape(-1).to(torch.long)
     active_len = int(payload["prompt_attention_mask"].reshape(-1).sum().item())
     if active_len != input_ids.numel():
-        raise ValueError("D3 prompt must be unpadded before fixed-profile replay")
+        raise ValueError("prepared prompt must be unpadded before fixed-profile replay")
     prompt_len = active_len
     suffix = [int(token_id) for token_id in suffix_token_ids or ()]
     if suffix:

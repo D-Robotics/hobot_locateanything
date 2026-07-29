@@ -26,15 +26,20 @@ pip install -e . --no-deps
 
 ```bash
 cd ~/oe_locateanything/LocateAnything
+python compiler/quantize.py prepare --preflight-only
 python compiler/quantize.py prepare
 python compiler/quantize.py calibrate
 python compiler/quantize.py verify --component all --level contract
 ```
 
-Contract verification checks the selected/generated manifests, frozen scale
-files, graph coverage, and the fixed 672/1024/4096 build profile. It does not
-re-run the separate hidden-domain numerical experiment. The internal rotation
-validator previously produced the following 4090 reference values:
+The first command checks the frozen 1,200-record manifest, image hashes, model
+metadata, tokenizer, processor, and sequence-length contracts without loading
+the 3B weights or using CUDA. The full Prepare stage then creates replay
+tensors with `max_new_tokens=1024`. Contract verification checks the
+selected/generated manifests, frozen scale files, graph coverage, and the fixed
+672/1024/4096 build profile. It does not re-run the separate hidden-domain
+numerical experiment. The internal rotation validator previously produced the
+following 4090 reference values:
 
 ```text
 language logits cosine = 0.999999999986
@@ -52,7 +57,7 @@ Expected BC contracts:
 
 | Graph | Inputs | Primary output |
 |---|---:|---|
-| prefill | 75 | `(1,1024,152681)` logits + 72 KV |
+| prefill | 75 | `(1,1,152681)` last-row logits + 72 q=1024 KV updates |
 | decode | 75 | `(1,6,152681)` logits + 72 KV |
 | decode_ar | 75 | `(1,1,152681)` logits + 72 KV |
 | decode_pbd_q7...q12 | 75 | fused-PBD logits + 72 KV |
@@ -70,13 +75,44 @@ The orchestrator builds Vision and Language sequentially and writes stage logs
 under `workspace/logs/`. `--resume` reuses completed artifacts. Do not launch a
 second HBDK build against the same output directory.
 
-## 5. Required Validation Order
+Reuse is identity-based rather than filename-based. The BC manifest binds the
+checkpoint metadata, frozen Scale manifest, hidden-domain configuration,
+compiler source digest, toolchain versions, and each BC SHA256. Converted BC,
+HBO, and HBM files have SHA256 sidecars. When an input or compile contract
+changes, the same command invalidates downstream reuse and rebuilds from the
+nearest trusted stage. A reusable Language HBM must expose exactly the 13
+release graphs with the declared shapes; a reusable Vision HBM must expose only
+`visual` with the 672 profile.
 
-Run the unified verifier after the build:
+## 5. Required Validation Inputs
+
+An HBM build does not produce cross-stage comparison outputs or held-out board
+predictions. Before using the aggregate verifier, prepare all of the following:
+
+1. completed calibration manifests, Scale manifest, and graph coverage for
+   contract validation;
+2. one coherent pipeline directory containing `inputs.json`, a completed
+   `float/stage.json`, and at least one completed candidate stage with its
+   per-sample outputs; every stage must use the same phase and input set;
+3. the configured held-out reference JSONL and the matching S600 predictions
+   JSONL for task evaluation.
+
+Once those artifacts exist, run:
 
 ```bash
 python compiler/quantize.py verify --component all --level all
 ```
+
+This command validates and summarizes existing evidence. It does not execute
+the Float, Quantized-Eager, BC, HBM, or S600 collection stages. Pipeline
+analysis rejects a missing Float stage, no completed candidate, mixed phases,
+and mismatched input fingerprints. It can intentionally report a partial set
+of candidate stages, so a release decision must also confirm that every
+planned stage appears in the report. Run
+`compiler/scripts/validate/hbm_sanity.py` separately to inspect the HBM graph
+catalog, descriptors, and embedding file.
+
+## 6. Required Validation Order
 
 The required validation order is:
 

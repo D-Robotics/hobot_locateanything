@@ -1,4 +1,4 @@
-"""Tests for the local offline data reading layer (D1).
+"""Tests for the local offline source-reading layer.
 
 These tests cover:
   - Six-domain field mapping

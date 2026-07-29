@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose COCO, dense retail, and existing non-Detection calibration sources."""
+"""Compose the frozen 1,200-record detection-primary calibration sources."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from typing import Any, Iterable
 
 
 DEFAULT_SEED = 20260729
-DEFAULT_COCO_SINGLE = 120
-DEFAULT_COCO_DOUBLE = 200
+DEFAULT_COCO_SINGLE = 200
+DEFAULT_COCO_DOUBLE = 220
 DEFAULT_COCO_MULTI = 80
-DEFAULT_RETAIL = 100
+DEFAULT_RETAIL = 120
 TABLE9_POLICY = "locateanything_paper_table9_v1"
 
 

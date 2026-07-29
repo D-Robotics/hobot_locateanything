@@ -1,3 +1,5 @@
+"""Tests for safe reuse of completed Prepare records."""
+
 from compiler.scripts.calibration.prepare import (
     RESUME_IDENTITY_FIELDS,
     resume_identity_mismatches,

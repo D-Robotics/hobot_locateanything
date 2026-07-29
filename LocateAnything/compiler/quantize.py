@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Unified LocateAnything calibration, quantization, build, and verification CLI.
+"""Orchestrate LocateAnything Prepare, Calibrate, Build, and Verify stages.
 
-This file is deliberately an orchestration layer. The numerical calibration,
-BC export, HBDK compilation, and validation algorithms remain in
+Source selection produces the frozen manifest consumed by this CLI. Numerical
+calibration, BC export, HBDK compilation, and validation algorithms remain in
 ``compiler/scripts`` and ``compiler/leap_llm``.
 """
 
@@ -39,6 +39,23 @@ COMPONENTS = ("vision", "language", "all")
 BUILD_TARGETS = ("bc", "hbm")
 PROGRESS_MODES = ("auto", "bar", "log", "off")
 VERIFY_LEVELS = ("contract", "pipeline", "task", "all")
+EXPECTED_CALIBRATION_TASK_COUNTS = {
+    "detection": 620,
+    "gui": 180,
+    "referring": 120,
+    "ocr": 120,
+    "layout": 100,
+    "pointing": 60,
+}
+EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS = {
+    "coco_multicategory_detection": 500,
+    "dense_retail_detection": 120,
+    "existing_non_detection": 580,
+}
+EXPECTED_COCO_STRATUM_COUNTS = {"single": 200, "double": 220, "multi": 80}
+EXPECTED_SELECTED_MANIFEST_SHA256 = (
+    "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+)
 EXPECTED_LANGUAGE_GRAPHS = (
     "prefill", "decode", "decode_ar",
     *(f"decode_pbd_q{q_len}" for q_len in range(7, 13)),
@@ -110,6 +127,10 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("release image size is fixed at 672x672")
     if image_width % (patch_size * spatial_merge) or image_height % (patch_size * spatial_merge):
         raise ConfigurationError("image dimensions must align to patch_size * spatial_merge")
+    if model.get("resize_mode") != "letterbox":
+        raise ConfigurationError("release image preprocessing requires resize_mode=letterbox")
+    if model.get("letterbox_fill") != 128:
+        raise ConfigurationError("release letterbox_fill must be 128")
     if model.get("hidden_size") != 2048 or model.get("vocab_size") != 152681:
         raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model contracts")
 
@@ -118,8 +139,24 @@ def validate_config(config: Mapping[str, Any]) -> None:
     checkpoint = _positive_int(
         calibration.get("checkpoint_samples"), "calibration.checkpoint_samples"
     )
-    if checkpoint >= sample_count:
-        raise ConfigurationError("checkpoint_samples must be smaller than sample_count")
+    if sample_count != 1200 or checkpoint != 512:
+        raise ConfigurationError(
+            "release calibration requires sample_count=1200 and checkpoint_samples=512"
+        )
+    if calibration.get("max_new_tokens") != 1024:
+        raise ConfigurationError("release calibration requires max_new_tokens=1024")
+    if calibration.get("task_counts") != EXPECTED_CALIBRATION_TASK_COUNTS:
+        raise ConfigurationError("release calibration task_counts do not match the 1200-sample profile")
+    if calibration.get("source_role_counts") != EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS:
+        raise ConfigurationError(
+            "release calibration source_role_counts do not match the 1200-sample profile"
+        )
+    if calibration.get("coco_stratum_counts") != EXPECTED_COCO_STRATUM_COUNTS:
+        raise ConfigurationError(
+            "release calibration coco_stratum_counts do not match the 500-sample COCO profile"
+        )
+    if calibration.get("selected_manifest_sha256") != EXPECTED_SELECTED_MANIFEST_SHA256:
+        raise ConfigurationError("release selected manifest SHA256 does not match the frozen profile")
 
     language = _mapping(config.get("language"), "language")
     chunk_size = _positive_int(language.get("chunk_size"), "language.chunk_size")
@@ -196,9 +233,31 @@ def common_env(config: Mapping[str, Any], progress: str) -> dict[str, str]:
 def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
     calibration = _mapping(config["calibration"], "calibration")
     model = _mapping(config["model"], "model")
+    if args.max_new_tokens is not None and args.max_new_tokens != 1024:
+        raise ConfigurationError("release preparation fixes --max-new-tokens at 1024")
     selected = resolve_path(config, "selected_jsonl", args.selected_jsonl)
     output_dir = resolve_path(config, "generated_dir", args.output_dir)
     build = _mapping(config["build"], "build")
+    if args.preflight_only:
+        report_json = (
+            resolve_path_value(args.report_json)
+            if args.report_json
+            else output_dir / "prepare_preflight.json"
+        )
+        command = (
+            python_command(config),
+            str(CALIBRATION_SCRIPTS / "preflight.py"),
+            "--config", str(args.config.resolve()),
+            "--selected-jsonl", str(selected),
+            "--model-path", str(resolve_path(config, "model", args.model_path)),
+            "--upstream-repo", str(resolve_path(config, "upstream_source", args.upstream_source)),
+            "--report-json", str(report_json),
+        )
+        return [PlanStep(
+            "validate prepared inputs without loading model weights",
+            command,
+            note="static processor/tokenizer check only; no CUDA or model inference",
+        )]
     env = common_env(config, args.progress)
     env.update({
         "SELECTED_JSONL": str(selected),
@@ -209,6 +268,8 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
         "DTYPE": args.dtype or str(calibration["prepare_dtype"]),
         "IMAGE_WIDTH": str(model["image_width"]),
         "IMAGE_HEIGHT": str(model["image_height"]),
+        "RESIZE_MODE": str(model["resize_mode"]),
+        "LETTERBOX_FILL": str(model["letterbox_fill"]),
         "PATCH_SIZE": str(model["patch_size"]),
         "MERGE_SIZE": str(model["spatial_merge"]),
         "HIDDEN_SIZE": str(model["hidden_size"]),
@@ -279,6 +340,9 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
             "CALIBRATION_COVERAGE_JSON": str(resolve_path(config, "coverage_json")),
             "EXPECTED_SAMPLES": str(calibration["sample_count"]),
+            "EXPECTED_SELECTED_MANIFEST_SHA256": str(
+                calibration["selected_manifest_sha256"]
+            ),
             "DEVICE": args.device or str(build["device"]),
             "MARCH": str(build["march"]),
             "JOBS": str(build["jobs"]),
@@ -324,6 +388,7 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--scale-manifest", str(resolve_path(config, "scale_manifest")),
         "--coverage-json", str(resolve_path(config, "coverage_json")),
         "--expected-samples", str(calibration["sample_count"]),
+        "--expected-selected-sha256", str(calibration["selected_manifest_sha256"]),
         "--image-width", str(model["image_width"]),
         "--image-height", str(model["image_height"]),
         "--chunk-size", str(language["chunk_size"]),
@@ -437,7 +502,10 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="LocateAnything calibration and S600 build orchestrator",
+        description=(
+            "LocateAnything source -> prepare -> calibrate -> build -> verify "
+            "orchestrator"
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -453,6 +521,15 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--dtype", choices=("float16", "bfloat16", "float32"))
     prepare.add_argument("--slow-samples", type=int)
     prepare.add_argument("--max-new-tokens", type=int)
+    prepare.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="validate frozen Prepare inputs without loading model weights or using CUDA",
+    )
+    prepare.add_argument(
+        "--report-json",
+        help="preflight report path; defaults to OUTPUT_DIR/prepare_preflight.json",
+    )
 
     calibrate = subparsers.add_parser("calibrate", help="collect and freeze activation scales")
     add_common_options(calibrate)

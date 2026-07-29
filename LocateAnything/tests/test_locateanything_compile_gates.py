@@ -60,7 +60,12 @@ def test_compile_wrappers_validate_all_four_evidence_inputs_before_build():
             "--expected-samples",
         ):
             assert argument in validation, f"{path.name} misses validation argument {argument}"
-        assert 'EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-}"' in validation
+        assert 'EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"' in validation
+        assert (
+            'EXPECTED_SELECTED_MANIFEST_SHA256="${EXPECTED_SELECTED_MANIFEST_SHA256:-'
+            '22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03}"'
+            in validation
+        )
         assert "--calibration_scale_manifest" in build
         assert "--calib_json_path" not in build
         assert "--calib_image_path" not in build
@@ -91,6 +96,7 @@ def test_build_wrappers_have_explicit_wait_detach_and_target_contracts():
         assert 'DETACH="${DETACH:-0}"' in text
         assert 'BUILD_TARGET must be bc or hbm' in text
         assert 'if [[ "$DETACH" == "1" || "$WAIT" == "0" ]]' in text
+        assert 'EXPORT_ONLY="$EXPORT_ONLY" bash "$0"' in text
         assert 'status=${PIPESTATUS[0]}' in text
         assert "BUILD_TARGET must be bc, hbo" not in text
 

@@ -16,7 +16,8 @@ LM_HEAD_W_BITS="${LM_HEAD_W_BITS:-8}"
 CHUNK_SIZE="${CHUNK_SIZE:-1024}"
 CACHE_LEN="${CACHE_LEN:-4096}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:-6}"   # PBD q_len=6
-EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-}"
+EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
+EXPECTED_SELECTED_MANIFEST_SHA256="${EXPECTED_SELECTED_MANIFEST_SHA256:-22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03}"
 DEVICE="${DEVICE:-cuda:0}"
 PREFILL_CORE_NUM="${PREFILL_CORE_NUM:-4}"
 DECODE_CORE_NUM="${DECODE_CORE_NUM:-4}"
@@ -29,6 +30,7 @@ EXPORT_ONLY_INPUT="${EXPORT_ONLY:-}"
 FUSED_PBD_PROFILES="${FUSED_PBD_PROFILES:-1}"
 WAIT="${WAIT:-1}"
 DETACH="${DETACH:-0}"
+RESUME="${RESUME:-0}"
 
 BUILD_ID="${BUILD_ID:-release}"
 INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/workspace/models/LocateAnything-3B}"
@@ -57,14 +59,15 @@ fi
 EXPORT_ONLY="$EXPECTED_EXPORT_ONLY"
 [[ "$WAIT" == "0" || "$WAIT" == "1" ]] || { echo "WAIT must be 0 or 1"; exit 1; }
 [[ "$DETACH" == "0" || "$DETACH" == "1" ]] || { echo "DETACH must be 0 or 1"; exit 1; }
+[[ "$RESUME" == "0" || "$RESUME" == "1" ]] || { echo "RESUME must be 0 or 1"; exit 1; }
 PID_PATH="${PID_PATH:-$LOG_DIR/language_${BUILD_TARGET}.pid}"
 EXIT_PATH="${EXIT_PATH:-$LOG_DIR/language_${BUILD_TARGET}.exit.txt}"
 LAUNCH_LOG="${LAUNCH_LOG:-$LOG_DIR/language_${BUILD_TARGET}.launcher.log}"
 
 mkdir -p "$LOG_DIR"
 if [[ "$DETACH" == "1" || "$WAIT" == "0" ]]; then
-  setsid nohup env DETACH=0 WAIT=1 BUILD_TARGET="$BUILD_TARGET" \
-    EXPORT_ONLY="$EXPORT_ONLY" "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
+  setsid nohup env DETACH=0 WAIT=1 RESUME="$RESUME" BUILD_TARGET="$BUILD_TARGET" \
+    EXPORT_ONLY="$EXPORT_ONLY" bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
   printf '%s\n' "$child_pid" > "$PID_PATH"
   echo "[build:language] detached_pid=$child_pid"
@@ -82,19 +85,28 @@ cd "$LEAP_LLM_SRC"
 
 [[ -d "$INPUT_MODEL_PATH" ]] || { echo "input model missing: $INPUT_MODEL_PATH"; exit 1; }
 [[ -f "$CALIB_JSON" ]] || { echo "calib json missing: $CALIB_JSON"; exit 1; }
-[[ -f "$GENERATED_JSON" ]] || { echo "D3 generated json missing: $GENERATED_JSON"; exit 1; }
-[[ "$W_BITS" == "4" || "$W_BITS" == "8" ]] || { echo "W_BITS must be 4 or 8"; exit 1; }
-[[ "$LM_HEAD_W_BITS" == "4" || "$LM_HEAD_W_BITS" == "8" ]] || { echo "LM_HEAD_W_BITS must be 4 or 8"; exit 1; }
+[[ -f "$GENERATED_JSON" ]] || { echo "prepared calibration manifest missing: $GENERATED_JSON"; exit 1; }
+[[ "$W_BITS" == "8" ]] || { echo "LocateAnything Language release requires W_BITS=8"; exit 1; }
+[[ "$LM_HEAD_W_BITS" == "8" ]] || { echo "LocateAnything Language release requires LM_HEAD_W_BITS=8"; exit 1; }
+[[ "$CHUNK_SIZE" == "1024" && "$CACHE_LEN" == "4096" && "$DECODE_SEQ_LEN" == "6" ]] || {
+  echo "LocateAnything Language release requires CHUNK_SIZE=1024 CACHE_LEN=4096 DECODE_SEQ_LEN=6"
+  exit 1
+}
+[[ "$FUSED_PBD_PROFILES" == "1" ]] || { echo "LocateAnything Language release requires FUSED_PBD_PROFILES=1"; exit 1; }
+[[ "$PREFILL_CORE_NUM" == "1" || "$PREFILL_CORE_NUM" == "2" || "$PREFILL_CORE_NUM" == "4" ]] || { echo "PREFILL_CORE_NUM must be 1, 2, or 4"; exit 1; }
+[[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || { echo "activation scale manifest missing; set CALIBRATION_SCALE_MANIFEST"; exit 1; }
 [[ -n "$CALIBRATION_COVERAGE_JSON" && -f "$CALIBRATION_COVERAGE_JSON" ]] || { echo "calibration graph coverage missing; set CALIBRATION_COVERAGE_JSON"; exit 1; }
 [[ "$DISABLE_HIDDEN_ROTATION" == "0" || "$DISABLE_HIDDEN_ROTATION" == "1" ]] || { echo "DISABLE_HIDDEN_ROTATION must be 0 or 1"; exit 1; }
-[[ "$FUSED_PBD_PROFILES" == "0" || "$FUSED_PBD_PROFILES" == "1" ]] || { echo "FUSED_PBD_PROFILES must be 0 or 1"; exit 1; }
 command -v oellm_build >/dev/null || { echo "oellm_build not on PATH in env $CONDA_ENV"; exit 1; }
 
 VALIDATION_ARGS=()
 if [[ -n "$EXPECTED_SAMPLES" ]]; then
   VALIDATION_ARGS+=(--expected-samples "$EXPECTED_SAMPLES")
+fi
+if [[ -n "$EXPECTED_SELECTED_MANIFEST_SHA256" ]]; then
+  VALIDATION_ARGS+=(--expected-selected-sha256 "$EXPECTED_SELECTED_MANIFEST_SHA256")
 fi
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
@@ -133,7 +145,7 @@ echo "coverage:      $CALIBRATION_COVERAGE_JSON"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
 echo "graph profile: fused_pbd=$FUSED_PBD_PROFILES"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
-echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH"
+echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
 echo "log:           $LOG_FILE"
 echo
 
@@ -144,33 +156,138 @@ fi
 if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
   EXTRA_ARGS+=(--disable_hidden_rotation)
 fi
-if [[ "$EXPORT_ONLY" == "1" ]]; then
-  EXTRA_ARGS+=(--export_only)
-fi
 if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
   EXTRA_ARGS+=(--fused_pbd_profiles)
 fi
 
+MODEL_BASENAME=$(basename "$INPUT_MODEL_PATH")
+HBM_STEM="${MODEL_BASENAME}_language_chunk_${CHUNK_SIZE}_cache_${CACHE_LEN}_decoder_w${W_BITS}_lmhead_w${LM_HEAD_W_BITS}_${MARCH}_corenum_${PREFILL_CORE_NUM}_${DECODE_CORE_NUM}"
+if [[ "$AR_CORE_NUM" != "$DECODE_CORE_NUM" ]]; then
+  HBM_STEM="${HBM_STEM}_ar${AR_CORE_NUM}"
+fi
+if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
+  HBM_STEM="${HBM_STEM}_fusedpbd"
+fi
+HBM_PATH="$OUTPUT_MODEL_PATH/${HBM_STEM}.hbm"
+EMBEDDING_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_embed_tokens.bin"
+EXPECTED_EMBEDDING_BYTES=$((152681 * 2048 * 2))
+BC_MANIFEST="${HBM_PATH%.hbm}.bc_manifest.json"
+STAGE_ARGS=(
+  --bc_dir "$OUTPUT_MODEL_PATH"
+  --output_dir "$OUTPUT_MODEL_PATH"
+  --hbm_path "$HBM_PATH"
+  --embedding_path "$EMBEDDING_PATH"
+  --expected_embedding_bytes "$EXPECTED_EMBEDDING_BYTES"
+  --march "$MARCH"
+  --prefill_core_num "$PREFILL_CORE_NUM"
+  --decode_core_num "$DECODE_CORE_NUM"
+  --ar_core_nums "$AR_CORE_NUM"
+  --jobs "$JOBS"
+)
+if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
+  STAGE_ARGS+=(--require_fused)
+fi
+LANGUAGE_GRAPHS=(
+  prefill decode decode_ar
+  decode_pbd_q7 decode_pbd_q8 decode_pbd_q9
+  decode_pbd_q10 decode_pbd_q11 decode_pbd_q12
+  decode_ar_q2 decode_ar_q3 decode_ar_q4 decode_ar_q5
+)
+PROVENANCE_ARGS=(
+  --manifest "$BC_MANIFEST"
+  --component language
+  --model_path "$INPUT_MODEL_PATH"
+  --scale_manifest "$CALIBRATION_SCALE_MANIFEST"
+  --field "chunk_size=$CHUNK_SIZE"
+  --field "cache_len=$CACHE_LEN"
+  --field "pbd_query_len=$DECODE_SEQ_LEN"
+  --field "ar_query_len=1"
+  --field "decoder_w_bits=$W_BITS"
+  --field "lm_head_w_bits=$LM_HEAD_W_BITS"
+  --field "fused_pbd=$FUSED_PBD_PROFILES"
+  --field "march=$MARCH"
+  --artifact "embed_tokens=$EMBEDDING_PATH"
+)
+for graph in "${LANGUAGE_GRAPHS[@]}"; do
+  PROVENANCE_ARGS+=(--artifact "$graph=${HBM_PATH%.hbm}.${graph}.bc")
+done
+if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
+  PROVENANCE_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
+fi
+if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
+  PROVENANCE_ARGS+=(--disable_hidden_rotation)
+fi
+
+validate_bc() {
+  env PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" python \
+    "$REPO_ROOT/compiler/scripts/build/language_variants.py" \
+    "${STAGE_ARGS[@]}" --check_only
+}
+
+check_bc() {
+  python "$REPO_ROOT/compiler/scripts/build/artifact_manifest.py" \
+    check "${PROVENANCE_ARGS[@]}" && validate_bc
+}
+
+record_bc() {
+  validate_bc
+  python "$REPO_ROOT/compiler/scripts/build/artifact_manifest.py" \
+    write "${PROVENANCE_ARGS[@]}"
+}
+
+export_bc() {
+  echo "[build:language] exporting the complete Language BC graph family"
+  env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" oellm_build \
+    --model_name "$MODEL_NAME" \
+    --march "$MARCH" \
+    --input_model_path "$INPUT_MODEL_PATH" \
+    --output_model_path "$OUTPUT_MODEL_PATH" \
+    --w_bits "$W_BITS" \
+    --lm_head_w_bits "$LM_HEAD_W_BITS" \
+    --chunk_size "$CHUNK_SIZE" \
+    --cache_len "$CACHE_LEN" \
+    --decode_seq_len "$DECODE_SEQ_LEN" \
+    --calibration_scale_manifest "$CALIBRATION_SCALE_MANIFEST" \
+    --device "$DEVICE" \
+    --prefill_core_num "$PREFILL_CORE_NUM" \
+    --decode_core_num "$DECODE_CORE_NUM" \
+    --ar_core_num "$AR_CORE_NUM" \
+    --jobs "$JOBS" \
+    --export_only \
+    "${EXTRA_ARGS[@]}"
+}
+
+run_build() (
+  set -e
+  if [[ "$BUILD_TARGET" == "bc" ]]; then
+    if [[ "$RESUME" == "1" ]] && check_bc; then
+      echo "[RESUME] Language BC contract already complete: $OUTPUT_MODEL_PATH"
+      return 0
+    fi
+    export_bc
+    record_bc
+    return 0
+  fi
+
+  if check_bc; then
+    echo "[REUSE] Language HBM build will consume existing 13-graph BC family"
+  else
+    echo "[build:language] compatible BC family not found; exporting it first"
+    export_bc
+    record_bc
+  fi
+
+  RESUME_ARGS=()
+  [[ "$RESUME" == "1" ]] && RESUME_ARGS+=(--resume)
+  env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" python \
+    "$REPO_ROOT/compiler/scripts/build/language_variants.py" \
+    "${STAGE_ARGS[@]}" "${RESUME_ARGS[@]}"
+)
+
 printf 'status=running\ntarget=%s\nstarted_at=%s\n' \
   "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 set +e
-env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" oellm_build \
-  --model_name "$MODEL_NAME" \
-  --march "$MARCH" \
-  --input_model_path "$INPUT_MODEL_PATH" \
-  --output_model_path "$OUTPUT_MODEL_PATH" \
-  --w_bits "$W_BITS" \
-  --lm_head_w_bits "$LM_HEAD_W_BITS" \
-  --chunk_size "$CHUNK_SIZE" \
-  --cache_len "$CACHE_LEN" \
-  --decode_seq_len "$DECODE_SEQ_LEN" \
-  --calibration_scale_manifest "$CALIBRATION_SCALE_MANIFEST" \
-  --device "$DEVICE" \
-  --prefill_core_num "$PREFILL_CORE_NUM" \
-  --decode_core_num "$DECODE_CORE_NUM" \
-  --ar_core_num "$AR_CORE_NUM" \
-  --jobs "$JOBS" \
-  "${EXTRA_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+run_build 2>&1 | tee "$LOG_FILE"
 status=${PIPESTATUS[0]}
 set -e
 printf 'exit_code=%s\ntarget=%s\ncompleted_at=%s\n' \

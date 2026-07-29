@@ -13,8 +13,15 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(qa)
 
 
-def test_default_quotas_preserve_v2_contract():
-    assert qa.parse_quotas(None) == qa.EXPECTED_COUNTS
+def test_default_quotas_match_the_1200_record_release_contract():
+    assert qa.parse_quotas(None) == {
+        "detection": 620,
+        "gui": 180,
+        "referring": 120,
+        "ocr": 120,
+        "layout": 100,
+        "pointing": 60,
+    }
 
 
 def test_explicit_v3_quotas():
