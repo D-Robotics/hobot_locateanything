@@ -348,7 +348,7 @@ Calibration must run before `compile_mode(True)` and BC export:
 8. Export BC only after the scale audit passes.
 
 Language Decode calibration uses the
-`bundle_hash_base_plus_detection_target_mid_tail_v2` policy. Every generated
+`bundle_hash_base_plus_detection_target_tail_v2` policy. Every generated
 sample contributes exactly one base context. A hash of `bundle_id` selects a
 stable response-start, `<ref>`, or `<box>` boundary from the saved Hybrid
 prediction or target tokens. Tokens before that boundary are appended to
@@ -357,10 +357,10 @@ that generation depth.
 
 Long Detection targets receive bounded additional coverage. When at least 32
 target tokens can be appended before the six-token Decode workspace, the
-calibrator selects the lower-middle and final eligible positive `<ref>`/`<box>`
-offsets. These supplemental contexts are target-only, distinct by
+calibrator selects the final eligible positive `<ref>`/`<box>` offset. This
+supplemental context is target-only, distinct by
 `SHA256(bundle_id, token_source, offset)`, and capped so a bundle has at most
-three contexts: one base, one target-middle, and one target-tail. A base target
+two contexts: one base and one target-tail. A base target
 context that already has a required offset satisfies that position without a
 duplicate replay.
 
@@ -375,8 +375,8 @@ samples, not 512 contexts.
 `calibration_graph_coverage.json` records each context's stable ID, role,
 `suffix_len`, `past_len`, token source, eligible target offsets, and required
 target offsets. Calibration fails unless every bundle has exactly one base,
-supplemental contexts are Detection/target only, every deterministic middle and
-tail offset is covered, the three-context cap holds, and prompt-boundary,
+supplemental contexts are Detection/target only, every deterministic tail
+offset is covered, the two-context cap holds, and prompt-boundary,
 nonzero-history, and deep-history cases remain present. Graph invocation counts
 alone are not sufficient Decode calibration evidence.
 

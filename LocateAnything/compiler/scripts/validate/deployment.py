@@ -49,7 +49,7 @@ PBD_STAGES = tuple(f"pbd_q{q_len}" for q_len in range(6, 13))
 AR_STAGES = tuple(f"ar_q{q_len}" for q_len in range(1, 6))
 LANGUAGE_STAGES = ("prefill", *PBD_STAGES, *AR_STAGES)
 GRAPH_STAGES = ("vision", *LANGUAGE_STAGES)
-DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_mid_tail_v2"
+DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
@@ -447,7 +447,7 @@ def main() -> int:
         ):
             errors.append("calibration scale manifest language_context_count is invalid")
         elif "language" in required_groups and not (
-            len(generated) <= scale_language_context_count <= 3 * len(generated)
+            len(generated) <= scale_language_context_count <= 2 * len(generated)
         ):
             errors.append("calibration Language context count is outside release bounds")
         elif "language" not in required_groups and scale_language_context_count != 0:
@@ -554,7 +554,7 @@ def main() -> int:
             errors.append("calibration coverage Language context count is invalid")
             language_context_count = 0
         elif "language" in required_groups and not (
-            len(generated) <= language_context_count <= 3 * len(generated)
+            len(generated) <= language_context_count <= 2 * len(generated)
         ):
             errors.append("calibration coverage Language context count is outside release bounds")
         elif "language" not in required_groups and language_context_count != 0:
@@ -664,7 +664,7 @@ def main() -> int:
                 errors.append("calibration Decode roles do not cover all contexts")
             if context_roles.get("base") != len(generated):
                 errors.append("calibration Decode roles lack one base per sample")
-            if set(context_roles) - {"base", "target_mid", "target_tail"}:
+            if set(context_roles) - {"base", "target_tail"}:
                 errors.append("calibration Decode roles contain unexpected values")
             for metric in ("suffix_len", "past_len"):
                 values = context.get(metric)
