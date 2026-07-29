@@ -340,7 +340,7 @@ def _long_detection_payload() -> dict:
     raise AssertionError("could not find a prompt-boundary bundle id")
 
 
-def test_long_detection_adds_deterministic_target_tail_context():
+def test_long_detection_adds_deterministic_target_mid_and_tail_contexts():
     payload = _long_detection_payload()
 
     first = replay.select_decode_replay_contexts(
@@ -351,20 +351,24 @@ def test_long_detection_adds_deterministic_target_tail_context():
     )
 
     assert first == second
-    assert len(first) == 2
-    assert [context.context_role for context in first] == ["base", "target_tail"]
+    assert len(first) == 3
+    assert [context.context_role for context in first] == [
+        "base", "target_mid", "target_tail"
+    ]
     assert first[0].suffix_len == 0
-    assert first[1].token_source == "target"
-    assert (first[1].suffix_len,) == first[0].required_target_offsets
+    assert all(context.token_source == "target" for context in first[1:])
+    assert tuple(context.suffix_len for context in first[1:]) == (
+        first[0].required_target_offsets
+    )
     assert max(first[0].required_target_offsets) >= 32
-    assert len({context.context_id for context in first}) == 2
+    assert len({context.context_id for context in first}) == 3
     for context in first:
         assert context.context_id == replay.decode_context_id(
             context.bundle_id, context.token_source, context.suffix_len
         )
 
 
-def test_base_target_tail_satisfies_required_context_without_duplicate():
+def test_base_target_tail_deduplicates_only_the_matching_context():
     payload = _long_detection_payload()
     for index in range(1000):
         payload["bundle_id"] = f"base-at-target-tail-{index}"
@@ -374,7 +378,8 @@ def test_base_target_tail_satisfies_required_context_without_duplicate():
         if (
             base.selection_slot == 4
             and base.token_source == "target"
-            and base.required_target_offsets == (base.suffix_len,)
+            and len(base.required_target_offsets) == 2
+            and base.suffix_len == base.required_target_offsets[-1]
         ):
             break
     else:
@@ -391,11 +396,13 @@ def test_base_target_tail_satisfies_required_context_without_duplicate():
         cache_len=128,
     )
 
-    assert contexts == (base,)
+    assert contexts[0] == base
+    assert len(contexts) == 2
+    assert [context.context_role for context in contexts] == ["base", "target_mid"]
     assert coverage["passed"] is True
-    assert coverage["supplemental_context_count"] == 0
-    assert coverage["required_target_context_count"] == 1
-    assert coverage["covered_required_target_context_count"] == 1
+    assert coverage["supplemental_context_count"] == 1
+    assert coverage["required_target_context_count"] == 2
+    assert coverage["covered_required_target_context_count"] == 2
 
 
 def test_non_detection_keeps_only_the_base_context():
@@ -410,7 +417,7 @@ def test_non_detection_keeps_only_the_base_context():
     assert contexts[0].required_target_offsets == ()
 
 
-def test_decode_context_coverage_requires_long_detection_tail():
+def test_decode_context_coverage_requires_long_detection_mid_and_tail():
     payload = _long_detection_payload()
     contexts = replay.select_decode_replay_contexts(
         payload, task="detection", chunk_size=64
@@ -425,12 +432,12 @@ def test_decode_context_coverage_requires_long_detection_tail():
     )
 
     assert complete["passed"] is True
-    assert complete["language_context_count"] == 2
+    assert complete["language_context_count"] == 3
     assert complete["base_context_count"] == 1
-    assert complete["supplemental_context_count"] == 1
+    assert complete["supplemental_context_count"] == 2
     assert complete["eligible_long_detection_sample_count"] == 1
-    assert complete["required_target_context_count"] == 1
-    assert complete["covered_required_target_context_count"] == 1
+    assert complete["required_target_context_count"] == 2
+    assert complete["covered_required_target_context_count"] == 2
     assert incomplete["passed"] is False
     assert incomplete["missing_required_target_contexts"]
     assert any("missing required target context" in error for error in incomplete["errors"])

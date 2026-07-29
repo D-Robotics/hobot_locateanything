@@ -266,20 +266,20 @@ language_stages = [
 expected_stages = []
 if a.component in {'all', 'vision'}: expected_stages.append('vision')
 if a.component in {'all', 'language'}: expected_stages.extend(language_stages)
-language_context_count = a.max_samples + 1 if a.component in {'all', 'language'} else 0
+language_context_count = a.max_samples + 2 if a.component in {'all', 'language'} else 0
 stage_counts = {
   stage: a.max_samples if stage == 'vision' else language_context_count
   for stage in expected_stages
 }
 decode_context = {
-  'policy': 'bundle_hash_base_plus_detection_target_tail_v2',
+  'policy': 'bundle_hash_base_plus_detection_target_mid_tail_v2',
   'sample_count': a.max_samples,
   'language_context_count': language_context_count,
   'base_context_count': a.max_samples,
-  'supplemental_context_count': 1,
+  'supplemental_context_count': 2,
   'eligible_long_detection_sample_count': 1,
-  'required_target_context_count': 1,
-  'covered_required_target_context_count': 1,
+  'required_target_context_count': 2,
+  'covered_required_target_context_count': 2,
   'missing_required_target_contexts': [],
   'passed': True,
   'errors': [],
@@ -287,7 +287,7 @@ decode_context = {
   'past_len': {'min': 600, 'max': 664},
   'depth_buckets': {'zero': 1, '1_31': 0, '32_127': language_context_count - 1, '128_plus': 0},
   'token_sources': {'target': language_context_count},
-  'context_roles': {'base': a.max_samples, 'target_tail': 1},
+  'context_roles': {'base': a.max_samples, 'target_mid': 1, 'target_tail': 1},
 }
 coverage = {
   'generated_manifest_sha256': hashlib.sha256(Path(a.generated_jsonl).read_bytes()).hexdigest(),
@@ -314,7 +314,7 @@ generated = Path(a.generated_jsonl)
   'profile': {
     'component': a.component,
     'language_lm_head_weight_bits': a.lm_head_w_bits,
-    'decode_context_policy': 'bundle_hash_base_plus_detection_target_tail_v2',
+    'decode_context_policy': 'bundle_hash_base_plus_detection_target_mid_tail_v2',
   }}))
 (out / f'scale_convergence_{a.checkpoint_samples}_vs_{a.max_samples}.json').write_text(
   json.dumps({'checkpoint_samples': a.checkpoint_samples, 'full_samples': a.max_samples}))

@@ -61,7 +61,7 @@ def fixtures(tmp_path):
     write_jsonl(selected_path, selected)
     write_jsonl(generated_path, generated)
     counts = {task: 50 for task in tasks}
-    language_context_count = 301
+    language_context_count = 302
     scale_path = tmp_path / "scale.json"
     scale_path.write_text(json.dumps({
         "generated_manifest_sha256": deployment.sha256(generated_path),
@@ -105,20 +105,20 @@ def fixtures(tmp_path):
             "sample_count": 300,
             "language_context_count": language_context_count,
             "base_context_count": 300,
-            "supplemental_context_count": 1,
+            "supplemental_context_count": 2,
             "eligible_long_detection_sample_count": 1,
-            "required_target_context_count": 1,
-            "covered_required_target_context_count": 1,
+            "required_target_context_count": 2,
+            "covered_required_target_context_count": 2,
             "missing_required_target_contexts": [],
             "passed": True,
             "errors": [],
             "suffix_len": {"min": 0, "max": 64},
             "past_len": {"min": 600, "max": 664},
             "depth_buckets": {
-                "zero": 60, "1_31": 60, "32_127": 181, "128_plus": 0,
+                "zero": 60, "1_31": 60, "32_127": 182, "128_plus": 0,
             },
-            "token_sources": {"target": 151, "prediction:hybrid": 150},
-            "context_roles": {"base": 300, "target_tail": 1},
+            "token_sources": {"target": 152, "prediction:hybrid": 150},
+            "context_roles": {"base": 300, "target_mid": 1, "target_tail": 1},
         },
         "observer_audit_passed": True,
         "observer_audit": {

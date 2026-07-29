@@ -22,11 +22,11 @@ REQUIRED_TENSOR_FIELDS = {
     "target_token_ids",
 }
 
-DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
+DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_mid_tail_v2"
 DECODE_CONTEXT_PENDING_TOKENS = 6
 DECODE_DEPTH_BUCKETS = ("zero", "1_31", "32_127", "128_plus")
 BASE_CONTEXT_ROLE = "base"
-SUPPLEMENTAL_CONTEXT_ROLES = ("target_tail",)
+SUPPLEMENTAL_CONTEXT_ROLES = ("target_mid", "target_tail")
 
 
 def decode_depth_bucket(suffix_len: int) -> str:
@@ -328,12 +328,14 @@ def required_detection_target_offsets(
     *,
     usable_suffix_len: int,
 ) -> tuple[int, ...]:
-    """Select one target-tail context for a long Detection output."""
+    """Select bounded middle/tail target contexts for a long Detection output."""
 
     offsets = sorted({int(offset) for offset in eligible_positive_offsets if int(offset) > 0})
     if usable_suffix_len < 32 or not offsets:
         return ()
-    return (offsets[-1],)
+    middle = offsets[(len(offsets) - 1) // 2]
+    tail = offsets[-1]
+    return tuple(dict.fromkeys((middle, tail)))
 
 
 def select_decode_replay_context(
@@ -479,7 +481,7 @@ def select_decode_replay_contexts(
     chunk_size: int,
     pending_tokens: int = DECODE_CONTEXT_PENDING_TOKENS,
 ) -> tuple[DecodeReplayContext, ...]:
-    """Return one base context plus a bounded target-tail Detection context."""
+    """Return one base context plus bounded target mid/tail Detection contexts."""
 
     base = select_decode_replay_context(
         payload,
@@ -490,7 +492,12 @@ def select_decode_replay_contexts(
     contexts = [base]
     seen = {base.context_id}
     target_ids = _flat_token_ids(payload.get("target_token_ids"))
-    planned = tuple(zip(SUPPLEMENTAL_CONTEXT_ROLES, base.required_target_offsets))
+    if len(base.required_target_offsets) == 1:
+        planned = (("target_tail", base.required_target_offsets[0]),)
+    else:
+        planned = tuple(
+            zip(SUPPLEMENTAL_CONTEXT_ROLES, base.required_target_offsets)
+        )
 
     for context_role, offset in planned:
         context_identity = decode_context_id(base.bundle_id, "target", offset)
@@ -523,7 +530,7 @@ def select_decode_replay_contexts(
         )
         seen.add(context_identity)
 
-    if len(contexts) > 2:
+    if len(contexts) > 3:
         raise AssertionError(f"{base.bundle_id}: Decode context cap exceeded")
     return tuple(contexts)
 
@@ -624,8 +631,8 @@ def summarize_decode_context_coverage(
     covered_required_target_context_count = 0
     missing_required_target_contexts: list[str] = []
     for bundle_id, bundle_contexts in sorted(grouped.items()):
-        if len(bundle_contexts) > 2:
-            errors.append(f"{bundle_id}: has {len(bundle_contexts)} contexts; maximum is 2")
+        if len(bundle_contexts) > 3:
+            errors.append(f"{bundle_id}: has {len(bundle_contexts)} contexts; maximum is 3")
         bases = [
             context
             for context in bundle_contexts
@@ -676,7 +683,11 @@ def summarize_decode_context_coverage(
         if expected_required:
             eligible_long_detection_count += 1
         required_target_context_count += len(expected_required)
-        expected_roles = dict(zip(expected_required, SUPPLEMENTAL_CONTEXT_ROLES))
+        expected_roles = (
+            {expected_required[0]: "target_tail"}
+            if len(expected_required) == 1
+            else dict(zip(expected_required, SUPPLEMENTAL_CONTEXT_ROLES))
+        )
         for context in bundle_contexts:
             role = str(context.get("context_role") or "")
             if context.get("task") != task:

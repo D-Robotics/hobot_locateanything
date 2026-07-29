@@ -391,8 +391,8 @@ if isinstance(language_context_count, bool) or not isinstance(language_context_c
     errors.append("coverage language_context_count is not an integer")
     language_context_count = 0
 if component in {"all", "language"}:
-    if language_context_count < max_samples or language_context_count > 2 * max_samples:
-        errors.append("coverage language_context_count is outside the one-to-two contexts/sample contract")
+    if language_context_count < max_samples or language_context_count > 3 * max_samples:
+        errors.append("coverage language_context_count is outside the one-to-three contexts/sample contract")
 elif language_context_count != 0:
     errors.append("Vision-only calibration must not report Language contexts")
 language_stages = [
@@ -443,7 +443,7 @@ if component in {"all", "language"}:
         context = {}
     if coverage.get("decode_context_coverage_passed") is not True:
         errors.append("decode_context_coverage_passed is not true")
-    if context.get("policy") != "bundle_hash_base_plus_detection_target_tail_v2":
+    if context.get("policy") != "bundle_hash_base_plus_detection_target_mid_tail_v2":
         errors.append("Decode context policy does not match the release contract")
     if context.get("sample_count") != max_samples:
         errors.append("Decode context sample count does not match the requested run")
@@ -494,7 +494,7 @@ if component in {"all", "language"}:
         errors.append("Decode context roles do not account for every Language context")
     if context_roles.get("base") != max_samples:
         errors.append("Decode context roles do not contain one base per sample")
-    unexpected_roles = set(context_roles) - {"base", "target_tail"}
+    unexpected_roles = set(context_roles) - {"base", "target_mid", "target_tail"}
     if unexpected_roles:
         errors.append("Decode context roles contain unexpected values")
     for metric in ("suffix_len", "past_len"):
