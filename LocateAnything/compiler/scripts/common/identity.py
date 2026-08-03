@@ -33,6 +33,16 @@ RELEASE_CHECKPOINT_SHA256 = {
     ),
 }
 
+# These two Prepare implementations differ only in progress reporting. The
+# tensor generation, model inputs, sampling, and serialized record schema are
+# byte-for-byte unchanged. Compatibility remains directional and hash-pinned;
+# any future Prepare source change is rejected until audited explicitly.
+PREPARE_SOURCE_COMPATIBILITY = {
+    "57cf747532c6d3453291c9fd76bf853a03e17bed0edfa8629636771c2765123d": {
+        "30e036d39ce00b1cd3c510d91385bf5c2df10e88ba42f6c091684090c01fd271"
+    },
+}
+
 
 def sha256_file(path: Path, chunk_size: int = 4 * 1024 * 1024) -> str:
     digest = hashlib.sha256()
@@ -199,6 +209,16 @@ def identity_mismatches(expected: Any, actual: Any, prefix: str = "") -> list[st
     return [] if expected == actual else [prefix or "<root>"]
 
 
+def prepare_source_is_compatible(expected: Any, current: Any) -> bool:
+    if not identity_mismatches(expected, current):
+        return True
+    if not isinstance(expected, dict) or not isinstance(current, dict):
+        return False
+    current_sha = current.get("sha256")
+    expected_sha = expected.get("sha256")
+    return expected_sha in PREPARE_SOURCE_COMPATIBILITY.get(current_sha, set())
+
+
 def artifact_identities(paths: Iterable[Path]) -> dict[str, Any]:
     identities = {}
     for path in paths:
@@ -266,16 +286,21 @@ def prepared_bundle_identity_errors(
                 prepare_identity.get("tokenizer"),
                 current_tokenizer,
             ),
-            (
-                "Prepare source does not match the current prepare.py",
-                prepare_identity.get("prepare_source"),
-                current_prepare_source,
-            ),
         )
         for message, expected, actual in checks:
             mismatches = identity_mismatches(expected, actual)
             if mismatches:
                 errors.append(f"{message}: {', '.join(mismatches[:8])}")
+        if not prepare_source_is_compatible(
+            prepare_identity.get("prepare_source"), current_prepare_source
+        ):
+            mismatches = identity_mismatches(
+                prepare_identity.get("prepare_source"), current_prepare_source
+            )
+            errors.append(
+                "Prepare source does not match the current prepare.py: "
+                + ", ".join(mismatches[:8])
+            )
 
         if upstream_repo is not None:
             current_upstream = source_tree_identity(upstream_repo, {".py"})

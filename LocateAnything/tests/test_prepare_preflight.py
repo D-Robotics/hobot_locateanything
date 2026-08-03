@@ -24,6 +24,26 @@ def load_module():
     return module
 
 
+def test_config_loader_resolves_relative_inheritance(tmp_path):
+    module = load_module()
+    base = tmp_path / "common.yaml"
+    base.write_text(
+        "model:\n  image_width: 672\ncalibration:\n  sample_count: 1200\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "standard.yaml"
+    config.write_text(
+        "extends: common.yaml\nmodel:\n  image_height: 672\nlanguage:\n  graph_set: standard\n",
+        encoding="utf-8",
+    )
+
+    loaded = module.load_contract(config)
+
+    assert loaded["model"] == {"image_width": 672, "image_height": 672}
+    assert loaded["calibration"]["sample_count"] == 1200
+    assert loaded["language"]["graph_set"] == "standard"
+
+
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

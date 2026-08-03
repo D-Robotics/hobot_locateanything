@@ -20,14 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-try:
-    import yaml
-except ImportError as exc:  # pragma: no cover - compiler environment owns PyYAML
-    raise SystemExit(
-        "PyYAML is required; install the compiler package with "
-        "`python -m pip install -e compiler`"
-    ) from exc
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COMPILER_ROOT = PROJECT_ROOT / "compiler"
@@ -43,6 +35,7 @@ VERIFY_STAGES = ("specification", "pipeline", "task", "all")
 if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
+from configuration import ConfigurationFileError, load_config_file  # noqa: E402
 from leap_llm.language_graphs import (  # noqa: E402
     LANGUAGE_GRAPH_SET_NAMES,
     language_graph_set,
@@ -123,42 +116,11 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
-def _merge_config(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in override.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = _merge_config(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _load_config_file(path: Path, chain: tuple[Path, ...] = ()) -> dict[str, Any]:
-    path = path.resolve()
-    if path in chain:
-        cycle = " -> ".join(str(item) for item in (*chain, path))
-        raise ConfigurationError(f"config inheritance cycle: {cycle}")
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ConfigurationError(f"config file not found: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise ConfigurationError(f"invalid YAML in {path}: {exc}") from exc
-    config = _mapping(raw, f"config {path}")
-    parent = config.pop("extends", None)
-    if parent is None:
-        return config
-    parent_path = Path(str(parent)).expanduser()
-    if not parent_path.is_absolute():
-        parent_path = path.parent / parent_path
-    return _merge_config(
-        _load_config_file(parent_path, (*chain, path)),
-        config,
-    )
-
-
 def load_config(path: Path) -> dict[str, Any]:
-    config = _load_config_file(path)
+    try:
+        config = load_config_file(path)
+    except ConfigurationFileError as exc:
+        raise ConfigurationError(str(exc)) from exc
     validate_config(config)
     return config
 

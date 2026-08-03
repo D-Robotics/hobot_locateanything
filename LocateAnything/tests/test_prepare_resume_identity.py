@@ -4,7 +4,10 @@ from compiler.scripts.calibration.prepare import (
     RESUME_IDENTITY_FIELDS,
     resume_identity_mismatches,
 )
-from compiler.scripts.common.identity import identity_mismatches
+from compiler.scripts.common.identity import (
+    identity_mismatches,
+    prepare_source_is_compatible,
+)
 
 
 def identity_record():
@@ -64,3 +67,18 @@ def test_run_identity_reports_nested_checkpoint_and_generation_changes():
         "dtype",
         "generation_config.temperature",
     ]
+
+
+def test_prepare_progress_only_source_update_is_compatible():
+    previous = {
+        "bytes": 45168,
+        "sha256": "30e036d39ce00b1cd3c510d91385bf5c2df10e88ba42f6c091684090c01fd271",
+    }
+    current = {
+        "bytes": 46335,
+        "sha256": "57cf747532c6d3453291c9fd76bf853a03e17bed0edfa8629636771c2765123d",
+    }
+    unknown = {"bytes": 1, "sha256": "0" * 64}
+
+    assert prepare_source_is_compatible(previous, current) is True
+    assert prepare_source_is_compatible(previous, unknown) is False

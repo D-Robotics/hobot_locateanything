@@ -15,10 +15,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-import yaml
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from compiler.configuration import (  # noqa: E402
+    ConfigurationFileError,
+    load_config_file,
+)
+
 RUNTIME_TOKENIZER_JSON = PROJECT_ROOT / "deploy" / "tokenizer" / "tokenizer.json"
 
 REQUIRED_MODULES = {
@@ -140,12 +146,9 @@ def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 
 def load_contract(path: Path) -> dict[str, Any]:
     try:
-        value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+        return load_config_file(path)
+    except ConfigurationFileError as exc:
         raise PreflightError(f"cannot read release config {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise PreflightError("release config root must be a mapping")
-    return value
 
 
 def integer_counts(value: Any, name: str) -> dict[str, int]:
@@ -206,11 +209,15 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     if resize_mode != "letterbox" or letterbox_fill != 128:
         raise PreflightError("release image preprocessing requires letterbox with fill=128")
 
-    manifest_sha = str(calibration.get("selected_manifest_sha256") or "").lower()
+    manifest_sha = str(
+        calibration.get("dataset_index_sha256")
+        or calibration.get("selected_manifest_sha256")
+        or ""
+    ).lower()
     if not SHA256_RE.fullmatch(manifest_sha):
-        raise PreflightError("calibration.selected_manifest_sha256 must be a SHA256")
+        raise PreflightError("calibration.dataset_index_sha256 must be a SHA256")
     if manifest_sha != EXPECTED_MANIFEST_SHA256:
-        raise PreflightError("calibration.selected_manifest_sha256 is not the frozen release manifest")
+        raise PreflightError("calibration.dataset_index_sha256 is not the frozen release index")
     max_new_tokens = int(calibration.get("max_new_tokens", 0))
     if max_new_tokens != 1024:
         raise PreflightError("release prepare max_new_tokens must be 1024")
