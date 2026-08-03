@@ -383,7 +383,7 @@ class ResourceDashboard:
                 f"BPU[{bpu}]  │  "
                 f"SYS CPU {self._color_percent(self._cpu)}  │  "
                 f"MEM {self._color_percent(self._memory)}  │  "
-                f"Host I/O(est.) {ucp}  │  BPU {temperature}"
+                f"Transfer(est.) {ucp}  │  BPU {temperature}"
             )
 
     def _draw(self) -> None:
@@ -568,37 +568,34 @@ def print_result(
     decode_tps = decode_tokens * 1000.0 / decode_ms if decode_ms > 0 else 0.0
     decode_tpot = decode_ms / decode_tokens if decode_tokens > 0 else 0.0
     print()
+    print(f"{BOLD}{CYAN}Performance{RESET}")
     print(
-        f"{CYAN}===== vit cost: {vit_ms:.3f} ms, "
-        f"vit infer cost: {vit_infer_ms:.3f} ms, "
-        f"cached: {'yes' if vision_cached else 'no'} ====={RESET}"
+        f"  Vision       {vit_ms:10.3f} ms  "
+        f"HBM {vit_infer_ms:.3f} ms  cached={'yes' if vision_cached else 'no'}"
     )
     print(
-        f"{CYAN}===== prefill token num: {prefill_tokens} "
-        f"prefill cost: {prefill_ms:.3f} ms, "
-        f"prefill speed: {prefill_tps:.3f} tokens/s ====={RESET}"
+        f"  Prefill      {prefill_ms:10.3f} ms  "
+        f"{prefill_tokens} tokens  {prefill_tps:.3f} tokens/s"
     )
     print(
-        f"{CYAN}===== decode token num: {decode_tokens} "
-        f"cost per token: {decode_tpot:.3f} ms, "
-        f"decode speed: {decode_tps:.3f} tokens/s ====={RESET}"
+        f"  Decode       {decode_ms:10.3f} ms  "
+        f"{decode_tokens} tokens  {decode_tpot:.3f} ms/token  "
+        f"{decode_tps:.3f} tokens/s"
     )
-    print(f"{CYAN}===== end to end cost: {total_ms:.3f} ms ====={RESET}")
-    print()
-    print(f"[LocateAnything] labels={', '.join(labels) if labels else '(none)'}")
-    print(f"[LocateAnything] boxes={len(detections)}")
+    print(f"  End-to-end   {total_ms:10.3f} ms")
+    print(f"{BOLD}{CYAN}Predictions{RESET}")
+    print(f"  Labels  {', '.join(labels) if labels else '(none)'}")
+    print(f"  Boxes   {len(detections)}")
     for index, item in enumerate(detections, 1):
         print(
-            f"  box[{index}] label={item['label']!r} "
-            f"normalized_1000={item['bbox_profile_1000']} "
-            f"original_px={item['bbox_xyxy']}"
+            f"    {index}. {item['label']!r}  "
+            f"normalized={item['bbox_profile_1000']}  pixels={item['bbox_xyxy']}"
         )
-    print(f"[LocateAnything] points={len(points)}")
+    print(f"  Points  {len(points)}")
     for index, item in enumerate(points, 1):
         print(
-            f"  point[{index}] label={item['label']!r} "
-            f"normalized_1000={item['point_profile_1000']} "
-            f"original_px={item['point_xy']}"
+            f"    {index}. {item['label']!r}  "
+            f"normalized={item['point_profile_1000']}  pixels={item['point_xy']}"
         )
 
 
@@ -609,24 +606,21 @@ def print_runtime_info(
     image: Path | None,
     generation_mode: str,
     max_new_tokens: int,
+    show_runner_details: bool = False,
 ) -> None:
-    printed: set[str] = set()
-    for line in vision.startup_output + language.startup_output:
-        if line not in printed and any(
-            marker in line for marker in ("[UCP]", "[DNN]", "[BPU]")
-        ):
-            print(line)
-            printed.add(line)
+    if show_runner_details:
+        printed: set[str] = set()
+        for line in vision.startup_output + language.startup_output:
+            if line not in printed and any(
+                marker in line for marker in ("[UCP]", "[DNN]", "[BPU]")
+            ):
+                print(line)
+                printed.add(line)
     core_text = ",".join(str(core) for core in runtime.bpu_cores)
-    print(f"[INFO] runtime_version={RUNTIME_VERSION} config={runtime.source}")
-    print(f"[INFO] model_type={runtime.model_type}")
-    print(f"[INFO] backend=HBRT target=S600/Nash-P bpu_cores={core_text}")
-    print(f"[INFO] load visual graph success: {runtime.vision_model}")
-    print(f"[INFO] load language graphs success: {runtime.language_model}")
-    print(f"[INFO] load token embeddings success: {runtime.embeddings}")
     print(f"{SUCCESS} {GREEN}LocateAnything S600 Runtime is ready.{RESET}")
     print(LOGO)
     print(f"{CYAN}================== RUNTIME CONFIG =================={RESET}")
+    print(f"{BOLD}Runtime{RESET} LocateAnything {RUNTIME_VERSION}  |  S600/Nash-P  |  BPU {core_text}")
     print(f"{BOLD}模型{RESET}  {runtime.model_type}  |  图像、文本定位")
     print(
         f"{BOLD}Vision{RESET} {runtime.vision_model.name}  |  "
@@ -645,7 +639,10 @@ def print_runtime_info(
         f"{BOLD}Telemetry{RESET} {runtime.telemetry_interval_seconds:.2f}s refresh  |  "
         "disable with --no-dashboard"
     )
-    print(f"{DIM}  SYS CPU=整机占用；Host I/O(est.)=由 profile 搬运字节与 Host 时间估算{RESET}")
+    print(
+        f"{DIM}  Transfer(est.) uses runner-reported bytes divided by Host copy time; "
+        f"it is not measured DDR bandwidth.{RESET}"
+    )
     if image is not None:
         print(f"{BOLD}Image{RESET} {image.name}")
     print()
@@ -725,6 +722,7 @@ def main() -> int:
             current_image,
             args.generation_mode,
             args.max_new_tokens,
+            show_runner_details=getattr(args, "show_runner_details", False),
         )
         dashboard.start()
     except BaseException:
@@ -870,11 +868,9 @@ def main() -> int:
             )
             if suppressed_detections:
                 print(
-                    f"[LocateAnything] NMS suppressed={len(suppressed_detections)} "
-                    f"same-label boxes at IoU>={args.nms_iou:.2f}"
+                    f"  NMS removed {len(suppressed_detections)} same-label box(es) "
+                    f"at IoU >= {args.nms_iou:.2f}"
                 )
-            if annotated_image:
-                print(f"[Output] annotated image: {annotated_image}")
             timing_data = {
                 "schema_version": 1,
                 "stages_seconds": {
@@ -947,9 +943,12 @@ def main() -> int:
                     "timings": timing_data,
                     "runtime_log": str(paths.runtime_log),
                 }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(f"[Output] prediction: {paths.prediction}")
-            print(f"[Output] timings: {paths.timings}")
-            print(f"[Output] run directory: {paths.root}")
+            print(f"{BOLD}{CYAN}Saved{RESET}")
+            if annotated_image:
+                print(f"  Annotated image  {annotated_image}")
+            print(f"  Prediction       {paths.prediction}")
+            print(f"  Timings          {paths.timings}")
+            print(f"  Run directory    {paths.root}")
 
     try:
         if current_image is not None and args.prompt:

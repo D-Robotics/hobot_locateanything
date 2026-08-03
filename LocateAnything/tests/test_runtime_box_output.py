@@ -331,6 +331,36 @@ def test_interactive_runtime_defaults_to_hybrid(monkeypatch):
     assert active_samples == ["sample"]
 
 
+def test_interactive_result_summary_uses_clear_performance_terms(monkeypatch, capsys):
+    interactive = load_interactive_module(monkeypatch)
+
+    interactive.print_result(
+        [{
+            "label": "cat",
+            "bbox_profile_1000": [100, 200, 300, 400],
+            "bbox_xyxy": [64.0, 128.0, 192.0, 256.0],
+        }],
+        [],
+        vit_ms=25.0,
+        vit_infer_ms=20.0,
+        vision_cached=False,
+        prefill_tokens=100,
+        prefill_ms=50.0,
+        decode_tokens=10,
+        decode_ms=200.0,
+        total_ms=300.0,
+    )
+
+    output = capsys.readouterr().out
+    assert "Performance" in output
+    assert "Vision" in output
+    assert "Prefill" in output and "2000.000 tokens/s" in output
+    assert "Decode" in output and "20.000 ms/token" in output
+    assert "End-to-end" in output
+    assert "Predictions" in output and "Boxes   1" in output
+    assert "normalized=[100, 200, 300, 400]" in output
+
+
 def test_hbm_server_startup_timeout_terminates_child(monkeypatch):
     interactive = load_interactive_module(monkeypatch)
     children = []
