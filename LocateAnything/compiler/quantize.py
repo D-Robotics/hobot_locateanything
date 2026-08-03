@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -620,21 +621,27 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
     if args.graph_set:
         config["language"]["graph_set"] = args.graph_set
     print_build_summary(config)
-    for index, step in enumerate(steps, 1):
-        print(f"[plan {index}/{len(steps)}] {step.label}")
-        print(f"  cwd: {step.cwd}")
-        if step.env:
-            visible = " ".join(f"{key}={value}" for key, value in sorted(step.env.items()))
-            print(f"  env: {visible}")
-        print(f"  command: {quote_command(step.command)}")
-        if step.note:
-            print(f"  note: {step.note}")
-
     if args.dry_run:
+        for index, step in enumerate(steps, 1):
+            print(f"[plan {index}/{len(steps)}] {step.label}")
+            print(f"  cwd: {step.cwd}")
+            if step.env:
+                visible = " ".join(
+                    f"{key}={value}" for key, value in sorted(step.env.items())
+                )
+                print(f"  env: {visible}")
+            print(f"  command: {quote_command(step.command)}")
+            if step.note:
+                print(f"  note: {step.note}")
         print("[dry-run] no command executed")
         return 0
 
-    for step in steps:
+    run_started = time.monotonic()
+    for index, step in enumerate(steps, 1):
+        stage_started = time.monotonic()
+        print(f"[stage {index}/{len(steps)}] START {step.label}", flush=True)
+        if step.note:
+            print(f"  {step.note}", flush=True)
         executable = step.command[0]
         if not Path(executable).is_file() and shutil.which(executable) is None:
             raise RuntimeError(f"required executable not found: {executable}")
@@ -642,7 +649,19 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
         env.update(step.env)
         completed = subprocess.run(step.command, cwd=step.cwd, env=env, check=False)
         if completed.returncode:
+            elapsed = time.monotonic() - stage_started
+            print(
+                f"[stage {index}/{len(steps)}] FAILED {step.label} "
+                f"after {elapsed:.1f}s (exit={completed.returncode})",
+                flush=True,
+            )
             return int(completed.returncode)
+        elapsed = time.monotonic() - stage_started
+        print(
+            f"[stage {index}/{len(steps)}] DONE {step.label} ({elapsed:.1f}s)",
+            flush=True,
+        )
+    print(f"[done] completed in {time.monotonic() - run_started:.1f}s", flush=True)
     return 0
 
 

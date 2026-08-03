@@ -38,6 +38,7 @@ from compiler.scripts.common.identity import (  # noqa: E402
     source_tree_identity,
     tokenizer_identity,
 )
+from compiler.scripts.common.progress import track  # noqa: E402
 
 from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     ActivationTracker,
@@ -189,12 +190,7 @@ def resolve_convergence_checkpoints(
 
 
 def progress(records: list[dict[str, Any]], description: str):
-    try:
-        from tqdm import tqdm
-
-        return tqdm(records, desc=description, unit="sample")
-    except ImportError:
-        return records
+    return track(records, description, unit="sample")
 
 
 def run(args: argparse.Namespace) -> int:

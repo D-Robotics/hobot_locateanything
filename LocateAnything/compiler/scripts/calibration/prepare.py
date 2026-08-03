@@ -39,6 +39,7 @@ from compiler.scripts.common.identity import (  # noqa: E402
     source_tree_identity,
     tokenizer_identity,
 )
+from compiler.scripts.common.progress import track  # noqa: E402
 
 
 SCHEMA_VERSION = 2
@@ -781,7 +782,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
 
     import torch
     from PIL import Image
-    from tqdm import tqdm
 
     model_path = args.model_path.resolve()
     upstream_repo = (
@@ -886,7 +886,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
         token: int(worker.tokenizer.convert_tokens_to_ids(token)) for token in special_tokens
     }
 
-    progress = tqdm(records, desc="Generate calibration", unit="sample", dynamic_ncols=True)
+    progress = track(records, "Generate calibration", unit="sample")
     for index, record in enumerate(progress, start=1):
         bundle_id = record["bundle_id"]
         existing = generated_records.get(bundle_id)

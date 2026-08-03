@@ -36,6 +36,7 @@ from compiler.scripts.common.trace import (
     semantic_location,
     trace_torch_modules,
 )
+from compiler.scripts.common.progress import track
 from compiler.scripts.common.quantization import (
     EMULATION_VERSION,
     LIMITATION as QUANTIZATION_LIMITATION,
@@ -77,38 +78,10 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "artifacts" / "evaluation" / "pipeline"
 DEFAULT_CONFIG = REPO_ROOT / "compiler" / "config.yaml"
 
 
-class SimpleProgress:
-    def __init__(self, items: list[Any], description: str) -> None:
-        self.items = items
-        self.description = description
-        self.total = len(items)
-        self.postfix: dict[str, Any] = {}
-
-    def __iter__(self):
-        step = max(1, self.total // 100)
-        for index, item in enumerate(self.items, start=1):
-            yield item
-            if index == self.total or index % step == 0:
-                details = " ".join(f"{key}={value}" for key, value in self.postfix.items())
-                print(f"{self.description}: {index}/{self.total} {details}", flush=True)
-
-    def set_postfix(self, values: dict[str, Any] | None = None, **kwargs: Any) -> None:
-        self.postfix = dict(values or {})
-        self.postfix.update(kwargs)
-
-    def close(self) -> None:
-        return None
-
-
 def progress_bar(items: list[Any], description: str) -> Any:
     label = description.upper()
     print(f"\n================== {label} ==================", flush=True)
-    try:
-        from tqdm import tqdm
-
-        return tqdm(items, desc=description, unit="sample", dynamic_ncols=True)
-    except ImportError:
-        return SimpleProgress(items, description)
+    return track(items, description, unit="sample")
 
 
 def print_phase_summary(
