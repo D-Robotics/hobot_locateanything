@@ -1,198 +1,306 @@
 <div align="center">
 
-<img src="assets/LocateAnything.jpg" alt="LocateAnything on D-Robotics S600" width="820">
+<img src="assets/LocateAnything.jpg" alt="LocateAnything 在 D-Robotics S600 上的检测效果" width="820">
 
 # LocateAnything-3B on D-Robotics S600
 
-面向 D-Robotics S600 BPU 的架构保真部署方案，覆盖模型编译、量化适配、
-HBM 构建、运行时集成与分层验证。
+在 D-Robotics S600 BPU 上运行 LocateAnything-3B，支持开放词汇检测、指代表达定位、
+点定位、OCR 定位和文档布局定位。
 
 [![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-D--Robotics%20S600-35a853)](https://developer.d-robotics.cc/)
 [![SDK](https://img.shields.io/badge/OELLM-1.0.5-2563eb)](https://developer.d-robotics.cc/)
 [![Model](https://img.shields.io/badge/model-LocateAnything--3B-f59e0b)](https://huggingface.co/nvidia/LocateAnything-3B)
-[![PBD](https://img.shields.io/badge/decoding-PBD%20q%3D6-d946ef)](docs/SOURCE_REVIEW.md)
 
 [English](README.md) | **中文**
 
 </div>
 
-## 项目简介
+## 模型配置
 
-LocateAnything-3B 面向开放词汇目标定位、区域理解与结构化坐标生成，由 MoonViT
-视觉编码器、Qwen2.5 语言解码器和 Parallel Block Decoding（PBD）共同构成。本项目
-围绕模型原生接口构建 S600 编译与运行时栈，并提供从 checkpoint、BC/HBM 到板端
-执行的可复现工程链路。
+| 项目 | 配置 |
+|---|---|
+| 输入尺寸 | 672 x 672，保持宽高比并填充 |
+| Vision | MoonViT，W8 |
+| Language | Qwen2.5 decoder，W8 |
+| LM Head | W8 |
+| Prefill | 1024 tokens |
+| KV Cache | 4096 tokens |
+| PBD | q=6 |
+| AR | q=1 |
+| BPU | 4 cores |
 
-为建立可独立验证的编译参考，项目先完成 Qwen2.5-VL-3B 在 OELLM/HBDK 与 HBRT
-链路上的端到端验证，再将静态图像 patch embedding、隐藏域对齐、Language 编译
-和板端数值验证方法应用于 LocateAnything 的 MoonViT、Qwen decoder 与 PBD 图。
+Language 提供两套执行图集合：
 
-## 项目特性
+| 图集合 | 用途 | 包含的图 |
+|---|---|---|
+| `standard` | 默认部署与精度验证 | Prefill、PBD q6、AR q1 |
+| `fused_decode` | 融合解码 | 在 `standard` 基础上增加 PBD q7-q12 和 AR q2-q5 |
 
-- **架构保真**：完整保留 MoonViT、1D RoPE、152,681 词表、坐标 token 与
-  6-token PBD 语义。
-- **分层图合同**：发布编译配置导出 Vision 和 13 张 Language 候选图：
-  `prefill`、基础 PBD `q=6`、基础 AR `q=1`、PBD 融合图 `q=7..12` 与
-  AR bridge 图 `q=2..5`。已完成 S600 验证的是早期
-  `prefill`/`decode`/`decode_ar` 三图包；融合候选尚不是已验收板端版本。
-- **零额外算子的隐藏域对齐**：将 signed Walsh-Hadamard 变换离线折叠到
-  embedding、Attention/MLP、lm_head 与 MoonViT projector。
-- **可复现构建**：提供数值预检、BC 导出、后台 HBM 编译、版本化产物与
-  checksum 管理流程。
-- **证据驱动验证**：以源码合同、张量接口、数值对齐和 S600 板端结果作为各阶段
-  的验收依据。
+配置文件分别为 `compiler/configs/standard.yaml` 和
+`compiler/configs/fused_decode.yaml`。校准、编译、验证和运行时必须选择同一套图集合。
 
-当前发布配置固定为 MoonViT 672x672、Vision W8、Language 与 `lm_head` W8/W8、
-Prefill 1024、KV cache 4096、PBD q=6 和 AR q=1。校准集共 1200 条，其中
-Detection 620 条，其余 580 条覆盖 GUI、Referring、OCR、Layout 和 Pointing；
-512 条仅用于检查 Scale 收敛。Grounding 发布评测使用 IoU 0.90。发布配置同时固定
-checkpoint 索引与两份权重分片的 SHA256，禁止同名目录下的其他权重复用这套 Scale。
+## 方式一：直接部署已编译 HBM
 
-## 系统架构
+该方式在 S600 上下载运行代码和已经编译好的 Vision HBM、Language HBM、Embedding，
+不需要 CUDA 编译主机。
 
-```mermaid
-flowchart LR
-    IMAGE["图像"] --> PATCH["Letterbox 672x672<br/>2304 x 588"]
-    TEXT["文本 Prompt"] --> TOKENIZER["LocateAnything Tokenizer<br/>vocab 152681"]
-
-    subgraph VISION["Vision HBM"]
-        PATCH --> MOONVIT["MoonViT<br/>27 层, hidden 1152"]
-        MOONVIT --> PROJECTOR["2x2 merge + projector<br/>576 x 2048"]
-    end
-
-    subgraph LANGUAGE["Language HBM"]
-        TOKENIZER --> EMBEDS["Text Embeddings"]
-        PROJECTOR --> MERGE["Visual Token 插入"]
-        EMBEDS --> MERGE
-        MERGE --> PREFILL["Prefill<br/>chunk 1024"]
-        PREFILL --> KV["KV Cache<br/>length 4096"]
-        KV --> PBD["PBD Decode<br/>q=6"]
-        KV --> AR["AR Decode<br/>q=1"]
-        KV --> FUSED["候选融合图族<br/>q=7..12 / q=2..5"]
-    end
-
-    PBD --> HYBRID["Hybrid Generation"]
-    AR --> HYBRID
-    FUSED --> HYBRID
-    HYBRID --> BOX["ref / box 解析"]
-```
-
-## 快速开始
-
-### 1. 获取项目与模型
+### 1. 获取代码并安装 Python 依赖
 
 ```bash
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything/LocateAnything
 
-hf download nvidia/LocateAnything-3B \
-  --local-dir workspace/models/LocateAnything-3B
+python3 -m venv --system-site-packages .venv-s600
+source .venv-s600/bin/activate
+python -m pip install -e ".[runtime]"
 ```
 
-### 2. 安装编译适配
+### 2. 下载 HBM
 
-先安装 D-Robotics S600 OELLM 1.0.5 SDK，再在 SDK 环境中安装本项目维护的
-编译适配包：
+将 `LA_HF_REPO` 设置为存放 HBM 的 Hugging Face 仓库：
 
 ```bash
+python -m pip install -U huggingface_hub
+export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
+
+python scripts/hf_assets.py download \
+  --repo-id "$LA_HF_REPO" \
+  --kind hbm \
+  --local-dir artifacts/huggingface
+```
+
+下载完成后的文件位于：
+
+```text
+artifacts/huggingface/hbm/
+├── LocateAnything-3B_vision.hbm
+├── LocateAnything-3B_language.hbm
+├── LocateAnything-3B_embed_tokens.bin
+└── checksums.sha256
+```
+
+### 3. 编译 S600 运行时
+
+```bash
+cmake -S deploy -B deploy/build -DCMAKE_BUILD_TYPE=Release
+cmake --build deploy/build \
+  --target vision_hbm_runner language_hbm_runner \
+  -j4
+```
+
+### 4. 安装并运行 CLI
+
+```bash
+sh deploy/install_locateanything_cli.sh
+export PATH="$HOME/.local/bin:$PATH"
+export LA_RELEASE_ROOT="$PWD/artifacts/huggingface/hbm"
+export LA_TOKENIZER_DIR="$PWD/deploy/tokenizer"
+
+LocateAnything \
+  -i /path/to/image.jpg \
+  -p '/detect person,motorcycle' \
+  --output-dir artifacts/runs/predict/demo
+```
+
+CLI 启动后会常驻加载 Vision 和 Language HBM。检测、定位和点选命令示例：
+
+```text
+/detect person,motorcycle
+/ground the orange in the center
+/point the person's head
+/text
+/layout title,table,figure
+```
+
+每次推理依次显示 Vision、Language、Postprocess 三个阶段及耗时。检测或点定位成功时，
+CLI 自动保存标注图，无需额外开启画框参数。
+
+## 推理结果
+
+指定 `--output-dir` 时，单次推理的结果集中保存在同一目录：
+
+```text
+artifacts/runs/predict/demo/
+└── request_0001/
+    ├── prediction.json    模型文本、坐标、原始框和 NMS 后的框
+    ├── annotated.png      在原图上绘制的框或点
+    ├── timings.json       Vision、Language、Postprocess 和总耗时
+    └── logs/
+        └── runtime.log    Vision 与 Language runner 日志
+```
+
+CLI 会为会话中的每次请求创建 `request_0001`、`request_0002` 等独立目录。不指定
+`--output-dir` 时，程序在 `artifacts/runs/predict/` 下创建带时间和图片名的运行目录，
+不会把结果写到输入图片旁边。
+
+## 方式二：从零校准和编译
+
+该方式需要 x86_64 CUDA 主机、D-Robotics S600 OELLM 1.0.5 SDK、原始模型和
+1200 条校准数据。
+
+### 1. 下载 SDK
+
+```bash
+wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
+tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
+```
+
+按照 SDK 内的安装说明创建工具链环境。以下命令假设环境名为 `oellm_clean`。
+
+### 2. 安装编译依赖
+
+```bash
+git clone https://github.com/LiuAnclouds/oe_locateanything.git
+cd oe_locateanything/LocateAnything
+
+git clone https://github.com/NVlabs/Eagle.git artifacts/upstream/Eagle
+
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate oellm_clean
 
-python -m pip install decord==0.6.0 lmdb==2.2.1
-cd compiler
-pip install -e . --no-deps
-cd ..
+python -m pip install -r compiler/requirements-host.txt
+python -m pip install -e compiler --no-deps
 ```
 
-### 3. 准备并校准
-
-编译流程统一为四个命令：`prepare -> calibrate -> build -> verify`。流程输入是已经冻结的
-`workspace/calibration/current/selected.jsonl`；下面的命令只消费该清单，不会重新采集
-数据集，也不把数据筛选误写成第五个编译阶段。
+### 3. 下载模型和校准数据
 
 ```bash
-python compiler/quantize.py prepare --preflight-only
-python compiler/quantize.py prepare
-python compiler/quantize.py calibrate
+hf download nvidia/LocateAnything-3B \
+  --local-dir artifacts/models/LocateAnything-3B
+
+export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
+python scripts/hf_assets.py download \
+  --repo-id "$LA_HF_REPO" \
+  --kind calibration \
+  --local-dir artifacts/huggingface \
+  --verify-images
+
+export LA_CALIBRATION_ROOT="$PWD/artifacts/huggingface/calibration"
+export LA_UPSTREAM_SOURCE="$PWD/artifacts/upstream/Eagle/Embodied"
 ```
 
-### 4. 先导出 BC 图
+### 4. 使用 `standard` 图集合校准和编译
+
+`compiler/quantize.py` 是统一入口。长任务显示当前阶段、完成数、已用时间和可计算的
+预计剩余时间；`--resume` 只复用完整且配置一致的产物。
 
 ```bash
-python compiler/quantize.py build --component all --target bc
+CONFIG=compiler/configs/standard.yaml
+
+python compiler/quantize.py --config "$CONFIG" prepare --preflight-only
+python compiler/quantize.py --config "$CONFIG" prepare --resume
+python compiler/quantize.py --config "$CONFIG" calibrate --component all --resume
+python compiler/quantize.py --config "$CONFIG" build --component all --target bc --resume
+python compiler/quantize.py --config "$CONFIG" build --component all --target hbm --resume
+python compiler/quantize.py --config "$CONFIG" verify --component all --stage specification
 ```
 
-### 5. 编译 HBM
+构建产物和日志分别保存到：
 
-统一入口会顺序构建 Vision 与 Language，避免两个 HBDK 作业争抢资源。中断后使用
-`--resume` 复用已经完成的阶段产物。
+```text
+artifacts/calibration/current/statistics/standard/
+artifacts/builds/locateanything-3b/standard/
+artifacts/logs/locateanything-3b/standard/
+artifacts/evaluation/locateanything-3b/standard/
+```
+
+### 5. 使用 `fused_decode` 图集合
+
+融合解码使用独立配置和独立输出目录：
 
 ```bash
-python compiler/quantize.py build --component all --target hbm --resume
+CONFIG=compiler/configs/fused_decode.yaml
+
+python compiler/quantize.py --config "$CONFIG" calibrate --component language --resume
+python compiler/quantize.py --config "$CONFIG" build --component all --target bc --resume
+python compiler/quantize.py --config "$CONFIG" build --component all --target hbm --resume
+python compiler/quantize.py --config "$CONFIG" verify --component all --stage specification
 ```
 
-### 6. 验证已准备的证据
+`pipeline` 和 `task` 验证需要同一批输入生成的 Float/BC/HBM 中间结果、Ground Truth
+以及 S600 预测结果。准备好这些输入后，再分别执行 `verify --stage pipeline` 和
+`verify --stage task`；主编译流程不使用空文件或其他批次结果代替。
 
-`verify --level all` 只汇总已有验证证据，不会生成跨阶段输出，也不会自动执行 S600
-推理。运行前应先在 `workspace/evaluation/release_candidate/pipeline/` 中完成同一输入集的
-Float/Quantized-Eager/BC/HBM 分阶段采集，并准备配置中指定的独立 held-out 标注 JSONL
-和对应板端预测 JSONL。随后执行：
+### 6. 部署编译产物
+
+部署脚本先在本地计算文件大小和 SHA256，再上传到 S600 的临时目录；S600 校验完成并
+编译运行时后，才生成最终目录。同名目录不会被覆盖。
 
 ```bash
-python compiler/quantize.py verify --component all --level all
+BUILD_DIR="$PWD/artifacts/builds/locateanything-3b/standard"
+
+bash deploy/deploy_locateanything_s600.sh \
+  --release locateanything-s600-standard-v1 \
+  --vision-hbm "$BUILD_DIR/vision/LocateAnything-3B_vision_672x672_w8_nash-p_corenum_4.hbm" \
+  --language-hbm "$BUILD_DIR/language/LocateAnything-3B_language_chunk_1024_cache_4096_decoder_w8_lmhead_w8_nash-p_corenum_4_4.hbm" \
+  --embed-bin "$BUILD_DIR/language/LocateAnything-3B_embed_tokens.bin" \
+  --runtime-config deploy/runtime_config.json \
+  --tokenizer-dir deploy/tokenizer \
+  --ssh-target sunrise@S600_IP \
+  --execute
 ```
 
-Pipeline 分析会拒绝缺少 Float、没有任何候选阶段、phase 混用或输入指纹不一致；任务
-评测要求两份 JSONL 均存在。分析器也允许主动汇总部分 pipeline，因此发布时还必须从
-报告中确认所有计划阶段均已完成，不能将“HBM 构建完成”视为“模型验证通过”。
+部署完成后在 S600 上运行：
 
-环境搭建、源码修改、数学原理、完整命令和验证标准见
-[从零编译与适配原理](docs/COMPILER_PORTING_GUIDE.zh-CN.md)。
+```bash
+cd /home/sunrise/oe_locateanything/LocateAnything/artifacts/releases/locateanything-s600-standard-v1
+sh deploy/install_locateanything_cli.sh
+export PATH="$HOME/.local/bin:$PATH"
 
-## 文档
+LocateAnything \
+  -c config/locateanything_3b_config.json \
+  -i /path/to/image.jpg \
+  -p '/detect person,motorcycle' \
+  --output-dir artifacts/runs/predict/demo
+```
 
-| 文档 | 内容 |
-|---|---|
-| [文档索引](docs/README.md) | 当前架构、量化、Runtime 与部署文档入口 |
-| [从零编译与适配原理](docs/COMPILER_PORTING_GUIDE.zh-CN.md) | 从 Qwen2.5-VL 链路验证到 LocateAnything HBM |
-| [上游源码审计](docs/SOURCE_REVIEW.md) | Checkpoint、MoonViT、Qwen decoder 与 PBD 语义 |
-| [运行时架构](docs/RUNTIME_ARCHITECTURE.md) | Host/BPU 分层和运行时模块设计 |
-| [校准策略](docs/CALIBRATION.md) | 六域采样、672 profile 张量生成与 scale 验收 |
-| [已知问题](docs/KNOWN_ISSUES.md) | 可复现问题、证据、修复与预防 |
-| [项目目录规范](docs/PROJECT_LAYOUT.md) | 产品边界与生成工作区规范 |
-| [Qwen2.5-VL 链路验证](../Qwen-2.5-VL-3B/README.md) | 独立的编译链基准产品 |
+## 上传校准数据和 HBM
+
+Hugging Face 目录只保存校准数据和可部署 HBM：
+
+```text
+hf_assets/
+├── calibration/
+│   └── current/
+│       ├── source/
+│       └── generated/
+└── hbm/
+    ├── LocateAnything-3B_vision.hbm
+    ├── LocateAnything-3B_language.hbm
+    └── LocateAnything-3B_embed_tokens.bin
+```
+
+上传前生成并校验 SHA256：
+
+```bash
+python scripts/hf_assets.py checksums --root hf_assets/calibration
+python scripts/hf_assets.py checksums --root hf_assets/hbm
+python scripts/hf_assets.py validate --kind all --local-dir hf_assets --verify-images
+
+hf auth login
+hf upload "$LA_HF_REPO" hf_assets . --repo-type model
+```
 
 ## 项目结构
 
 ```text
 LocateAnything/
-├── compiler/                  OELLM 编译适配与编译侧工具
-│   ├── quantize.py             prepare/calibrate/build/verify 统一入口
-│   ├── config.yaml             发布配置与工作目录合同
-│   ├── leap_llm/
-│   └── scripts/                内部校准、构建与验证实现
-├── deploy/                    S600 Runner、CLI、tokenizer 与部署工具
-├── src/oe_locateanything/     公共路径与项目辅助代码
-├── tests/                      Host 侧回归测试
-├── docs/                       当前技术文档
-├── assets/                     README 素材
-└── workspace/                  模型、数据、候选产物、发布产物、日志与测试图片
+├── compiler/              量化、校准、BC/HBO/HBM 编译
+│   ├── configs/           `standard` 与 `fused_decode` 构建配置
+│   ├── leap_llm/          OELLM 模型适配
+│   ├── scripts/           构建和验证实现
+│   └── quantize.py        统一编译入口
+├── deploy/                S600 C++ runner、CLI 和部署脚本
+├── scripts/               Hugging Face 资产工具
+├── src/                   共享 Python 模块
+├── tests/                 回归测试
+└── artifacts/             本地模型、校准、构建、运行和发布产物
 ```
 
-模型权重、校准张量、BC/HBO/HBM、日志和运行时构建产物均被忽略，所有生成
-状态统一放入 `workspace/`。`workspace/builds/` 只保存编译候选；只有完成数值、
-图目录和板端验证的产物才能提升到 `workspace/artifacts/release/`，再用于部署。
+`artifacts/` 不提交到 Git。源码目录不保存模型、校准张量、编译产物、运行日志或报告图。
 
-## 致谢
+## License
 
-- [NVIDIA Eagle](https://github.com/NVlabs/Eagle) 与 LocateAnything 团队
-- [Moonshot AI](https://github.com/MoonshotAI) 的 MoonViT
-- [Qwen](https://github.com/QwenLM/Qwen2.5) 模型家族
-- [D-Robotics](https://developer.d-robotics.cc/) S600 平台与 OELLM 工具链
-- 分享部署经验的 D-Robotics 开发者社区
-
-## 许可证
-
-本项目采用 [CC BY-NC 4.0](LICENSE)。模型权重、D-Robotics SDK、NVIDIA Eagle
-及其他上游组件继续遵循各自许可证。
+本项目使用 [CC BY-NC 4.0](LICENSE)。模型权重、D-Robotics SDK 和上游组件遵循各自
+许可证。

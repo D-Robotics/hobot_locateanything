@@ -41,8 +41,10 @@ def fixtures(tmp_path):
         "language_lm_head_weight_bits": 8,
         "text_mask_token_id": 151676,
         "pbd_block_size": 6,
-        "pbd_total_query_lengths": list(range(6, 13)),
-        "ar_total_query_lengths": list(range(1, 6)),
+        "graph_set": "standard",
+        "pbd_total_query_lengths": [6],
+        "ar_total_query_lengths": [1],
+        "ar_q1_calls_per_context": 6,
         "pbd_q6_role": "post_prefill_bootstrap_only",
         "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
         "decode_context_policy": deployment.DECODE_CONTEXT_POLICY,
@@ -89,15 +91,15 @@ def fixtures(tmp_path):
         "checkpoint_samples": 256,
         "task_counts": counts,
         "profile": language_profile,
-        "expected_stages": list(deployment.GRAPH_STAGES),
-        "stage_execution_counts": {
-            stage: 300 if stage == "vision" else language_context_count
-            for stage in deployment.GRAPH_STAGES
-        },
-        "expected_stage_execution_counts": {
-            stage: 300 if stage == "vision" else language_context_count
-            for stage in deployment.GRAPH_STAGES
-        },
+        "expected_stages": list(deployment.component_stages("full", "standard")),
+        "stage_execution_counts": deployment.component_stage_counts(
+            "full", "standard", sample_count=300,
+            language_context_count=language_context_count,
+        ),
+        "expected_stage_execution_counts": deployment.component_stage_counts(
+            "full", "standard", sample_count=300,
+            language_context_count=language_context_count,
+        ),
         "all_stages_executed": True,
         "decode_context_coverage_passed": True,
         "decode_context_coverage": {
@@ -135,7 +137,7 @@ def fixtures(tmp_path):
     return selected_path, generated_path, scale_path, coverage_path
 
 
-def run(monkeypatch, paths):
+def run(monkeypatch, paths, component="full"):
     selected, generated, scale, coverage = paths
     monkeypatch.setattr(sys, "argv", [
         str(SCRIPT),
@@ -146,6 +148,7 @@ def run(monkeypatch, paths):
         "--image-width", "672", "--image-height", "672",
         "--chunk-size", "1024", "--cache-len", "4096",
         "--decode-seq-len", "6",
+        "--component", component,
     ])
     return deployment.main()
 
@@ -271,6 +274,37 @@ def test_preflight_accepts_consistent_chain(tmp_path, monkeypatch):
     assert run(monkeypatch, fixtures(tmp_path)) == 0
 
 
+def test_preflight_accepts_full_calibration_for_vision_child(tmp_path, monkeypatch):
+    assert run(monkeypatch, fixtures(tmp_path), component="vision") == 0
+
+
+def test_preflight_accepts_full_calibration_for_language_child(tmp_path, monkeypatch):
+    assert run(monkeypatch, fixtures(tmp_path), component="language") == 0
+
+
+def test_preflight_rejects_vision_calibration_for_language_child(tmp_path, monkeypatch):
+    paths = fixtures(tmp_path)
+    scale_path = paths[2]
+    scale = json.loads(scale_path.read_text(encoding="utf-8"))
+    scale["language_context_count"] = 0
+    scale.pop("language")
+    scale_path.write_text(json.dumps(scale), encoding="utf-8")
+
+    coverage_path = paths[3]
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["language_context_count"] = 0
+    coverage["expected_stages"] = list(
+        deployment.component_stages("vision", "standard")
+    )
+    coverage["stage_execution_counts"] = {"vision": 300}
+    coverage["expected_stage_execution_counts"] = {"vision": 300}
+    coverage["observer_audit"] = {"vision": coverage["observer_audit"]["vision"]}
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths, component="vision") == 0
+    assert run(monkeypatch, paths, component="language") == 2
+
+
 def test_release_identity_accepts_unchanged_complete_chain(tmp_path):
     assert release_identity_errors(release_identity_fixture(tmp_path)) == []
 
@@ -314,6 +348,46 @@ def test_release_identity_rejects_modified_compiler_source(tmp_path):
     assert "calibration identity compiler source mismatch" in errors
 
 
+def test_source_tree_projection_changes_only_selected_file(tmp_path):
+    compiler = tmp_path / "compiler"
+    validator = compiler / "scripts" / "validate" / "deployment.py"
+    model = compiler / "model.py"
+    validator.parent.mkdir(parents=True)
+    validator.write_text("VALIDATOR = 1\n", encoding="utf-8")
+    model.write_text("MODEL = 1\n", encoding="utf-8")
+    expected = deployment.source_tree_identity(compiler)
+
+    historical_validator = validator.read_bytes()
+    validator.write_text("VALIDATOR = 2\n", encoding="utf-8")
+    assert deployment.source_tree_identity(compiler) != expected
+    assert deployment.source_tree_identity_with_overrides(
+        compiler, {validator: historical_validator}
+    ) == expected
+
+    model.write_text("MODEL = 2\n", encoding="utf-8")
+    assert deployment.source_tree_identity_with_overrides(
+        compiler, {validator: historical_validator}
+    ) != expected
+
+
+def test_source_tree_projection_can_exclude_validation_only_addition(tmp_path):
+    compiler = tmp_path / "compiler"
+    validator = compiler / "scripts" / "validate" / "deployment.py"
+    plotter = compiler / "scripts" / "validate" / "plot_history.py"
+    validator.parent.mkdir(parents=True)
+    validator.write_text("VALIDATOR = 1\n", encoding="utf-8")
+    expected = deployment.source_tree_identity(compiler)
+
+    historical_validator = validator.read_bytes()
+    validator.write_text("VALIDATOR = 2\n", encoding="utf-8")
+    plotter.write_text("PLOTTER = 1\n", encoding="utf-8")
+    assert deployment.source_tree_identity_with_overrides(
+        compiler,
+        {validator: historical_validator},
+        excluded_paths={plotter},
+    ) == expected
+
+
 def test_preflight_rejects_scale_from_other_generated_manifest(tmp_path, monkeypatch):
     paths = fixtures(tmp_path)
     scale_path = paths[2]
@@ -347,6 +421,40 @@ def test_preflight_rejects_missing_full_scale_snapshot(tmp_path, monkeypatch):
     scale = json.loads(scale_path.read_text(encoding="utf-8"))
     del scale["language"]["300"]
     scale_path.write_text(json.dumps(scale), encoding="utf-8")
+    assert run(monkeypatch, paths) == 2
+
+
+def test_preflight_accepts_empty_snapshot_for_component_without_static_points(
+    tmp_path, monkeypatch
+):
+    paths = fixtures(tmp_path)
+    scale_path = paths[2]
+    coverage_path = paths[3]
+    scale = json.loads(scale_path.read_text(encoding="utf-8"))
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    scale["vision"]["256"] = {}
+    scale["vision"]["300"] = {}
+    coverage["observer_audit"]["vision"].update({
+        "observer_count": 0,
+        "required_point_count": 0,
+        "status": "not_applicable",
+    })
+    scale_path.write_text(json.dumps(scale), encoding="utf-8")
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    assert run(monkeypatch, paths) == 0
+
+
+def test_preflight_rejects_empty_snapshot_without_explicit_not_applicable_audit(
+    tmp_path, monkeypatch
+):
+    paths = fixtures(tmp_path)
+    scale_path = paths[2]
+    scale = json.loads(scale_path.read_text(encoding="utf-8"))
+    scale["vision"]["256"] = {}
+    scale["vision"]["300"] = {}
+    scale_path.write_text(json.dumps(scale), encoding="utf-8")
+
     assert run(monkeypatch, paths) == 2
 
 
@@ -449,7 +557,7 @@ def test_release_distribution_gate_requires_frozen_task_and_detection_mix():
     errors = deployment.release_distribution_errors(
         1200,
         wrong_tasks,
-        {"coco_multicategory_detection": 620},
+        {"coco_detection": 660},
     )
     assert any("release task counts mismatch" in error for error in errors)
     assert any("release Detection source counts mismatch" in error for error in errors)

@@ -215,6 +215,39 @@ def build_right_aligned_caches(
     return keys, values
 
 
+def append_cache_updates(
+    keys: Iterable[torch.Tensor],
+    values: Iterable[torch.Tensor],
+    new_keys: Iterable[torch.Tensor],
+    new_values: Iterable[torch.Tensor],
+    *,
+    accepted: int,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Append accepted causal K/V rows to fixed-length right-aligned caches."""
+
+    if accepted <= 0:
+        raise ValueError("accepted cache rows must be positive")
+    key_pairs = list(zip(keys, new_keys, strict=True))
+    value_pairs = list(zip(values, new_values, strict=True))
+    if len(key_pairs) != len(value_pairs):
+        raise ValueError("key and value cache layer counts differ")
+    for cache, update in (*key_pairs, *value_pairs):
+        if accepted > cache.shape[1] or accepted > update.shape[1]:
+            raise ValueError(
+                f"cannot append {accepted} rows from cache/update shapes "
+                f"{tuple(cache.shape)}/{tuple(update.shape)}"
+            )
+    updated_keys = [
+        torch.cat((cache[:, accepted:], update[:, :accepted]), dim=1)
+        for cache, update in key_pairs
+    ]
+    updated_values = [
+        torch.cat((cache[:, accepted:], update[:, :accepted]), dim=1)
+        for cache, update in value_pairs
+    ]
+    return updated_keys, updated_values
+
+
 def build_decode_inputs(
     text_model: Any,
     token_ids: list[int],
@@ -266,6 +299,53 @@ def build_decode_inputs(
         previous_round_tail = current_start + pbd_prefix_len - 1
         mask[:, :, pbd_prefix_len:, previous_round_tail] = mask_value
     return embeds, position_ids, mask
+
+
+def replay_sequential_ar_q1(
+    text_model: Any,
+    token_ids: Iterable[int],
+    keys: Iterable[torch.Tensor],
+    values: Iterable[torch.Tensor],
+    *,
+    active_len: int,
+    cache_len: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    input_builder: Any = build_decode_inputs,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Replay accepted tokens through q1 while committing each K/V update."""
+
+    cache_keys = list(keys)
+    cache_values = list(values)
+    replay_tokens = [int(token_id) for token_id in token_ids]
+    if not replay_tokens:
+        raise ValueError("sequential AR replay requires at least one token")
+    for token_offset, token_id in enumerate(replay_tokens):
+        embeds, positions, mask = input_builder(
+            text_model,
+            [token_id],
+            q_len=1,
+            past_len=active_len + token_offset,
+            cache_len=cache_len,
+            is_pbd=False,
+            device=device,
+            dtype=dtype,
+        )
+        logits, new_keys, new_values = text_model(
+            embeds,
+            positions,
+            mask,
+            *(cache_keys + cache_values),
+        )
+        cache_keys, cache_values = append_cache_updates(
+            cache_keys,
+            cache_values,
+            new_keys,
+            new_values,
+            accepted=1,
+        )
+        del logits, new_keys, new_values, embeds, positions, mask
+    return cache_keys, cache_values
 
 
 def select_decode_tokens(payload: dict[str, Any], mode: str, q_len: int) -> list[int]:
@@ -1010,6 +1090,11 @@ class ActivationTracker:
             if hasattr(module, "absmax") or hasattr(module, "summax_hidden"):
                 self._tracked_modules[name] = module
                 self._handles.append(module.register_forward_hook(self._activation_hook(name)))
+
+    @property
+    def tracked_module_count(self) -> int:
+        """Number of model modules whose static activation state is tracked."""
+        return len(self._tracked_modules)
 
     def _activation_hook(self, name: str):
         def hook(_module, inputs, _output):

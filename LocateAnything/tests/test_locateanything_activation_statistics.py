@@ -133,6 +133,26 @@ def test_activation_statistics_audit_rejects_an_empty_snapshot():
     assert audit["passed"] is False
 
 
+def test_activation_statistics_audit_accepts_empty_snapshot_when_no_static_points_exist():
+    audit = calibrate.activation_statistics_audit({}, required_point_count=0)
+
+    assert audit["activation_point_count"] == 0
+    assert audit["required_point_count"] == 0
+    assert audit["point_count_mismatch"] is False
+    assert audit["status"] == "not_applicable"
+    assert audit["passed"] is True
+
+
+def test_activation_statistics_audit_rejects_missing_required_static_points():
+    audit = calibrate.activation_statistics_audit(
+        {}, required_point_count=1
+    )
+
+    assert audit["point_count_mismatch"] is True
+    assert audit["status"] == "failed"
+    assert audit["passed"] is False
+
+
 def test_scale_convergence_uses_scale_for_norm_activation_points():
     result = replay.compare_snapshots(
         {"norm": {"kind": "RMSNorm", "scale": 1.0, "activation_absmax": 20.0}},

@@ -17,8 +17,8 @@ LM_HEAD_W_BITS="${LM_HEAD_W_BITS:-8}"
 CHUNK_SIZE="${CHUNK_SIZE:-1024}"
 CACHE_LEN="${CACHE_LEN:-4096}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:-6}"   # PBD q_len=6
-EXPECTED_SAMPLES=1200
-EXPECTED_SELECTED_MANIFEST_SHA256="22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
+EXPECTED_DATASET_INDEX_SHA256="${EXPECTED_DATASET_INDEX_SHA256:-521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b}"
 DEVICE="${DEVICE:-cuda:0}"
 PREFILL_CORE_NUM="${PREFILL_CORE_NUM:-4}"
 DECODE_CORE_NUM="${DECODE_CORE_NUM:-4}"
@@ -28,21 +28,21 @@ HIDDEN_ROTATION_PATH="${HIDDEN_ROTATION_PATH:-}"
 DISABLE_HIDDEN_ROTATION="${DISABLE_HIDDEN_ROTATION:-0}"
 BUILD_TARGET="${BUILD_TARGET:-}"
 EXPORT_ONLY_INPUT="${EXPORT_ONLY:-}"
-FUSED_PBD_PROFILES="${FUSED_PBD_PROFILES:-1}"
+LANGUAGE_GRAPH_SET="${LANGUAGE_GRAPH_SET:-standard}"
 WAIT="${WAIT:-1}"
 DETACH="${DETACH:-0}"
 RESUME="${RESUME:-0}"
 
 BUILD_ID="${BUILD_ID:-release}"
-INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/workspace/models/LocateAnything-3B}"
-OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/workspace/builds/$BUILD_ID/language}"
-CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration manifest}"
-GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration manifest}"
+INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/artifacts/models/LocateAnything-3B}"
+OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/artifacts/builds/$BUILD_ID/language}"
+CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration index}"
+GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration index}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
 CALIBRATION_COVERAGE_JSON="${CALIBRATION_COVERAGE_JSON:-}"
 CONDA_ENV="${CONDA_ENV:-oellm_clean}"
 
-LOG_DIR="${LOG_DIR:-$REPO_ROOT/workspace/builds/$BUILD_ID/logs}"
+LOG_DIR="${LOG_DIR:-$REPO_ROOT/artifacts/logs/$BUILD_ID}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/language.log}"
 ENVIRONMENT_PATH="${ENVIRONMENT_PATH:-$LOG_DIR/language_environment.json}"
 ENVIRONMENT_SCRIPT="${ENVIRONMENT_SCRIPT:-$REPO_ROOT/compiler/scripts/common/environment.py}"
@@ -95,7 +95,10 @@ cd "$LEAP_LLM_SRC"
   echo "LocateAnything Language release requires CHUNK_SIZE=1024 CACHE_LEN=4096 DECODE_SEQ_LEN=6"
   exit 1
 }
-[[ "$FUSED_PBD_PROFILES" == "1" ]] || { echo "LocateAnything Language release requires FUSED_PBD_PROFILES=1"; exit 1; }
+[[ "$LANGUAGE_GRAPH_SET" == "standard" || "$LANGUAGE_GRAPH_SET" == "fused_decode" ]] || {
+  echo "LANGUAGE_GRAPH_SET must be standard or fused_decode; got $LANGUAGE_GRAPH_SET"
+  exit 1
+}
 [[ "$PREFILL_CORE_NUM" == "1" || "$PREFILL_CORE_NUM" == "2" || "$PREFILL_CORE_NUM" == "4" ]] || { echo "PREFILL_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
@@ -124,7 +127,7 @@ fi
 
 VALIDATION_ARGS=(
   --expected-samples "$EXPECTED_SAMPLES"
-  --expected-selected-sha256 "$EXPECTED_SELECTED_MANIFEST_SHA256"
+  --expected-dataset-index-sha256 "$EXPECTED_DATASET_INDEX_SHA256"
 )
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
@@ -143,6 +146,7 @@ python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
   --image-width 672 --image-height 672 \
   --chunk-size "$CHUNK_SIZE" --cache-len "$CACHE_LEN" --decode-seq-len "$DECODE_SEQ_LEN" \
   --lm-head-w-bits "$LM_HEAD_W_BITS" \
+  --graph-set "$LANGUAGE_GRAPH_SET" \
   "${VALIDATION_ARGS[@]}"
 
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"
@@ -162,30 +166,26 @@ echo "generated:     $GENERATED_JSON"
 echo "scale:         $CALIBRATION_SCALE_MANIFEST"
 echo "coverage:      $CALIBRATION_COVERAGE_JSON"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
-echo "graph profile: fused_pbd=$FUSED_PBD_PROFILES"
+echo "Language graphs: $LANGUAGE_GRAPH_SET"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
 echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
 echo "log:           $LOG_FILE"
 echo
 
-EXTRA_ARGS=()
+EXTRA_ARGS=(--graph-set "$LANGUAGE_GRAPH_SET")
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   EXTRA_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
 fi
 if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
   EXTRA_ARGS+=(--disable_hidden_rotation)
 fi
-if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
-  EXTRA_ARGS+=(--fused_pbd_profiles)
-fi
-
 MODEL_BASENAME=$(basename "$INPUT_MODEL_PATH")
 HBM_STEM="${MODEL_BASENAME}_language_chunk_${CHUNK_SIZE}_cache_${CACHE_LEN}_decoder_w${W_BITS}_lmhead_w${LM_HEAD_W_BITS}_${MARCH}_corenum_${PREFILL_CORE_NUM}_${DECODE_CORE_NUM}"
 if [[ "$AR_CORE_NUM" != "$DECODE_CORE_NUM" ]]; then
   HBM_STEM="${HBM_STEM}_ar${AR_CORE_NUM}"
 fi
-if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
-  HBM_STEM="${HBM_STEM}_fusedpbd"
+if [[ "$LANGUAGE_GRAPH_SET" == "fused_decode" ]]; then
+  HBM_STEM="${HBM_STEM}_fused_decode"
 fi
 HBM_PATH="$OUTPUT_MODEL_PATH/${HBM_STEM}.hbm"
 EMBEDDING_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_embed_tokens.bin"
@@ -202,16 +202,15 @@ STAGE_ARGS=(
   --decode_core_num "$DECODE_CORE_NUM"
   --ar_core_nums "$AR_CORE_NUM"
   --jobs "$JOBS"
+  --graph-set "$LANGUAGE_GRAPH_SET"
 )
-if [[ "$FUSED_PBD_PROFILES" == "1" ]]; then
-  STAGE_ARGS+=(--require_fused)
-fi
-LANGUAGE_GRAPHS=(
-  prefill decode decode_ar
-  decode_pbd_q7 decode_pbd_q8 decode_pbd_q9
-  decode_pbd_q10 decode_pbd_q11 decode_pbd_q12
-  decode_ar_q2 decode_ar_q3 decode_ar_q4 decode_ar_q5
+mapfile -t LANGUAGE_GRAPHS < <(
+  "$PYTHON_BIN" -m leap_llm.language_graphs "$LANGUAGE_GRAPH_SET"
 )
+[[ "${#LANGUAGE_GRAPHS[@]}" -gt 0 ]] || {
+  echo "Language graph set resolved to an empty catalog: $LANGUAGE_GRAPH_SET"
+  exit 1
+}
 PROVENANCE_ARGS=(
   --manifest "$BC_MANIFEST"
   --component language
@@ -223,7 +222,7 @@ PROVENANCE_ARGS=(
   --field "ar_query_len=1"
   --field "decoder_w_bits=$W_BITS"
   --field "lm_head_w_bits=$LM_HEAD_W_BITS"
-  --field "fused_pbd=$FUSED_PBD_PROFILES"
+  --field "graph_set=$LANGUAGE_GRAPH_SET"
   --field "march=$MARCH"
   --artifact "embed_tokens=$EMBEDDING_PATH"
 )
@@ -255,7 +254,7 @@ record_bc() {
 }
 
 export_bc() {
-  echo "[build:language] exporting the complete Language BC graph family"
+  echo "[build:language] exporting the ${LANGUAGE_GRAPH_SET} Language BC graph family"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" oellm_build \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
@@ -289,7 +288,7 @@ run_build() (
   fi
 
   if check_bc; then
-    echo "[REUSE] Language HBM build will consume existing 13-graph BC family"
+    echo "[REUSE] Language HBM build will consume existing ${#LANGUAGE_GRAPHS[@]}-graph BC family"
   else
     echo "[build:language] compatible BC family not found; exporting it first"
     export_bc

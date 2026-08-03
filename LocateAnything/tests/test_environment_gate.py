@@ -115,6 +115,37 @@ def test_resource_gate_checks_the_requested_gpu_not_the_freest_gpu():
     ) == []
 
 
+def test_cuda_floor_can_be_explicitly_overridden(monkeypatch):
+    module = load_environment()
+    monkeypatch.setenv(module.CUDA_FLOOR_OVERRIDE_ENV, "12")
+    resources = healthy_resources()
+    resources["cuda"]["devices"][0]["memory_free_bytes"] = 14 * 1024 ** 3
+
+    requirements = module.effective_resource_requirements("calibrate")
+    assert requirements["minimum_free_cuda_bytes"] == 12 * 1024 ** 3
+    assert requirements["minimum_free_cuda_override"] == {
+        "environment": module.CUDA_FLOOR_OVERRIDE_ENV,
+        "gib": 12,
+    }
+    assert module.resource_failures(
+        "calibrate",
+        resources,
+        requested_jobs=None,
+        requirements=requirements,
+    ) == []
+
+
+def test_cuda_floor_override_rejects_invalid_values(monkeypatch):
+    module = load_environment()
+    monkeypatch.setenv(module.CUDA_FLOOR_OVERRIDE_ENV, "0")
+    try:
+        module.effective_resource_requirements("prepare")
+    except ValueError as exc:
+        assert module.CUDA_FLOOR_OVERRIDE_ENV in str(exc)
+    else:
+        raise AssertionError("invalid CUDA floor override was accepted")
+
+
 def test_build_profile_accepts_only_the_pinned_toolchain(monkeypatch, tmp_path, capsys):
     module = load_environment()
     model = tmp_path / "model"

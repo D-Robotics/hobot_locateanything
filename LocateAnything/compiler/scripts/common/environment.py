@@ -24,6 +24,7 @@ from typing import Any
 
 
 GIB = 1024 ** 3
+CUDA_FLOOR_OVERRIDE_ENV = "LA_MIN_FREE_CUDA_GIB"
 
 RUNTIME_DISTRIBUTIONS = {
     "torch": {"expected": "2.8.0", "allow_local_suffix": True},
@@ -64,6 +65,30 @@ RESOURCE_PROFILES = {
         "minimum_idle_cpu_cores": 16,
     },
 }
+
+
+def effective_resource_requirements(profile: str) -> dict[str, object]:
+    """Return the profile requirements with an explicit CUDA-floor override."""
+    requirements = dict(RESOURCE_PROFILES[profile])
+    raw_override = os.environ.get(CUDA_FLOOR_OVERRIDE_ENV)
+    if raw_override is None:
+        return requirements
+    try:
+        override_gib = int(raw_override)
+    except ValueError as exc:
+        raise ValueError(
+            f"{CUDA_FLOOR_OVERRIDE_ENV} must be a positive integer GiB value"
+        ) from exc
+    if override_gib <= 0:
+        raise ValueError(
+            f"{CUDA_FLOOR_OVERRIDE_ENV} must be a positive integer GiB value"
+        )
+    requirements["minimum_free_cuda_bytes"] = override_gib * GIB
+    requirements["minimum_free_cuda_override"] = {
+        "environment": CUDA_FLOOR_OVERRIDE_ENV,
+        "gib": override_gib,
+    }
+    return requirements
 
 
 def path_state(path: Path | None) -> dict[str, object] | None:
@@ -249,7 +274,8 @@ def cuda_state(torch_installed: bool) -> dict[str, object]:
         return {"available": False, "error": repr(exc)}
 
 
-def import_probe(modules: list[str], timeout_seconds: int = 60) -> dict[str, object]:
+def import_probe(modules: list[str], timeout_seconds: int = 180) -> dict[str, object]:
+    """Probe the pinned stack without rejecting slow first-import hosts."""
     unique = list(dict.fromkeys(modules))
     source = "\n".join(f"import {name}" for name in unique)
     try:
@@ -306,10 +332,11 @@ def resource_failures(
     *,
     requested_jobs: int | None,
     requested_cuda_index: int = 0,
+    requirements: dict[str, object] | None = None,
 ) -> list[str]:
     if profile == "audit":
         return []
-    requirements = RESOURCE_PROFILES[profile]
+    requirements = requirements or effective_resource_requirements(profile)
     failures: list[str] = []
     memory = resources["memory"]
     disk = resources["disk"]
@@ -507,12 +534,18 @@ def main() -> int:
         failures.append("CUDA is required but torch.cuda.is_available() is false")
     if build and build_command is not None and not build_command["passed"]:
         failures.append("oellm_build is unavailable or its --help probe failed")
+    try:
+        resource_requirements = effective_resource_requirements(args.profile)
+    except ValueError as exc:
+        failures.append(str(exc))
+        resource_requirements = dict(RESOURCE_PROFILES[args.profile])
     failures.extend(
         resource_failures(
             args.profile,
             resources,
             requested_jobs=args.requested_jobs,
             requested_cuda_index=requested_cuda_index,
+            requirements=resource_requirements,
         )
     )
 
@@ -529,7 +562,7 @@ def main() -> int:
         },
         "cwd": os.getcwd(),
         "paths": paths,
-        "resource_requirements": RESOURCE_PROFILES.get(args.profile),
+        "resource_requirements": resource_requirements,
         "resources": resources,
         "cuda": cuda,
         "distributions": distributions,

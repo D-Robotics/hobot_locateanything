@@ -3,13 +3,17 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "compiler" / "quantize.py"
 CONFIG = ROOT / "compiler" / "config.yaml"
+STANDARD_CONFIG = ROOT / "compiler" / "configs" / "standard.yaml"
+FUSED_DECODE_CONFIG = ROOT / "compiler" / "configs" / "fused_decode.yaml"
 
 
 def load_cli():
@@ -30,15 +34,16 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_config_fixes_release_contract():
+def test_config_fixes_release_specification():
     module = load_cli()
     config = module.load_config(CONFIG)
     assert config["language"]["chunk_size"] == 1024
     assert config["language"]["cache_len"] == 4096
     assert config["language"]["decoder_w_bits"] == 8
     assert config["language"]["lm_head_w_bits"] == 8
-    assert config["language"]["fused_pbd"] is True
-    assert len(config["language"]["graphs"]) == 13
+    assert config["language"]["graph_set"] == "standard"
+    assert len(module.language_graph_set("standard").graphs) == 3
+    assert len(module.language_graph_set("fused_decode").graphs) == 13
     assert config["vision"]["w_bits"] == 8
     assert config["model"]["patch_size"] == 14
     assert config["model"]["spatial_merge"] == 2
@@ -46,34 +51,45 @@ def test_config_fixes_release_contract():
     assert config["model"]["checkpoint_index_sha256"] == (
         module.EXPECTED_CHECKPOINT_INDEX_SHA256
     )
-    assert config["paths"]["upstream_source"] == "workspace/upstream/Embodied"
-    assert config["paths"]["build_root"] == "workspace/builds/release_candidate"
+    assert config["paths"]["upstream_source"] == "artifacts/upstream/Eagle/Embodied"
+    assert config["paths"]["build_root"].endswith("/standard")
     assert config["calibration"]["sample_count"] == 1200
     assert config["calibration"]["checkpoint_samples"] == 512
     assert config["calibration"]["max_new_tokens"] == 1024
     assert config["calibration"]["image_token_id"] == 151665
     assert config["calibration"]["prepare_dtype"] == "bfloat16"
     assert config["calibration"]["calibrate_dtype"] == "float16"
-    assert config["calibration"]["selected_manifest_sha256"] == (
-        "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+    assert config["calibration"]["dataset_index_sha256"] == (
+        "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
     )
     assert config["calibration"]["task_counts"] == {
-        "detection": 620,
-        "gui": 180,
+        "detection": 660,
+        "gui": 150,
         "referring": 120,
         "ocr": 120,
-        "layout": 100,
+        "layout": 90,
         "pointing": 60,
     }
     assert config["calibration"]["source_role_counts"] == {
-        "coco_multicategory_detection": 500,
-        "dense_retail_detection": 120,
-        "existing_non_detection": 580,
+        "coco_detection": 240,
+        "openimages_v6": 90,
+        "v3det": 60,
+        "paco": 50,
+        "bdd100k": 50,
+        "egoobjects": 40,
+        "humanparts": 40,
+        "mot17det": 45,
+        "mot20det": 45,
+        "groundcua": 150,
+        "refcocog": 120,
+        "hiertext": 120,
+        "doclaynet": 90,
+        "pixmo_points": 60,
     }
     assert config["calibration"]["coco_stratum_counts"] == {
-        "single": 200,
-        "double": 220,
-        "multi": 80,
+        "single": 80,
+        "double": 100,
+        "multi": 60,
     }
 
 
@@ -85,16 +101,16 @@ def test_rotation_validation_uses_the_release_tensor_contract():
     assert "config.cache_len = 2048" not in source
 
 
-def test_graph_contract_rejects_duplicates_and_reordering():
+def test_graph_set_rejects_an_unknown_value():
     module = load_cli()
     config = module.load_config(CONFIG)
-    config["language"]["graphs"][-1] = config["language"]["graphs"][-2]
+    config["language"]["graph_set"] = "custom"
     try:
         module.validate_config(config)
     except module.ConfigurationError as error:
-        assert "canonical 13 graphs" in str(error)
+        assert "unknown Language graph set" in str(error)
     else:
-        raise AssertionError("duplicate graph name was accepted")
+        raise AssertionError("unknown Language graph set was accepted")
 
 
 def test_release_config_rejects_a_legacy_calibration_count():
@@ -161,14 +177,14 @@ def test_build_dry_run_forwards_fixed_contract():
     assert "LM_HEAD_W_BITS=8" in result.stdout
     assert "IMAGE_WIDTH=672" in result.stdout
     assert "IMAGE_HEIGHT=672" in result.stdout
-    assert "FUSED_PBD_PROFILES=1" in result.stdout
+    assert "LANGUAGE_GRAPH_SET=standard" in result.stdout
     assert (
-        "EXPECTED_SELECTED_MANIFEST_SHA256="
-        "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+        "EXPECTED_DATASET_INDEX_SHA256="
+        "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
     ) in result.stdout
     assert "WAIT=1" in result.stdout
     assert "DETACH=0" in result.stdout
-    assert "language_graphs\": 13" in result.stdout
+    assert "language_graph_count\": 3" in result.stdout
     assert "[dry-run] no command executed" in result.stdout
 
 
@@ -186,19 +202,19 @@ def test_build_all_plan_waits_for_vision_before_language():
     assert all(step.env["WAIT"] == "1" for step in steps)
     assert all(step.env["DETACH"] == "0" for step in steps)
     assert all(
-        step.env["EXPECTED_SELECTED_MANIFEST_SHA256"]
-        == config["calibration"]["selected_manifest_sha256"]
+        step.env["EXPECTED_DATASET_INDEX_SHA256"]
+        == config["calibration"]["dataset_index_sha256"]
         for step in steps
     )
 
 
-def test_workspace_and_scoped_roots_rebase_compiler_paths(tmp_path, monkeypatch):
+def test_artifacts_and_scoped_roots_rebase_compiler_paths(tmp_path, monkeypatch):
     module = load_cli()
     config = module.load_config(CONFIG)
-    workspace = tmp_path / "workspace"
-    monkeypatch.setenv("LA_WORKSPACE", str(workspace))
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("LA_ARTIFACTS_ROOT", str(artifacts))
     assert module.resolve_path(config, "generated_jsonl") == (
-        workspace / "calibration/current/generated/generated.jsonl"
+        artifacts / "calibration/current/generated/generated.jsonl"
     ).resolve()
 
     calibration = tmp_path / "calibration-data"
@@ -208,20 +224,20 @@ def test_workspace_and_scoped_roots_rebase_compiler_paths(tmp_path, monkeypatch)
     monkeypatch.setenv("LA_BUILD_ROOT", str(builds))
     monkeypatch.setenv("LA_EVALUATION_ROOT", str(evaluation))
     assert module.resolve_path(config, "selected_jsonl") == (
-        calibration / "current/selected.jsonl"
+        calibration / "current/source/selected.jsonl"
     ).resolve()
     assert module.resolve_path(config, "build_root") == (
-        builds / "release_candidate"
+        builds / "locateanything-3b/standard"
     ).resolve()
     assert module.resolve_path(config, "verification_root") == (
-        evaluation / "release_candidate"
+        evaluation / "locateanything-3b/standard"
     ).resolve()
 
 
 def test_direct_cli_and_model_path_overrides_take_precedence(tmp_path, monkeypatch):
     module = load_cli()
     config = module.load_config(CONFIG)
-    monkeypatch.setenv("LA_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("LA_ARTIFACTS_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setenv("LA_MODEL_ROOT", str(tmp_path / "models"))
     direct_model = tmp_path / "exact-model"
     monkeypatch.setenv("LA_MODEL_PATH", str(direct_model))
@@ -238,10 +254,42 @@ def test_verify_plan_honors_evaluation_root(tmp_path, monkeypatch):
     config = module.load_config(CONFIG)
     evaluation = tmp_path / "evaluation"
     monkeypatch.setenv("LA_EVALUATION_ROOT", str(evaluation))
-    args = module.build_parser().parse_args(["verify", "--level", "task", "--dry-run"])
+    args = module.build_parser().parse_args(["verify", "--stage", "task", "--dry-run"])
     command = module.verify_plan(args, config)[0].command
-    assert str(evaluation / "release_candidate/predictions.jsonl") in command
+    assert str(
+        evaluation
+        / "locateanything-3b/standard/predictions.jsonl"
+    ) in command
     assert str(evaluation / "current/selected.jsonl") in command
+
+
+def test_graph_sets_use_separate_configs_and_output_namespaces():
+    module = load_cli()
+    standard = module.load_config(STANDARD_CONFIG)
+    fused_decode = module.load_config(FUSED_DECODE_CONFIG)
+    assert standard["language"]["graph_set"] == "standard"
+    assert fused_decode["language"]["graph_set"] == "fused_decode"
+    assert standard["paths"]["build_root"].endswith("/standard")
+    assert fused_decode["paths"]["build_root"].endswith("/fused_decode")
+    assert standard["paths"]["build_root"] != fused_decode["paths"]["build_root"]
+    assert standard["paths"]["log_root"] != fused_decode["paths"]["log_root"]
+    assert standard["paths"]["verification_root"] != fused_decode["paths"]["verification_root"]
+    assert standard["paths"]["calibration_dir"].endswith("/statistics/standard")
+    assert fused_decode["paths"]["calibration_dir"].endswith(
+        "/statistics/fused_decode"
+    )
+    assert standard["paths"]["scale_manifest"] != fused_decode["paths"]["scale_manifest"]
+    assert standard["paths"]["coverage_json"] != fused_decode["paths"]["coverage_json"]
+
+
+def test_config_inheritance_cycle_is_rejected(tmp_path):
+    module = load_cli()
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    first.write_text("extends: second.yaml\n", encoding="utf-8")
+    second.write_text("extends: first.yaml\n", encoding="utf-8")
+    with pytest.raises(module.ConfigurationError, match="inheritance cycle"):
+        module.load_config(first)
 
 
 def test_build_all_executes_serially_and_stops_after_failure(monkeypatch):
@@ -283,7 +331,7 @@ def test_dry_run_never_invokes_an_external_command(monkeypatch):
         ["prepare", "--dry-run"],
         ["calibrate", "--dry-run"],
         ["build", "--component", "all", "--target", "hbm", "--dry-run"],
-        ["verify", "--component", "all", "--level", "all", "--dry-run"],
+        ["verify", "--component", "all", "--stage", "all", "--dry-run"],
     )
     for command in commands:
         assert module.main(command) == 0
@@ -316,6 +364,25 @@ def test_calibrate_dry_run_uses_full_graph_replay_and_cache_4096():
     assert "CACHE_LEN=4096" in output
     assert "MAX_SAMPLES=1200" in output
     assert "CHECKPOINT_SAMPLES=512" in output
+    assert "LANGUAGE_GRAPH_SET=standard" in output
+
+
+def test_graph_set_override_controls_every_language_stage():
+    calibrate = run_cli(
+        "calibrate", "--graph-set", "fused_decode", "--component", "language", "--dry-run"
+    )
+    build = run_cli(
+        "build", "--graph-set", "fused_decode", "--component", "language", "--dry-run"
+    )
+    verify = run_cli(
+        "verify", "--graph-set", "fused_decode", "--component", "language",
+        "--stage", "specification", "--dry-run",
+    )
+    assert calibrate.returncode == build.returncode == verify.returncode == 0
+    assert "LANGUAGE_GRAPH_SET=fused_decode" in calibrate.stdout
+    assert "LANGUAGE_GRAPH_SET=fused_decode" in build.stdout
+    assert "--graph-set fused_decode" in verify.stdout
+    assert '"language_graph_count": 13' in build.stdout
 
 
 def test_calibrate_cli_rejects_nonrelease_overrides():
@@ -351,7 +418,7 @@ def test_external_hidden_rotation_is_forwarded_to_both_builds(tmp_path):
 def test_cli_uses_standardized_script_layout():
     prepare = run_cli("prepare", "--dry-run")
     build = run_cli("build", "--component", "all", "--dry-run")
-    verify = run_cli("verify", "--level", "all", "--dry-run")
+    verify = run_cli("verify", "--stage", "all", "--dry-run")
     prepare_output = prepare.stdout.replace("\\", "/")
     build_output = build.stdout.replace("\\", "/")
     verify_output = verify.stdout.replace("\\", "/")

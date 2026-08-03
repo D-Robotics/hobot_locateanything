@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 
 SSH_TARGET=${LA_S600_SSH_TARGET:-sunrise@10.112.133.20}
-DEST_ROOT=${LA_S600_DEST_ROOT:-/home/sunrise/locateanything_deployments}
+DEST_ROOT=${LA_S600_DEST_ROOT:-/home/sunrise/oe_locateanything/LocateAnything/artifacts/releases}
 SSH_PORT=${LA_S600_SSH_PORT:-22}
 IDENTITY_FILE=
 DEPLOY_DIR=${REPO_ROOT}/deploy
@@ -48,7 +48,8 @@ Options:
 The target is DEST_ROOT/NAME. Existing final or .incoming-NAME directories are
 always rejected. Interrupted transfers are never resumed or automatically
 deleted. Every transferred file is checked on S600 by byte count and SHA256
-before the staging directory is renamed to the final release directory.
+before the two ARM64 runners are built in staging and the directory is renamed
+to the final release directory.
 EOF
 }
 
@@ -105,6 +106,14 @@ for pair in "deployment source|$DEPLOY_DIR" "tokenizer|$TOKENIZER_DIR"; do
     die "$label directory contains a symlink; materialize regular files first: $path"
   fi
 done
+for required in \
+  "$DEPLOY_DIR/CMakeLists.txt" \
+  "$DEPLOY_DIR/run_locateanything.py" \
+  "$DEPLOY_DIR/run_locateanything_interactive.py" \
+  "$DEPLOY_DIR/LocateAnything" \
+  "$TOKENIZER_DIR/tokenizer.json"; do
+  [[ -f $required && -r $required ]] || die "runtime payload file is missing: $required"
+done
 [[ -z $IDENTITY_FILE || -f $IDENTITY_FILE ]] || die "identity file is missing: $IDENTITY_FILE"
 
 for command in python3 sha256sum stat tar mktemp; do
@@ -121,6 +130,7 @@ STAGING_DIR=${DEST_ROOT}/.incoming-${RELEASE}
 printf '[deploy][1/7] generating version-bound runtime config\n'
 python3 - "$RUNTIME_CONFIG" "$WORK_DIR/config/locateanything_3b_config.json" "$FINAL_DIR" <<'PY'
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -131,11 +141,49 @@ except (OSError, json.JSONDecodeError) as exc:
     raise SystemExit(f"invalid runtime config: {exc}")
 if not isinstance(config, dict):
     raise SystemExit("runtime config must be a JSON object")
-required = {"vocab_size": 152681, "embed_dim": 2048,
-            "image_height": 672, "image_width": 672}
+required = {
+    "model_type": "LocateAnything-3B",
+    "vocab_size": 152681,
+    "embed_dim": 2048,
+    "image_height": 672,
+    "image_width": 672,
+    "patch_size": 14,
+    "visual_tokens": 576,
+    "prefill_chunk": 1024,
+    "cache_len": 4096,
+    "pbd_query_len": 6,
+    "ar_query_len": 1,
+    "default_generation_mode": "hybrid",
+    "l2m_sizes": "6:6:6:6",
+    "vit_bpu_core": [0, 1, 2, 3],
+    "prefill_bpu_core": [0, 1, 2, 3],
+    "decode_bpu_core": [0, 1, 2, 3],
+}
 for key, expected in required.items():
     if config.get(key) != expected:
         raise SystemExit(f"runtime config {key}={config.get(key)!r}; expected {expected}")
+if config.get("language_graph_set") not in {"standard", "fused_decode"}:
+    raise SystemExit(
+        "runtime config language_graph_set must be standard or fused_decode"
+    )
+for key in (
+    "default_max_new_tokens", "default_nms_iou", "telemetry_interval_ms",
+    "runner_startup_timeout_seconds",
+):
+    if key not in config:
+        raise SystemExit(f"runtime config is missing {key}")
+try:
+    if int(config["default_max_new_tokens"]) <= 0:
+        raise ValueError
+    if not 0.0 <= float(config["default_nms_iou"]) <= 1.0:
+        raise ValueError
+    if int(config["telemetry_interval_ms"]) < 250:
+        raise ValueError
+    startup_timeout = float(config["runner_startup_timeout_seconds"])
+    if not math.isfinite(startup_timeout) or startup_timeout <= 0:
+        raise ValueError
+except (TypeError, ValueError):
+    raise SystemExit("runtime config has invalid generation, NMS, telemetry, or startup timeout values")
 base = str(release_dir).rstrip("/")
 config.update({
     "model_dir": f"{base}/artifacts/",
@@ -144,7 +192,10 @@ config.update({
     "embed_weight_file_path": "LocateAnything-3B_embed_tokens.bin",
     "vocabulary_path": f"{base}/tokenizer/",
 })
-output.write_text(json.dumps(config, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+output.write_text(
+    json.dumps(config, indent=2, ensure_ascii=True, allow_nan=False) + "\n",
+    encoding="utf-8",
+)
 PY
 
 printf '[deploy][2/7] packaging reusable deployment source and tokenizer\n'
@@ -170,22 +221,22 @@ declare -a REMOTE_FILES=(
   "bundles/tokenizer.tar"
 )
 
-MANIFEST_SHA=$WORK_DIR/DEPLOY_MANIFEST.sha256
-MANIFEST_BYTES=$WORK_DIR/DEPLOY_MANIFEST.bytes
-: >"$MANIFEST_SHA"
-: >"$MANIFEST_BYTES"
+CHECKSUMS=$WORK_DIR/checksums.sha256
+FILE_SIZES=$WORK_DIR/file_sizes.tsv
+: >"$CHECKSUMS"
+: >"$FILE_SIZES"
 printf '[deploy][3/7] hashing six source payloads\n'
 for index in "${!LOCAL_FILES[@]}"; do
   source_file=${LOCAL_FILES[$index]}
   remote_file=${REMOTE_FILES[$index]}
   digest=$(sha256sum "$source_file" | awk '{print $1}')
   bytes=$(stat -c '%s' "$source_file")
-  printf '%s  %s\n' "$digest" "$remote_file" >>"$MANIFEST_SHA"
-  printf '%s  %s\n' "$bytes" "$remote_file" >>"$MANIFEST_BYTES"
+  printf '%s  %s\n' "$digest" "$remote_file" >>"$CHECKSUMS"
+  printf '%s  %s\n' "$bytes" "$remote_file" >>"$FILE_SIZES"
   printf '  [%d/6] %-52s %12s bytes  %s\n' "$((index + 1))" "$remote_file" "$bytes" "$digest"
 done
 
-cat >"$WORK_DIR/RELEASE_INFO.txt" <<EOF
+cat >"$WORK_DIR/release_metadata.txt" <<EOF
 release=${RELEASE}
 destination=${FINAL_DIR}
 source_host=$(hostname 2>/dev/null || printf unknown)
@@ -196,7 +247,7 @@ EOF
 printf '\n[deploy] target:  %s:%s\n' "$SSH_TARGET" "$FINAL_DIR"
 printf '[deploy] staging: %s:%s\n' "$SSH_TARGET" "$STAGING_DIR"
 if [[ $EXECUTE -eq 0 ]]; then
-  printf '[deploy][DRY-RUN] local payload and manifests passed; no SSH/SCP command was run.\n'
+  printf '[deploy][DRY-RUN] local payload and checksum validation passed; no SSH/SCP command was run.\n'
   printf '[deploy][DRY-RUN] rerun with --execute to create and publish this immutable release.\n'
   exit 0
 fi
@@ -236,12 +287,12 @@ for index in "${!LOCAL_FILES[@]}"; do
   "$SCP_BIN" "${SCP_ARGS[@]}" -- "${LOCAL_FILES[$index]}" \
     "${SSH_TARGET}:${STAGING_DIR}/${REMOTE_FILES[$index]}"
 done
-for metadata in DEPLOY_MANIFEST.sha256 DEPLOY_MANIFEST.bytes RELEASE_INFO.txt; do
+for metadata in checksums.sha256 file_sizes.tsv release_metadata.txt; do
   "$SCP_BIN" "${SCP_ARGS[@]}" -- "$WORK_DIR/$metadata" \
     "${SSH_TARGET}:${STAGING_DIR}/$metadata"
 done
 
-printf '[deploy][6/7] verifying board byte counts and SHA256, then unpacking code\n'
+printf '[deploy][6/7] verifying payloads and building ARM64 runtime in staging\n'
 "$SSH_BIN" "${SSH_ARGS[@]}" "$SSH_TARGET" sh -s -- "$DEST_ROOT" "$RELEASE" <<'REMOTE_VERIFY'
 set -eu
 root=$1
@@ -251,24 +302,45 @@ stage=$root/.incoming-$release
 [ ! -e "$target" ] || { echo "[remote][FAIL] target appeared during transfer" >&2; exit 75; }
 [ -d "$stage" ] || { echo "[remote][FAIL] staging directory is missing" >&2; exit 76; }
 cd "$stage"
-sha256sum -c DEPLOY_MANIFEST.sha256
+sha256sum -c checksums.sha256
 while read -r expected relative; do
   actual=$(wc -c <"$relative" | tr -d ' ')
   [ "$actual" = "$expected" ] || {
     echo "[remote][FAIL] byte mismatch: $relative expected=$expected actual=$actual" >&2
     exit 77
   }
-done <DEPLOY_MANIFEST.bytes
+done <file_sizes.tsv
 mkdir deploy tokenizer
 tar -xf bundles/deploy-source.tar -C deploy
 tar -xf bundles/tokenizer.tar -C tokenizer
 test -f deploy/CMakeLists.txt
-test -n "$(find tokenizer -type f -print -quit)"
-printf 'verified_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>RELEASE_INFO.txt
-printf 'status=sha256-and-byte-verified\n' >>RELEASE_INFO.txt
+test -f deploy/run_locateanything.py
+test -f deploy/run_locateanything_interactive.py
+test -f deploy/LocateAnything
+test -f tokenizer/tokenizer.json
+command -v cmake >/dev/null 2>&1 || {
+  echo "[remote][FAIL] cmake is required to build the S600 runtime" >&2
+  exit 78
+}
+cmake -S deploy -B deploy/build -DCMAKE_BUILD_TYPE=Release
+cmake --build deploy/build \
+  --target vision_hbm_runner language_hbm_runner \
+  -j4
+test -x deploy/build/vision_hbm_runner
+test -x deploy/build/language_hbm_runner
+sha256sum \
+  deploy/build/vision_hbm_runner \
+  deploy/build/language_hbm_runner >runtime_checksums.sha256
+{
+  printf 'build_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  uname -a
+  cmake --version
+} >runtime_environment.txt
+printf 'verified_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>release_metadata.txt
+printf 'status=sha256-byte-verified-and-runtime-built\n' >>release_metadata.txt
 mv "$stage" "$target"
 printf '[remote][PASS] immutable release published: %s\n' "$target"
 REMOTE_VERIFY
 
 printf '[deploy][7/7] deployment complete: %s:%s\n' "$SSH_TARGET" "$FINAL_DIR"
-printf '[deploy] keep DEPLOY_MANIFEST.sha256 and DEPLOY_MANIFEST.bytes with benchmark evidence.\n'
+printf '[deploy] checksums.sha256 and file_sizes.tsv remain with the deployed release.\n'

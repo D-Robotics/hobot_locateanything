@@ -39,6 +39,7 @@ from leap_llm.models.locateanything.hidden_rotation import (
     rotate_language_to_hidden_domain,
 )
 from leap_llm.apis.model.state_dict_contract import load_state_dict_fail_closed
+from leap_llm.language_graphs import language_graph_set
 
 
 def remap_language_state_dict(raw_sd: dict) -> dict:
@@ -91,7 +92,7 @@ class LocateAnythingLanguageApi:
         prefill_core_num: Optional[list[int]] = None,
         decode_core_num: Optional[list[int]] = None,
         ar_core_num: Optional[list[int]] = None,
-        fused_pbd_profiles: bool = True,
+        graph_set: str = "standard",
         march: str = "nash-p",
         hidden_rotation_path: Optional[str] = None,
         apply_hidden_rotation: bool = True,
@@ -118,7 +119,7 @@ class LocateAnythingLanguageApi:
         self.prefill_core_num = prefill_core_num or [1]
         self.decode_core_num = decode_core_num or [1]
         self.ar_core_num = ar_core_num or list(self.decode_core_num)
-        self.fused_pbd_profiles = bool(fused_pbd_profiles)
+        self.graph_set = language_graph_set(graph_set)
         self.march = march
         self.hidden_rotation_path = hidden_rotation_path
         self.apply_hidden_rotation = apply_hidden_rotation
@@ -137,10 +138,10 @@ class LocateAnythingLanguageApi:
             self.output_lm_model_path = str(
                 output.with_name(f"{output.stem}_ar{self.ar_core_num[0]}{output.suffix}")
             )
-        if self.fused_pbd_profiles:
+        if self.graph_set.uses_fused_decode:
             output = Path(self.output_lm_model_path)
             self.output_lm_model_path = str(
-                output.with_name(f"{output.stem}_fusedpbd{output.suffix}")
+                output.with_name(f"{output.stem}_fused_decode{output.suffix}")
             )
         self.token_embeddings_file_name = standard_token_embeddings_name(
             input_model_path, output_model_path,
@@ -174,8 +175,8 @@ class LocateAnythingLanguageApi:
             f"pbd_q6:{self.decode_core_num[0]} ar_q1:{self.ar_core_num[0]}"
         )
         print(
-            "  fused PBD profiles  = " +
-            ("q7..q12 + AR bridge q2..q5" if self.fused_pbd_profiles else "disabled")
+            f"  Language graph set      = {self.graph_set.name} "
+            f"({len(self.graph_set.graphs)} graphs)"
         )
         print(f"  tie_word_embeddings = {tc.tie_word_embeddings}")
 
@@ -298,49 +299,34 @@ class LocateAnythingLanguageApi:
         cache_len = self.text_cfg.cache_len
         batch_size = self.text_cfg.batch_size
 
-        stage_core_map = {
-            "prefill": self.prefill_core_num[0],
-            "decode": self.decode_core_num[0],
-        }
-
         # ---- Stage 1: export .bc ----
-        stage_inputs = {
-            "prefill": self.text_model.get_leap_input_types_text_model(
-                num_layers, chunk_size, cache_len, batch_size,
-            ),
-            "decode": self.text_model.get_leap_input_types_decode_model(
-                num_layers, self.decode_seq_len, cache_len, batch_size,
-            ),
-            "decode_ar": self.text_model.get_leap_input_types_decode_model(
-                num_layers, 1, cache_len, batch_size,
-            ),
-        }
-        stage_core_map["decode_ar"] = self.ar_core_num[0]
-        if self.fused_pbd_profiles:
-            # The released MTP loop folds the previous accepted prefix into
-            # the next six-token PBD window. These fixed profiles cover an
-            # accepted prefix of one through six tokens without a padded q6
-            # cache-commit graph.
-            for prefix_len in range(1, self.decode_seq_len + 1):
-                q_len = self.decode_seq_len + prefix_len
-                stage_name = f"decode_pbd_q{q_len}"
+        stage_inputs = {}
+        stage_core_map = {}
+        for stage_name in self.graph_set.graphs:
+            if stage_name == "prefill":
                 stage_inputs[stage_name] = (
-                    self.text_model.get_leap_input_types_decode_model(
-                        num_layers, q_len, cache_len, batch_size,
+                    self.text_model.get_leap_input_types_text_model(
+                        num_layers, chunk_size, cache_len, batch_size,
                     )
                 )
-                stage_core_map[stage_name] = self.decode_core_num[0]
-
-            # On MTP -> AR fallback, the newly accepted PBD prefix must be
-            # causally replayed once. q1 is the existing decode_ar graph.
-            for q_len in range(2, self.decode_seq_len):
-                stage_name = f"decode_ar_q{q_len}"
-                stage_inputs[stage_name] = (
-                    self.text_model.get_leap_input_types_decode_model(
-                        num_layers, q_len, cache_len, batch_size,
-                    )
+                stage_core_map[stage_name] = self.prefill_core_num[0]
+                continue
+            if stage_name == "decode":
+                query_len = self.decode_seq_len
+            elif stage_name == "decode_ar":
+                query_len = 1
+            else:
+                query_len = int(stage_name.rsplit("q", 1)[1])
+            stage_inputs[stage_name] = (
+                self.text_model.get_leap_input_types_decode_model(
+                    num_layers, query_len, cache_len, batch_size,
                 )
-                stage_core_map[stage_name] = self.ar_core_num[0]
+            )
+            stage_core_map[stage_name] = (
+                self.ar_core_num[0]
+                if stage_name.startswith("decode_ar")
+                else self.decode_core_num[0]
+            )
         bc_modules = []
         for stage_name, inputs in stage_inputs.items():
             print(f"[LocateAnythingLanguageApi] export {stage_name}...")

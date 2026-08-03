@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("workspace/compiler_probes/language_rope_gather"),
+        default=Path("artifacts/diagnostics/language_rope_gather"),
         help="Empty directory for q=1/q=6 exported BC files and report.json.",
     )
     return parser

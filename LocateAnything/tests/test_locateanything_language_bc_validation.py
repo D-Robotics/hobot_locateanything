@@ -163,6 +163,13 @@ def test_resolve_language_bc_bundle_from_directory_or_any_member(tmp_path):
     }
     assert LANGUAGE.resolve_language_bc_paths(tmp_path, converted=False) == exported
 
+    assert PIPELINE._language_bc_prefill_provider_path(
+        {"decode": converted["decode"]}, converted=True
+    ) == converted["prefill"]
+    assert PIPELINE._language_bc_prefill_provider_path(
+        {"decode": exported["decode"]}, converted=False
+    ) is None
+
 
 def test_language_bc_runner_maps_flattened_inputs_and_uses_float_prefill_cache(
     monkeypatch,
@@ -234,6 +241,100 @@ def test_language_bc_runner_maps_flattened_inputs_and_uses_float_prefill_cache(
     assert len(prefill_function.feeds) == 1
 
 
+def test_language_bc_runner_uses_compiled_int8_prefill_cache(monkeypatch):
+    monkeypatch.setattr(LANGUAGE, "CHUNK_SIZE", 4)
+    monkeypatch.setattr(LANGUAGE, "CACHE_LEN", 8)
+    monkeypatch.setattr(LANGUAGE, "PBD_QUERY_LEN", 2)
+    monkeypatch.setattr(LANGUAGE, "VOCAB_SIZE", 5)
+
+    def inputs(graph: str, q_len: int):
+        descriptors = [
+            _descriptor(f"{graph}_arg0", (1, q_len, 4), np.float16),
+            _descriptor(f"{graph}_arg1", (1, 1, q_len), np.int32),
+            _descriptor(f"{graph}_arg2", (1, q_len, 8), np.float16),
+        ]
+        descriptors.extend(
+            _descriptor(f"{graph}_arg{index + 3}", (1, 8, 1, 2), np.int8)
+            for index in range(4)
+        )
+        return descriptors
+
+    class MultiOutputFunction:
+        def __init__(self, values):
+            self.values = values
+            self.feeds = []
+
+        def feed(self, *, inputs):
+            self.feeds.append(inputs)
+            return {name: value.copy() for name, value in self.values.items()}
+
+    prefill_outputs = [
+        _descriptor("prefill_result0", (1, 1, 5), np.float16),
+        *[
+            _descriptor(f"prefill_result{index + 1}", (1, 4, 1, 2), np.int8)
+            for index in range(4)
+        ],
+    ]
+    prefill_values = {
+        prefill_outputs[0].name: np.ones((1, 1, 5), dtype=np.float16),
+        **{
+            descriptor.name: np.full(
+                descriptor.type.shape, 10 + index, dtype=np.int8
+            )
+            for index, descriptor in enumerate(prefill_outputs[1:])
+        },
+    }
+    prefill_function = MultiOutputFunction(prefill_values)
+    prefill = LANGUAGE.LanguageBCArtifact(
+        graph="prefill",
+        path=Path("language.prefill_convert.bc"),
+        function=prefill_function,
+        inputs=inputs("prefill", 4),
+        outputs=prefill_outputs,
+    )
+
+    decode_output = _descriptor("decode_result0", (1, 2, 5), np.float16)
+    decode_function = MultiOutputFunction(
+        {decode_output.name: np.full((1, 2, 5), 2.0, dtype=np.float16)}
+    )
+    decode = LANGUAGE.LanguageBCArtifact(
+        graph="decode",
+        path=Path("language.decode_convert.bc"),
+        function=decode_function,
+        inputs=inputs("decode", 2),
+        outputs=[decode_output],
+    )
+
+    model = FakeLanguageModel(layers=2, vocab=5).eval()
+    runner = LANGUAGE.LanguageBCRunner(
+        model,
+        torch.eye(4),
+        "cpu",
+        {"decode": decode},
+        cache_provider=prefill,
+    )
+    payload = {
+        "prompt_input_ids": torch.tensor([2, 3]),
+        "prompt_attention_mask": torch.ones(2, dtype=torch.int64),
+        "projected_visual_features": torch.empty((0, 4)),
+        "prediction_token_ids": {"hybrid": torch.tensor([4, 5])},
+        "target_token_ids": torch.tensor([7]),
+    }
+
+    result = runner.run(payload)
+    runner.close()
+
+    assert model.calls == 0
+    assert result.execution["pbd_q6"]["cache_source"] == "compiled_prefill"
+    assert result.timings["compiled_prefill_seconds"] >= 0
+    decode_feed = decode_function.feeds[0]
+    for index in range(4):
+        cache = decode_feed[f"decode_arg{index + 3}"]
+        assert cache.dtype == np.int8
+        assert not np.any(cache[:, :-2])
+        np.testing.assert_array_equal(cache[:, -2:], 10 + index)
+
+
 def test_pbd_metrics_include_each_query_position():
     reference_logits = torch.arange(10, dtype=torch.float32).reshape(1, 2, 5)
     candidate_logits = reference_logits.clone()
@@ -260,6 +361,16 @@ def test_pbd_metrics_include_each_query_position():
         "pbd_q6/logits.token_0",
         "pbd_q6/logits.token_1",
     ]
+
+
+def test_compact_bc_logits_accepts_prefill_last_row_output(monkeypatch):
+    monkeypatch.setattr(LANGUAGE, "VOCAB_SIZE", 5)
+    last_row = np.arange(5, dtype=np.float16).reshape(1, 1, 5)
+
+    compact = LANGUAGE._compact_bc_logits("prefill", last_row, active_len=617)
+
+    assert compact.shape == (1, 5)
+    np.testing.assert_array_equal(compact, last_row[:, 0])
 
 
 def test_logits_comparison_preserves_topk_margin_and_signed_choice_gap():
@@ -406,7 +517,7 @@ def test_language_bc_collection_writes_selected_graph_npz_and_metrics(tmp_path, 
     )
 
     class FakeRunner:
-        def __init__(self, *_args):
+        def __init__(self, *_args, **_kwargs):
             self.closed = False
 
         def describe_artifacts(self):

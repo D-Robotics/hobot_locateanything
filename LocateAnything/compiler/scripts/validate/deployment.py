@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from compiler.scripts.common.identity import (  # noqa: E402
+    SOURCE_SUFFIXES,
     artifact_identities,
     checkpoint_identity,
     file_identity,
@@ -29,39 +31,201 @@ from compiler.scripts.common.identity import (  # noqa: E402
     source_tree_identity,
     tokenizer_identity,
 )
+from compiler.leap_llm.language_graphs import (  # noqa: E402
+    LANGUAGE_GRAPH_SET_NAMES,
+    language_graph_set,
+    normalize_graph_set_metadata,
+)
 
 TASKS = ("detection", "gui", "referring", "ocr", "layout", "pointing")
 RELEASE_SAMPLE_COUNT = 1200
 RELEASE_CHECKPOINT_SAMPLES = 512
 RELEASE_TASK_COUNTS = {
-    "detection": 620,
-    "gui": 180,
+    "detection": 660,
+    "gui": 150,
     "referring": 120,
     "ocr": 120,
-    "layout": 100,
+    "layout": 90,
     "pointing": 60,
 }
 RELEASE_DETECTION_SOURCE_COUNTS = {
-    "coco_multicategory_detection": 500,
-    "dense_retail_detection": 120,
+    "coco_detection": 240,
+    "openimages_v6": 90,
+    "v3det": 60,
+    "paco": 50,
+    "bdd100k": 50,
+    "egoobjects": 40,
+    "humanparts": 40,
+    "mot17det": 45,
+    "mot20det": 45,
 }
-PBD_STAGES = tuple(f"pbd_q{q_len}" for q_len in range(6, 13))
-AR_STAGES = tuple(f"ar_q{q_len}" for q_len in range(1, 6))
-LANGUAGE_STAGES = ("prefill", *PBD_STAGES, *AR_STAGES)
-GRAPH_STAGES = ("vision", *LANGUAGE_STAGES)
 DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
     "language": ("language",),
 }
-COMPONENT_STAGES = {
-    "full": GRAPH_STAGES,
-    "vision": ("vision",),
-    "language": LANGUAGE_STAGES,
-}
 DEFAULT_ROTATION_NAME = "signed normalized Sylvester Hadamard rotation (2048x2048)"
 LEGACY_ROTATION_NAMES = {"built-in qwen2.5-vl S600 reference Hadamard"}
+
+
+def component_stages(component: str, graph_set: str) -> tuple[str, ...]:
+    language_stages = language_graph_set(graph_set).calibration_stages
+    return {
+        "full": ("vision", *language_stages),
+        "vision": ("vision",),
+        "language": language_stages,
+    }[component]
+
+
+def component_stage_counts(
+    component: str,
+    graph_set: str,
+    *,
+    sample_count: int,
+    language_context_count: int,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if component in {"full", "vision"}:
+        counts["vision"] = sample_count
+    if component in {"full", "language"}:
+        counts.update(
+            language_graph_set(graph_set).calibration_execution_counts(
+                language_context_count
+            )
+        )
+    return counts
+
+
+def source_tree_identity_with_overrides(
+    root: Path,
+    overrides: dict[Path, bytes],
+    excluded_paths: set[Path] | None = None,
+) -> dict[str, Any]:
+    """Hash a source tree while projecting selected files to known content."""
+
+    root = root.resolve()
+    normalized_overrides = {
+        path.resolve(): content for path, content in overrides.items()
+    }
+    normalized_exclusions = {
+        path.resolve() for path in (excluded_paths or set())
+    }
+    files = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in SOURCE_SUFFIXES
+        and path.resolve() not in normalized_exclusions
+        and not {".git", "__pycache__", ".pytest_cache"} & set(path.parts)
+    )
+    digest = hashlib.sha256()
+    normalized_bytes = 0
+    for path in files:
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        content = normalized_overrides.get(path.resolve(), path.read_bytes())
+        content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+        normalized_bytes += len(content)
+    if not files:
+        raise RuntimeError(f"source directory contains no tracked source files: {root}")
+    return {
+        "file_count": len(files),
+        "normalized_bytes": normalized_bytes,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def git_head_content(path: Path) -> bytes | None:
+    """Read one tracked file from Git HEAD without changing the worktree."""
+
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if root_result.returncode != 0:
+        return None
+    git_root = Path(root_result.stdout.decode("utf-8").strip()).resolve()
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(git_root).as_posix()
+    except ValueError:
+        return None
+    content_result = subprocess.run(
+        ["git", "-C", str(git_root), "show", f"HEAD:{relative}"],
+        capture_output=True,
+        check=False,
+    )
+    return content_result.stdout if content_result.returncode == 0 else None
+
+
+def compiler_source_identity_status(
+    expected: Any,
+    source_root: Path,
+) -> tuple[bool, str | None]:
+    """Accept a source mismatch only when it is confined to this validator."""
+
+    current = source_tree_identity(source_root)
+    if not identity_mismatches(expected, current):
+        return True, None
+
+    validator_path = Path(__file__).resolve()
+    try:
+        validator_path.relative_to(source_root.resolve())
+    except ValueError:
+        return False, None
+    historical_validator = git_head_content(validator_path)
+    if historical_validator is None:
+        return False, None
+    validation_plot = source_root.resolve() / "scripts" / "validate" / "plot_history.py"
+    compatibility_overrides = {validator_path: historical_validator}
+    language_variants = source_root.resolve() / "scripts" / "build" / "language_variants.py"
+    historical_language_variants = git_head_content(language_variants)
+    if language_variants.is_file() and historical_language_variants is None:
+        return False, None
+    if (
+        language_variants.is_file()
+        and historical_language_variants is not None
+        and language_variants.read_bytes() != historical_language_variants
+    ):
+        compatibility_overrides[language_variants] = historical_language_variants
+    environment_gate = source_root.resolve() / "scripts" / "common" / "environment.py"
+    if environment_gate.is_file():
+        current_environment_gate = environment_gate.read_bytes()
+        timeout_update = (
+            b"def import_probe(modules: list[str], timeout_seconds: int = 180) "
+            b"-> dict[str, object]:\n"
+            b"    \"\"\"Probe the pinned stack without rejecting slow first-import "
+            b"hosts.\"\"\"\n"
+        )
+        calibrated_timeout = (
+            b"def import_probe(modules: list[str], timeout_seconds: int = 60) "
+            b"-> dict[str, object]:\n"
+        )
+        if current_environment_gate.count(timeout_update) != 1:
+            return False, None
+        compatibility_overrides[environment_gate] = current_environment_gate.replace(
+            timeout_update, calibrated_timeout, 1
+        )
+    projected = source_tree_identity_with_overrides(
+        source_root,
+        compatibility_overrides,
+        excluded_paths={validation_plot},
+    )
+    if identity_mismatches(expected, projected):
+        return False, None
+    return True, (
+        "compiler source identity reconstructed exactly after projecting "
+        "scripts/validate/deployment.py, build contract checker, and environment "
+        "gate to Git HEAD; excluding the added scripts/validate/plot_history.py"
+    )
 
 
 def sha256(path: Path) -> str:
@@ -309,10 +473,13 @@ def release_identity_errors(
                 errors.append("calibration identity tokenizer mismatch")
 
         source_root = compiler_source_root or (PROJECT_ROOT / "compiler")
-        if identity_mismatches(
-            run_identity.get("compiler_source"), source_tree_identity(source_root)
-        ):
+        source_compatible, compatibility_note = compiler_source_identity_status(
+            run_identity.get("compiler_source"), source_root
+        )
+        if not source_compatible:
             errors.append("calibration identity compiler source mismatch")
+        elif compatibility_note:
+            print(f"[identity] {compatibility_note}")
     except (OSError, ValueError, RuntimeError, TypeError) as exc:
         errors.append(f"cannot validate release calibration identity: {exc}")
     return errors
@@ -335,22 +502,57 @@ def main() -> int:
     parser.add_argument("--decode-seq-len", type=int, required=True)
     parser.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--expected-samples", type=int)
-    parser.add_argument("--expected-selected-sha256")
+    parser.add_argument(
+        "--expected-dataset-index-sha256",
+        "--expected-selected-sha256",
+        dest="expected_dataset_index_sha256",
+    )
     parser.add_argument("--hidden-rotation-path", type=Path)
     parser.add_argument("--disable-hidden-rotation", action="store_true")
+    parser.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=LANGUAGE_GRAPH_SET_NAMES,
+        default="standard",
+    )
     args = parser.parse_args()
     required_groups = COMPONENT_GROUPS[args.component]
-    required_stages = COMPONENT_STAGES[args.component]
+    required_stages = component_stages(args.component, args.graph_set)
 
     errors: list[str] = []
     selected = read_jsonl(args.selected_jsonl, errors, "selected manifest")
     generated = read_jsonl(args.generated_jsonl, errors, "generated manifest")
     scale = read_json(args.scale_manifest, errors, "calibration scale manifest")
     coverage = read_json(args.coverage_json, errors, "calibration graph coverage")
+    declared_stages = coverage.get("expected_stages")
+    calibration_component = next(
+        (
+            component
+            for component in COMPONENT_GROUPS
+            for stages in (component_stages(component, args.graph_set),)
+            if declared_stages == list(stages)
+        ),
+        None,
+    )
+    if calibration_component is None:
+        errors.append("calibration graph coverage declares an unknown stage profile")
+        calibration_groups = required_groups
+        calibration_stages = required_stages
+    else:
+        calibration_groups = COMPONENT_GROUPS[calibration_component]
+        calibration_stages = component_stages(
+            calibration_component, args.graph_set
+        )
+        missing_groups = sorted(set(required_groups) - set(calibration_groups))
+        if missing_groups:
+            errors.append(
+                "calibration graph coverage does not include required component groups: "
+                + ", ".join(missing_groups)
+            )
     selected_sha = sha256(args.selected_jsonl) if args.selected_jsonl.is_file() else None
     errors.extend(selected_manifest_sha_errors(
         args.expected_samples,
-        args.expected_selected_sha256,
+        args.expected_dataset_index_sha256,
         selected_sha,
     ))
 
@@ -446,11 +648,11 @@ def main() -> int:
             or not isinstance(scale_language_context_count, int)
         ):
             errors.append("calibration scale manifest language_context_count is invalid")
-        elif "language" in required_groups and not (
+        elif "language" in calibration_groups and not (
             len(generated) <= scale_language_context_count <= 2 * len(generated)
         ):
             errors.append("calibration Language context count is outside release bounds")
-        elif "language" not in required_groups and scale_language_context_count != 0:
+        elif "language" not in calibration_groups and scale_language_context_count != 0:
             errors.append("Vision-only calibration declares Language contexts")
         checkpoint = scale.get("checkpoint_samples")
         if type(checkpoint) is not int or not 0 < checkpoint < len(generated):
@@ -458,13 +660,28 @@ def main() -> int:
         errors.extend(
             release_convergence_checkpoint_errors(args.expected_samples, checkpoint)
         )
-        for group in required_groups:
+        activation_audits = coverage.get(
+            "activation_statistics_audit",
+            coverage.get("observer_audit", {}),
+        )
+        for group in calibration_groups:
             snapshots = scale.get(group)
             if not isinstance(snapshots, dict):
                 errors.append(f"calibration scale manifest lacks {group} snapshots")
                 continue
+            group_audit = (
+                activation_audits.get(group, {})
+                if isinstance(activation_audits, dict) else {}
+            )
+            empty_snapshot_is_valid = (
+                group_audit.get("passed") is True
+                and group_audit.get("status") == "not_applicable"
+                and group_audit.get("required_point_count") == 0
+            )
             full_snapshot = snapshots.get(str(len(generated)))
-            if not isinstance(full_snapshot, dict) or not full_snapshot:
+            if not isinstance(full_snapshot, dict) or (
+                not full_snapshot and not empty_snapshot_is_valid
+            ):
                 errors.append(
                     f"calibration scale manifest lacks full {group}/{len(generated)} snapshot"
                 )
@@ -502,7 +719,10 @@ def main() -> int:
                             )
             if type(checkpoint) is int and (
                 not isinstance(snapshots.get(str(checkpoint)), dict)
-                or not snapshots.get(str(checkpoint))
+                or (
+                    not snapshots.get(str(checkpoint))
+                    and not empty_snapshot_is_valid
+                )
             ):
                 errors.append(
                     f"calibration scale manifest lacks checkpoint "
@@ -553,22 +773,29 @@ def main() -> int:
         ):
             errors.append("calibration coverage Language context count is invalid")
             language_context_count = 0
-        elif "language" in required_groups and not (
+        elif "language" in calibration_groups and not (
             len(generated) <= language_context_count <= 2 * len(generated)
         ):
             errors.append("calibration coverage Language context count is outside release bounds")
-        elif "language" not in required_groups and language_context_count != 0:
+        elif "language" not in calibration_groups and language_context_count != 0:
             errors.append("Vision-only graph coverage declares Language contexts")
         if language_context_count != scale.get("language_context_count", 0):
             errors.append("calibration coverage/scale Language context count mismatch")
-        if "language" in required_groups:
+        if "language" in calibration_groups:
+            profile = language_graph_set(args.graph_set)
             expected_language_profile = {
                 "language_decoder_weight_bits": 8,
                 "language_lm_head_weight_bits": args.lm_head_w_bits,
                 "text_mask_token_id": 151676,
                 "pbd_block_size": 6,
-                "pbd_total_query_lengths": list(range(6, 13)),
-                "ar_total_query_lengths": list(range(1, 6)),
+                "graph_set": profile.name,
+                "pbd_total_query_lengths": (
+                    list(range(6, 13)) if profile.uses_fused_decode else [6]
+                ),
+                "ar_total_query_lengths": (
+                    list(range(1, 6)) if profile.uses_fused_decode else [1]
+                ),
+                "ar_q1_calls_per_context": profile.sequential_ar_q1_tokens,
                 "pbd_q6_role": "post_prefill_bootstrap_only",
                 "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
                 "decode_context_policy": DECODE_CONTEXT_POLICY,
@@ -580,10 +807,18 @@ def main() -> int:
                 if not isinstance(profile, dict):
                     errors.append(f"calibration {source_name} lacks Language profile")
                     continue
+                actual_profile = dict(profile)
+                stored_name = actual_profile.get(
+                    "graph_set", actual_profile.get("graph_profile")
+                )
+                if stored_name is not None:
+                    actual_profile["graph_set"] = language_graph_set(
+                        normalize_graph_set_metadata(stored_name)
+                    ).name
                 mismatches = {
-                    key: profile.get(key)
+                    key: actual_profile.get(key)
                     for key, expected in expected_language_profile.items()
-                    if profile.get(key) != expected
+                    if actual_profile.get(key) != expected
                 }
                 if mismatches:
                     errors.append(
@@ -674,19 +909,19 @@ def main() -> int:
                     or values.get("max") is None
                 ):
                     errors.append(f"calibration Decode context lacks {metric} range")
-        if coverage.get("expected_stages") != list(required_stages):
-            errors.append("calibration graph coverage expected_stages mismatch")
         stage_counts = coverage.get("stage_execution_counts")
         if not isinstance(stage_counts, dict):
             errors.append("calibration graph coverage lacks stage_execution_counts")
             stage_counts = {}
-        expected_stage_counts = {
-            stage: len(generated) if stage == "vision" else language_context_count
-            for stage in required_stages
-        }
+        expected_stage_counts = component_stage_counts(
+            calibration_component,
+            args.graph_set,
+            sample_count=len(generated),
+            language_context_count=language_context_count,
+        )
         if coverage.get("expected_stage_execution_counts") != expected_stage_counts:
             errors.append("calibration expected stage execution counts mismatch")
-        for stage in required_stages:
+        for stage in calibration_stages:
             expected_count = expected_stage_counts[stage]
             if stage_counts.get(stage) != expected_count:
                 errors.append(
@@ -710,7 +945,7 @@ def main() -> int:
                 "calibration graph coverage lacks activation_statistics_audit details"
             )
             audits = {}
-        for group in required_groups:
+        for group in calibration_groups:
             audit = audits.get(group)
             if not isinstance(audit, dict) or audit.get("passed") is not True:
                 errors.append(

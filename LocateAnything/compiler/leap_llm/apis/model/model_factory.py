@@ -92,7 +92,7 @@ def _build_locateanything_lm_3b(args):
         prefill_core_num=args.prefill_core_num,
         decode_core_num=args.decode_core_num,
         ar_core_num=args.ar_core_num,
-        fused_pbd_profiles=args.fused_pbd_profiles,
+        graph_set=args.graph_set,
         march=args.march,
         hidden_rotation_path=args.hidden_rotation_path,
         apply_hidden_rotation=not args.disable_hidden_rotation,

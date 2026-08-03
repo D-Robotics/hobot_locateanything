@@ -17,8 +17,9 @@ W_BITS="${W_BITS:-8}"
 # Source images are letterboxed by the calibration/runtime preprocessor.
 IMAGE_WIDTH="${IMAGE_WIDTH:-672}"
 IMAGE_HEIGHT="${IMAGE_HEIGHT:-672}"
-EXPECTED_SAMPLES=1200
-EXPECTED_SELECTED_MANIFEST_SHA256="22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
+EXPECTED_DATASET_INDEX_SHA256="${EXPECTED_DATASET_INDEX_SHA256:-521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b}"
+LANGUAGE_GRAPH_SET="${LANGUAGE_GRAPH_SET:-standard}"
 DEVICE="${DEVICE:-cuda:0}"
 VIT_CORE_NUM="${VIT_CORE_NUM:-4}"
 JOBS="${JOBS:-16}"
@@ -31,15 +32,15 @@ DETACH="${DETACH:-0}"
 RESUME="${RESUME:-0}"
 
 BUILD_ID="${BUILD_ID:-release}"
-INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/workspace/models/LocateAnything-3B}"
-OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/workspace/builds/$BUILD_ID/vision}"
-CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration manifest}"
-GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration manifest}"
+INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/artifacts/models/LocateAnything-3B}"
+OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/artifacts/builds/$BUILD_ID/vision}"
+CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration index}"
+GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration index}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
 CALIBRATION_COVERAGE_JSON="${CALIBRATION_COVERAGE_JSON:-}"
 CONDA_ENV="${CONDA_ENV:-oellm_clean}"
 
-LOG_DIR="${LOG_DIR:-$REPO_ROOT/workspace/builds/$BUILD_ID/logs}"
+LOG_DIR="${LOG_DIR:-$REPO_ROOT/artifacts/logs/$BUILD_ID}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/vision.log}"
 ENVIRONMENT_PATH="${ENVIRONMENT_PATH:-$LOG_DIR/vision_environment.json}"
 ENVIRONMENT_SCRIPT="${ENVIRONMENT_SCRIPT:-$REPO_ROOT/compiler/scripts/common/environment.py}"
@@ -115,7 +116,7 @@ fi
 
 VALIDATION_ARGS=(
   --expected-samples "$EXPECTED_SAMPLES"
-  --expected-selected-sha256 "$EXPECTED_SELECTED_MANIFEST_SHA256"
+  --expected-dataset-index-sha256 "$EXPECTED_DATASET_INDEX_SHA256"
 )
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
@@ -133,6 +134,7 @@ python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
   --coverage-json "$CALIBRATION_COVERAGE_JSON" \
   --image-width "$IMAGE_WIDTH" --image-height "$IMAGE_HEIGHT" \
   --chunk-size 1024 --cache-len 4096 --decode-seq-len 6 \
+  --graph-set "$LANGUAGE_GRAPH_SET" \
   "${VALIDATION_ARGS[@]}"
 
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"

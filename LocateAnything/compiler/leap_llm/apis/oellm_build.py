@@ -12,6 +12,7 @@ from leap_llm.apis.model.model_factory import (
     get_supported_marches,
     get_supported_models,
 )
+from leap_llm.language_graphs import LANGUAGE_GRAPH_SET_NAMES
 
 
 DEFAULT_COMPILE_KWARGS = {
@@ -135,10 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hidden_rotation_path", type=validated_path(), default=None)
     parser.add_argument(
-        "--fused_pbd_profiles",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Compile the complete LocateAnything fused-PBD graph family (default: enabled).",
+        "--graph-set",
+        dest="graph_set",
+        choices=LANGUAGE_GRAPH_SET_NAMES,
+        default="standard",
+        help="LocateAnything Language graph set.",
     )
     parser.add_argument("--disable_hidden_rotation", action="store_true")
     parser.add_argument("--export_only", action="store_true")
@@ -212,12 +214,6 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
                 "LocateAnything Language release requires "
                 "--w_bits 8 --lm_head_w_bits 8"
             )
-        if not args.fused_pbd_profiles:
-            parser.error(
-                "LocateAnything Language release requires --fused_pbd_profiles"
-            )
-
-
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()

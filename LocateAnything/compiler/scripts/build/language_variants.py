@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Convert and compile LocateAnything Language graph-family variants.
+"""Convert and compile LocateAnything Language graph sets.
 
-Legacy inputs contain Prefill, PBD q=6, and AR q=1. Fused-PBD inputs also
-contain PBD q=7..12 and causal AR bridge q=2..5 profiles. Shared PBD graphs are
-compiled once; the AR graph family is compiled for each requested core count.
+The standard set contains Prefill, PBD q=6, and AR q=1. The fused-decode set
+also contains PBD q=7..12 and causal AR bridge q=2..5 graphs. Shared PBD graphs
+are compiled once; the AR graph family is compiled for each requested core count.
 """
 
 from __future__ import annotations
@@ -19,6 +19,11 @@ from hbdk4.compiler import load, save
 from hbdk4.compiler.hbm import Hbm, Hbo
 
 from leap_llm.nn.utils import Model
+from leap_llm.language_graphs import (
+    LANGUAGE_GRAPH_SET_NAMES,
+    LANGUAGE_GRAPH_SETS,
+    language_graph_set,
+)
 
 
 BASE_EXPECTED = {
@@ -26,10 +31,11 @@ BASE_EXPECTED = {
     "decode": ((1, 6, 152681), (1, 6, 2, 128)),
     "decode_ar": ((1, 1, 152681), (1, 1, 2, 128)),
 }
-FUSED_PBD_STAGES = tuple(f"decode_pbd_q{q_len}" for q_len in range(7, 13))
-FUSED_AR_STAGES = tuple(f"decode_ar_q{q_len}" for q_len in range(2, 6))
-FUSED_STAGES = FUSED_PBD_STAGES + FUSED_AR_STAGES
-KNOWN_STAGES = set(BASE_EXPECTED) | set(FUSED_STAGES)
+KNOWN_STAGES = {
+    graph
+    for graph_set in LANGUAGE_GRAPH_SETS.values()
+    for graph in graph_set.graphs
+}
 VOCAB_SIZE = 152681
 HIDDEN_SIZE = 2048
 NUM_LAYERS = 36
@@ -193,8 +199,9 @@ def discover_bc(
     bc_dir: Path,
     *,
     artifact_prefix: str | None = None,
-    require_fused: bool = False,
+    graph_set: str = "standard",
 ) -> dict[str, Path]:
+    expected = set(language_graph_set(graph_set).graphs)
     discovered: dict[str, Path] = {}
     if artifact_prefix:
         candidates = [
@@ -227,21 +234,13 @@ def discover_bc(
             f"inputs=75 outputs=73",
             flush=True,
         )
-    missing = sorted(set(BASE_EXPECTED) - set(discovered))
+    missing = sorted(expected - set(discovered))
     if missing:
         raise RuntimeError(f"missing BC graphs in {bc_dir}: {missing}")
-    fused_present = set(discovered) & set(FUSED_STAGES)
-    if fused_present and fused_present != set(FUSED_STAGES):
-        missing_fused = sorted(set(FUSED_STAGES) - fused_present)
+    unexpected = sorted(set(discovered) - expected)
+    if unexpected:
         raise RuntimeError(
-            "fused PBD graph family is incomplete: "
-            f"present={sorted(fused_present)} missing={missing_fused}"
-        )
-    if require_fused and fused_present != set(FUSED_STAGES):
-        missing_fused = sorted(set(FUSED_STAGES) - fused_present)
-        raise RuntimeError(
-            "release Language BC requires the complete fused graph family; "
-            f"missing={missing_fused}"
+            f"{graph_set} Language BC contains unexpected graphs: {unexpected}"
         )
     return discovered
 
@@ -272,7 +271,7 @@ def validate_or_create_manifest(
         "decode_core_num": args.decode_core_num,
         "ar_core_nums": args.ar_core_nums,
         "jobs": args.jobs,
-        "require_fused": args.require_fused,
+        "graph_set": args.graph_set,
         "hbm_path": str(args.hbm_path) if args.hbm_path else None,
     }
     if path.is_file():
@@ -296,7 +295,7 @@ def valid_function(path: Path, expected_name: str) -> bool:
         functions = list(module.functions)
         if len(functions) != 1:
             return False
-        validate_graph_contract(functions[0], expected_name, cache_dtype="float32")
+        validate_graph_contract(functions[0], expected_name, cache_dtype="int8")
         return True
     except Exception:
         return False
@@ -318,10 +317,9 @@ def convert_stage(source: Path, destination: Path, name: str,
     if str(function.name) != name:
         raise RuntimeError(f"converted function is {function.name}, expected {name}")
     function.remove_io_op(["Dequantize", "Quantize"])
-    # remove_io_op removes boundary Quantize/Dequantize nodes but does not
-    # change the saved Converted BC interface: KV inputs and updates remain
-    # float32. HBDK lowers that boundary to int8 in the linked HBM.
-    validate_graph_contract(function, name, cache_dtype="float32")
+    # Removing the boundary quantization wrappers exposes the integer KV cache
+    # contract consumed by HBO compilation and the linked HBM.
+    validate_graph_contract(function, name, cache_dtype="int8")
     temporary = destination.with_name(destination.stem + ".partial.bc")
     save(converted, str(temporary))
     os.replace(temporary, destination)
@@ -349,7 +347,7 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
     functions = list(module.functions)
     if len(functions) != 1:
         raise RuntimeError(f"{converted_bc} contains {len(functions)} functions")
-    validate_graph_contract(functions[0], name, cache_dtype="float32")
+    validate_graph_contract(functions[0], name, cache_dtype="int8")
     temporary = destination.with_name(destination.stem + ".partial.hbo")
     kwargs = {
         "march": args.march,
@@ -430,7 +428,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--convert_only", action="store_true")
     parser.add_argument("--check_only", action="store_true")
-    parser.add_argument("--require_fused", action="store_true")
+    parser.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=LANGUAGE_GRAPH_SET_NAMES,
+        default="standard",
+    )
     parser.add_argument(
         "--hbm_path", type=Path,
         help="Exact release HBM path; also selects its matching BC prefix.",
@@ -470,7 +473,7 @@ def main() -> int:
     source_bc = discover_bc(
         args.bc_dir,
         artifact_prefix=artifact_prefix,
-        require_fused=args.require_fused,
+        graph_set=args.graph_set,
     )
     if args.embedding_path:
         if not args.embedding_path.is_file():
@@ -498,12 +501,7 @@ def main() -> int:
         )
         args.resume = False
 
-    stage_order = [
-        name
-        for name in ("prefill", "decode", "decode_ar",
-                     *FUSED_PBD_STAGES, *FUSED_AR_STAGES)
-        if name in source_bc
-    ]
+    stage_order = list(language_graph_set(args.graph_set).graphs)
     if args.hbm_path:
         converted = {
             name: args.hbm_path.with_suffix(f".{name}_convert.bc")
@@ -529,7 +527,10 @@ def main() -> int:
         args.prefill_core_num, args,
     )
     shared_hbos = {"prefill": prefill_hbo}
-    for name in ("decode", *FUSED_PBD_STAGES):
+    for name in (
+        graph for graph in stage_order
+        if graph == "decode" or graph.startswith("decode_pbd_q")
+    ):
         if name not in converted:
             continue
         hbo = (
@@ -541,7 +542,9 @@ def main() -> int:
         shared_hbos[name] = hbo
     for ar_core in args.ar_core_nums:
         ar_hbos: dict[str, Path] = {}
-        for name in ("decode_ar", *FUSED_AR_STAGES):
+        for name in (
+            graph for graph in stage_order if graph.startswith("decode_ar")
+        ):
             if name not in converted:
                 continue
             ar_hbo = (
@@ -551,12 +554,12 @@ def main() -> int:
             )
             compile_stage(converted[name], ar_hbo, name, ar_core, args)
             ar_hbos[name] = ar_hbo
-        fused_suffix = "_fusedpbd" if set(FUSED_STAGES) <= set(source_bc) else ""
+        graph_set_suffix = "_fused_decode" if args.graph_set == "fused_decode" else ""
         hbm = args.hbm_path or args.output_dir / (
             "LocateAnything-3B_language_chunk_1024_cache_4096_"
             "decoder_w8_lmhead_w8_nash-p_"
             f"prefill{args.prefill_core_num}_pbd{args.decode_core_num}_ar{ar_core}"
-            f"{fused_suffix}.hbm"
+            f"{graph_set_suffix}.hbm"
         )
         all_hbos = {**shared_hbos, **ar_hbos}
         link_variant(

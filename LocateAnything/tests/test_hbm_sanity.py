@@ -19,7 +19,7 @@ def tensor(name: str, shape: tuple[int, ...], dtype: str = "float16"):
     return sanity.TensorDescriptor(name, shape, dtype)
 
 
-def release_graphs(profile=None):
+def release_graphs(profile=None, graph_set="standard"):
     profile = profile or sanity.ExpectedProfile()
     cache = (1, profile.cache_length, profile.cache_groups, profile.head_dim)
     graphs = {
@@ -29,12 +29,7 @@ def release_graphs(profile=None):
             (tensor("features", (1, profile.visual_tokens, profile.hidden_size)),),
         )
     }
-    query_lengths = {
-        **sanity.LANGUAGE_GRAPH_QUERIES,
-        "prefill": profile.prefill_query,
-        "decode": profile.pbd_query,
-        "decode_ar": profile.ar_query,
-    }
+    query_lengths = sanity.language_graph_queries(graph_set, profile)
     for name, q_len in query_lengths.items():
         inputs = [
             tensor("embeddings", (1, q_len, profile.hidden_size)),
@@ -53,7 +48,11 @@ def release_graphs(profile=None):
 
 
 def test_release_descriptor_contract_passes_and_records_derived_geometry():
-    summary = sanity.validate_descriptor_contract(release_graphs(), sanity.ExpectedProfile())
+    summary = sanity.validate_descriptor_contract(
+        release_graphs(graph_set="fused_decode"),
+        sanity.ExpectedProfile(),
+        graph_set="fused_decode",
+    )
     assert summary["derived"] == {
         "patch_vector": 588,
         "patch_tokens": 2304,
@@ -67,6 +66,26 @@ def test_release_descriptor_contract_passes_and_records_derived_geometry():
     assert summary["language_graphs"]["decode_ar"]["query_length"] == 1
     assert summary["language_graphs"]["decode_pbd_q12"]["query_length"] == 12
     assert summary["language_graphs"]["decode_ar_q5"]["query_length"] == 5
+
+
+def test_legacy_descriptor_contract_accepts_only_three_language_graphs():
+    summary = sanity.validate_descriptor_contract(
+        release_graphs(graph_set="standard"),
+        sanity.ExpectedProfile(),
+        graph_set="standard",
+    )
+    assert tuple(summary["language_graphs"]) == ("prefill", "decode", "decode_ar")
+
+
+def test_legacy_descriptor_contract_rejects_fused_graphs():
+    graphs = release_graphs(graph_set="standard")
+    graphs["decode_pbd_q7"] = release_graphs(graph_set="fused_decode")["decode_pbd_q7"]
+    with pytest.raises(ValueError, match=r"unexpected graph\(s\): decode_pbd_q7"):
+        sanity.validate_descriptor_contract(
+            graphs,
+            sanity.ExpectedProfile(),
+            graph_set="standard",
+        )
 
 
 @pytest.mark.parametrize(
@@ -180,5 +199,6 @@ def test_cli_defaults_are_the_v5_release_profile():
     ])
     profile = sanity._profile_from_args(args)
     assert args.mode == "descriptor-only"
+    assert args.graph_set == "standard"
     assert (profile.image_size, profile.prefill_query, profile.cache_length) == (672, 1024, 4096)
     assert (profile.pbd_query, profile.ar_query) == (6, 1)

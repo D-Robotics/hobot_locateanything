@@ -36,17 +36,15 @@ def test_cmake_builds_board_runner():
     cmake = (ROOT / "deploy/CMakeLists.txt").read_text(encoding="utf-8")
     assert "add_executable(vision_hbm_runner" in cmake
     assert "target_link_libraries(vision_hbm_runner PRIVATE locateanything_runtime)" in cmake
+    assert "add_executable(language_graph_set_test example/language_graph_set_test.cpp)" in cmake
     assert "vision_dummy_test" not in cmake
     assert "prefill_verify_v3" not in cmake
     assert "add_executable(prefill_verify" not in cmake
     assert "add_executable(layout_probe" not in cmake
 
 
-def test_release_runtime_defaults_do_not_encode_historical_build_directories():
+def test_release_runtime_code_does_not_encode_historical_build_directories():
     runtime = (ROOT / "deploy/run_locateanything.py").read_text(encoding="utf-8")
-    assert 'workspace/artifacts/release' in runtime
-    assert "LocateAnything-3B_vision.hbm" in runtime
-    assert "LocateAnything-3B_language.hbm" in runtime
     assert "_820" not in runtime
     assert "nash-p_w4" not in runtime
 
@@ -56,6 +54,20 @@ def test_runtime_config_matches_release_contract():
     assert (config["image_width"], config["image_height"]) == (672, 672)
     assert config["vocab_size"] == 152681
     assert config["embed_dim"] == 2048
+    assert config["patch_size"] == 14
+    assert config["visual_tokens"] == 576
+    assert config["prefill_chunk"] == 1024
+    assert config["cache_len"] == 4096
+    assert config["pbd_query_len"] == 6
+    assert config["ar_query_len"] == 1
+    assert config["default_generation_mode"] == "hybrid"
+    assert config["default_max_new_tokens"] == 2048
+    assert config["default_nms_iou"] == 0.9
+    assert config["l2m_sizes"] == "6:6:6:6"
+    assert config["telemetry_interval_ms"] == 1000
+    assert config["runner_startup_timeout_seconds"] == 120
+    assert config["language_graph_set"] == "standard"
+    assert config["model_dir"] == "artifacts/releases/current/"
     assert config["vit_model_file"] == "LocateAnything-3B_vision.hbm"
     assert config["llm_model_file"] == "LocateAnything-3B_language.hbm"
 

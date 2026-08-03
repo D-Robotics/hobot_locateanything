@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT=${REPO_ROOT:-"$(cd "$(dirname "$0")/../../.." && pwd)"}
 PYTHON_BIN=${PYTHON_BIN:-python3}
 PREPARE_SCRIPT=${PREPARE_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/prepare.py"}
-SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the selected bundle manifest}
+SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the selected dataset index}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to a new or resume-compatible output directory}
 UPSTREAM_REPO=${UPSTREAM_REPO:?set UPSTREAM_REPO to the Embodied source directory}
 MODEL_PATH=${MODEL_PATH:?set MODEL_PATH to the LocateAnything-3B checkpoint}
@@ -34,13 +34,13 @@ RESUME=${RESUME:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/workspace/logs"
+mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/artifacts/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_prepare"}
-LOG_PATH=${LOG_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.log"}
-EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.exit.txt"}
+LOG_PATH=${LOG_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.log"}
+EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/prepare_job_metadata.json"}
-PID_PATH=${PID_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.pid"}
-LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.launcher.log"}
+PID_PATH=${PID_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.pid"}
+LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.launcher.log"}
 ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/prepare_environment.json"}
 ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 

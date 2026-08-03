@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -26,7 +28,6 @@ IMAGE_TOKENS = (GRID_SIZE * GRID_SIZE) // 4
 IMAGE_TOKEN = "<IMG_CONTEXT>"
 
 TASK_COMMANDS = (
-    "/box <task command>              Save an annotated image",
     "/detect <category>[,<category>...]  Object Detection",
     "/ground <phrase>                 Referring Comprehension",
     "/gui <element>                   GUI Grounding (point)",
@@ -39,20 +40,383 @@ TASK_COMMANDS = (
 )
 
 BOX_COMMAND = "/box"
-DEFAULT_GENERATION_MODE = "hybrid"
+RUNTIME_VERSION = "0.5.0"
 DEFAULT_NMS_IOU = 0.90
-
-ARTIFACT_ROOT = Path(os.environ.get("LA_ARTIFACT_ROOT", "workspace/artifacts/release"))
-VISION_MODEL = str(
-    ARTIFACT_ROOT / "LocateAnything-3B_vision.hbm"
+S600_BPU_RATIO_RE = re.compile(
+    r"\bbpu(?P<core>[0-3])\s+ratio\s*[:=]\s*(?P<value>\d+(?:\.\d+)?)\s*%?",
+    re.IGNORECASE,
 )
-LANGUAGE_MODEL = str(ARTIFACT_ROOT / "LocateAnything-3B_language.hbm")
-EMBEDDINGS = str(ARTIFACT_ROOT / "LocateAnything-3B_embed_tokens.bin")
+S600_DIRECT_BPU_TEMPERATURE_RE = re.compile(
+    r"\bpvt_bpu_[^:]+:\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?:\(C\)|C\b)",
+    re.IGNORECASE,
+)
+S600_SECTION_VALUE_RE = re.compile(
+    r"^(?P<label>[A-Za-z0-9_]+)\s*:\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>m?C)\b",
+    re.IGNORECASE,
+)
 
 
-def resolve_repo_path(repo_root: Path, value: str) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else repo_root / path
+@dataclass(frozen=True)
+class RuntimeConfig:
+    source: Path
+    layout_root: Path
+    model_type: str
+    vision_model: Path
+    language_model: Path
+    embeddings: Path
+    tokenizer_dir: Path
+    vision_runner: Path
+    language_runner: Path
+    image_width: int
+    image_height: int
+    patch_size: int
+    visual_tokens: int
+    vocab_size: int
+    embed_dim: int
+    prefill_chunk: int
+    cache_len: int
+    pbd_query_len: int
+    ar_query_len: int
+    language_graph_set: str
+    default_generation_mode: str
+    default_max_new_tokens: int
+    default_nms_iou: float
+    l2m_sizes: str
+    telemetry_interval_seconds: float
+    runner_startup_timeout_seconds: float
+    bpu_cores: tuple[int, ...]
+
+    def specification(self) -> dict[str, object]:
+        return {
+            "image_size": [self.image_width, self.image_height],
+            "patch_size": self.patch_size,
+            "visual_tokens": self.visual_tokens,
+            "vocab_size": self.vocab_size,
+            "embed_dim": self.embed_dim,
+            "prefill_chunk": self.prefill_chunk,
+            "cache_len": self.cache_len,
+            "pbd_query_len": self.pbd_query_len,
+            "ar_query_len": self.ar_query_len,
+            "language_graph_set": self.language_graph_set,
+            "bpu_cores": list(self.bpu_cores),
+            "l2m_sizes": self.l2m_sizes,
+            "runner_startup_timeout_seconds": self.runner_startup_timeout_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class PredictionPaths:
+    root: Path
+    prediction: Path
+    annotated_image: Path
+    timings: Path
+    runtime_log: Path
+
+
+def _safe_name(value: str, fallback: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return normalized or fallback
+
+
+def create_prediction_paths(
+    layout_root: Path,
+    image_path: Path,
+    output_dir: Path | None = None,
+    *,
+    now: datetime | None = None,
+    unique_id: str | None = None,
+) -> PredictionPaths:
+    """Create one self-contained output directory for a prediction request."""
+
+    if output_dir is None:
+        timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+        image_name = _safe_name(image_path.stem, "image")
+        suffix = _safe_name(unique_id or uuid.uuid4().hex[:8], "run")
+        root = layout_root / "artifacts" / "runs" / "predict"
+        output_dir = root / f"{timestamp}_{image_name}_{suffix}"
+    output_dir = output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = output_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return PredictionPaths(
+        root=output_dir,
+        prediction=output_dir / "prediction.json",
+        annotated_image=output_dir / "annotated.png",
+        timings=output_dir / "timings.json",
+        runtime_log=log_dir / "runtime.log",
+    )
+
+
+def print_stage(index: int, name: str, elapsed_seconds: float | None = None) -> None:
+    if elapsed_seconds is None:
+        print(f"[{index}/3] {name}...", flush=True)
+    else:
+        print(f"[{index}/3] {name}: {elapsed_seconds * 1000.0:.1f} ms", flush=True)
+
+
+def _configured_path(repo_root: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (repo_root / path).resolve()
+
+
+def _environment_path(name: str, default: Path, layout_root: Path) -> Path:
+    value = os.environ.get(name)
+    return _configured_path(layout_root, value) if value else default.resolve()
+
+
+def _runtime_layout_root(runtime_dir: Path, source: Path) -> Path:
+    candidate = source.parent.parent
+    if source.parent.name == "config" and (candidate / "deploy").is_dir():
+        return candidate.resolve()
+    return runtime_dir.parent.resolve()
+
+
+def _reject_non_finite_json(value: str):
+    raise ValueError(f"non-finite JSON value: {value}")
+
+
+def discover_runtime_config(
+    runtime_dir: Path,
+    explicit: Path | None = None,
+) -> Path:
+    if explicit is not None:
+        path = explicit.expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+    environment = os.environ.get("LA_RUNTIME_CONFIG")
+    if environment:
+        path = Path(environment).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+    candidates = [
+        runtime_dir.parent / "config" / "locateanything_3b_config.json",
+        runtime_dir / "runtime_config.json",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return candidate.resolve()
+    searched = ", ".join(str(path) for path in candidates if path is not None)
+    raise FileNotFoundError(f"runtime config not found; searched: {searched}")
+
+
+def load_runtime_config(
+    config_path: Path | None = None,
+    runtime_dir: Path | None = None,
+) -> RuntimeConfig:
+    runtime_dir = (runtime_dir or Path(__file__).resolve().parent).resolve()
+    source = discover_runtime_config(runtime_dir, config_path)
+    layout_root = _runtime_layout_root(runtime_dir, source)
+    try:
+        raw = json.loads(
+            source.read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite_json,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"invalid runtime config {source}: {error}") from error
+    if not isinstance(raw, dict):
+        raise ValueError(f"runtime config must be a JSON object: {source}")
+
+    required_keys = {
+        "model_type", "model_dir", "vit_model_file", "llm_model_file",
+        "embed_weight_file_path", "vocabulary_path", "image_width",
+        "image_height", "patch_size", "visual_tokens", "vocab_size",
+        "embed_dim", "prefill_chunk", "cache_len", "pbd_query_len",
+        "ar_query_len", "language_graph_set", "default_generation_mode", "default_max_new_tokens",
+        "default_nms_iou", "l2m_sizes", "telemetry_interval_ms",
+        "runner_startup_timeout_seconds",
+        "vit_bpu_core", "prefill_bpu_core", "decode_bpu_core",
+    }
+    missing_keys = sorted(required_keys.difference(raw))
+    if missing_keys:
+        raise ValueError(
+            f"runtime config is missing required fields: {', '.join(missing_keys)}"
+        )
+
+    fixed_specification = {
+        "model_type": "LocateAnything-3B",
+        "image_width": IMAGE_SIZE,
+        "image_height": IMAGE_SIZE,
+        "patch_size": PATCH_SIZE,
+        "visual_tokens": IMAGE_TOKENS,
+        "vocab_size": 152681,
+        "embed_dim": 2048,
+        "prefill_chunk": 1024,
+        "cache_len": 4096,
+        "pbd_query_len": 6,
+        "ar_query_len": 1,
+        "default_generation_mode": "hybrid",
+        "l2m_sizes": "6:6:6:6",
+    }
+    for key, expected in fixed_specification.items():
+        value = raw[key]
+        if value != expected:
+            raise ValueError(f"runtime config {key}={value!r}; expected {expected!r}")
+
+    generation_mode = str(raw["default_generation_mode"])
+    language_graph_set = str(raw["language_graph_set"])
+    max_new_tokens = int(raw["default_max_new_tokens"])
+    nms_iou = float(raw["default_nms_iou"])
+    telemetry_ms = int(raw["telemetry_interval_ms"])
+    startup_timeout = float(raw["runner_startup_timeout_seconds"])
+    if max_new_tokens <= 0:
+        raise ValueError("default_max_new_tokens must be positive")
+    if language_graph_set not in {"standard", "fused_decode"}:
+        raise ValueError("language_graph_set must be 'standard' or 'fused_decode'")
+    if not 0.0 <= nms_iou <= 1.0:
+        raise ValueError("default_nms_iou must be between 0 and 1")
+    if telemetry_ms < 250:
+        raise ValueError("telemetry_interval_ms must be at least 250")
+    if not math.isfinite(startup_timeout) or startup_timeout <= 0:
+        raise ValueError("runner_startup_timeout_seconds must be finite and positive")
+
+    model_dir = _configured_path(layout_root, str(raw["model_dir"]))
+    release_root = os.environ.get("LA_RELEASE_ROOT")
+    if release_root:
+        model_dir = _configured_path(layout_root, release_root)
+    vision_model = _environment_path(
+        "LA_VISION_MODEL", model_dir / str(raw["vit_model_file"]), layout_root
+    )
+    language_model = _environment_path(
+        "LA_LANGUAGE_MODEL", model_dir / str(raw["llm_model_file"]), layout_root
+    )
+    embeddings = _environment_path(
+        "LA_EMBEDDINGS", model_dir / str(raw["embed_weight_file_path"]), layout_root
+    )
+    tokenizer_dir = _environment_path(
+        "LA_TOKENIZER_DIR",
+        _configured_path(layout_root, str(raw["vocabulary_path"])),
+        layout_root,
+    )
+    release_deploy_dir = layout_root / "deploy"
+    vision_runner = _environment_path(
+        "LA_VISION_RUNNER", release_deploy_dir / "build" / "vision_hbm_runner", layout_root
+    )
+    language_runner = _environment_path(
+        "LA_LANGUAGE_RUNNER", release_deploy_dir / "build" / "language_hbm_runner", layout_root
+    )
+    expected_cores = (0, 1, 2, 3)
+    for field in ("vit_bpu_core", "prefill_bpu_core", "decode_bpu_core"):
+        cores = tuple(int(value) for value in raw[field])
+        if cores != expected_cores:
+            raise ValueError(f"runtime requires {field} [0,1,2,3], got {cores}")
+    bpu_cores = expected_cores
+
+    return RuntimeConfig(
+        source=source,
+        layout_root=layout_root,
+        model_type=str(raw["model_type"]),
+        vision_model=vision_model,
+        language_model=language_model,
+        embeddings=embeddings,
+        tokenizer_dir=tokenizer_dir,
+        vision_runner=vision_runner,
+        language_runner=language_runner,
+        image_width=IMAGE_SIZE,
+        image_height=IMAGE_SIZE,
+        patch_size=PATCH_SIZE,
+        visual_tokens=IMAGE_TOKENS,
+        vocab_size=152681,
+        embed_dim=2048,
+        prefill_chunk=1024,
+        cache_len=4096,
+        pbd_query_len=6,
+        ar_query_len=1,
+        language_graph_set=language_graph_set,
+        default_generation_mode=generation_mode,
+        default_max_new_tokens=max_new_tokens,
+        default_nms_iou=nms_iou,
+        l2m_sizes=str(raw["l2m_sizes"]),
+        telemetry_interval_seconds=telemetry_ms / 1000.0,
+        runner_startup_timeout_seconds=startup_timeout,
+        bpu_cores=bpu_cores,
+    )
+
+
+def build_runtime_environment(runtime: RuntimeConfig) -> dict[str, str]:
+    env = os.environ.copy()
+    env["HB_DNN_USER_DEFINED_L2M_SIZES"] = runtime.l2m_sizes
+    return env
+
+
+def language_runner_command(runtime: RuntimeConfig) -> list[str]:
+    return [
+        str(runtime.language_runner),
+        "--model",
+        str(runtime.language_model),
+        "--embed",
+        str(runtime.embeddings),
+        "--graph-set",
+        runtime.language_graph_set,
+    ]
+
+
+def load_runtime_config_from_args(
+    argv: list[str] | None = None,
+    runtime_dir: Path | None = None,
+) -> RuntimeConfig:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("-c", "--config", type=Path)
+    known, _ = pre_parser.parse_known_args(argv)
+    return load_runtime_config(known.config, runtime_dir)
+
+
+def require_runtime_paths(runtime: RuntimeConfig) -> None:
+    required = {
+        "Vision runner": (runtime.vision_runner, False),
+        "Language runner": (runtime.language_runner, False),
+        "Tokenizer directory": (runtime.tokenizer_dir, True),
+        "Tokenizer JSON": (runtime.tokenizer_dir / "tokenizer.json", False),
+        "Vision HBM": (runtime.vision_model, False),
+        "Language HBM": (runtime.language_model, False),
+        "Embedding table": (runtime.embeddings, False),
+    }
+    missing = [
+        f"{label}: {path}"
+        for label, (path, directory) in required.items()
+        if not (path.is_dir() if directory else path.is_file())
+    ]
+    if missing:
+        raise FileNotFoundError("runtime payload is incomplete: " + "; ".join(missing))
+    if os.name == "posix":
+        not_executable = [
+            str(path)
+            for path in (runtime.vision_runner, runtime.language_runner)
+            if not os.access(path, os.X_OK)
+        ]
+        if not_executable:
+            raise PermissionError(
+                "runtime runner is not executable: " + "; ".join(not_executable)
+            )
+
+
+def parse_s600_resource_status(text: str) -> tuple[list[float | None], float | None]:
+    """Parse four BPU ratios and the hottest BPU temperature from hrut_somstatus."""
+    bpu: list[float | None] = [None] * 4
+    for match in S600_BPU_RATIO_RE.finditer(text):
+        bpu[int(match.group("core"))] = float(match.group("value"))
+
+    temperatures = [
+        float(match.group("value"))
+        for match in S600_DIRECT_BPU_TEMPERATURE_RE.finditer(text)
+    ]
+    section: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.endswith("-->"):
+            section = line[:-3].strip().lower()
+            continue
+        if section != "temperature":
+            continue
+        match = S600_SECTION_VALUE_RE.match(line)
+        if match is None or "bpu" not in match.group("label").lower():
+            continue
+        value = float(match.group("value"))
+        if match.group("unit").lower() == "mc":
+            value /= 1000.0
+        temperatures.append(value)
+    return bpu, max(temperatures) if temperatures else None
 
 
 def prepare_image(image_path: Path) -> tuple[np.ndarray, dict[str, object]]:
@@ -383,6 +747,8 @@ def parse_points(text: str, transform: dict[str, object]) -> list[dict[str, obje
 
 
 def annotated_output_path(image_path: Path, task: str, output_dir: Path | None = None) -> Path:
+    """Return a unique image path for compatibility with older callers."""
+
     directory = (output_dir or (Path.cwd() / "output")).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     image_name = re.sub(r"[^A-Za-z0-9._-]+", "_", image_path.stem).strip("._") or "image"
@@ -477,7 +843,8 @@ def save_annotated_image(
     image.save(output_path, format="PNG")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    runtime = load_runtime_config_from_args(argv)
     parser = argparse.ArgumentParser(
         description="Run an image and prompt through LocateAnything Vision and Language HBM.",
         epilog="Task commands:\n  " + "\n  ".join(TASK_COMMANDS),
@@ -485,30 +852,45 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("image_positional", type=Path, nargs="?")
     parser.add_argument("prompt_positional", nargs="?")
+    parser.add_argument(
+        "-c", "--config", type=Path, default=runtime.source,
+        help=f"runtime config (default: {runtime.source})",
+    )
     parser.add_argument("-i", "--image", type=Path)
     parser.add_argument("-p", "--prompt")
-    parser.add_argument("-o", "--output", type=Path)
-    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for prediction.json, annotated.png, timings.json, and logs/",
+    )
+    parser.add_argument("-o", "--output", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=runtime.default_max_new_tokens,
+    )
     parser.add_argument(
         "--generation-mode",
         choices=("hybrid", "slow"),
-        default=DEFAULT_GENERATION_MODE,
-        help="hybrid=q6 PBD with q1 fallback; slow=q1 AR (default: hybrid)",
+        default=runtime.default_generation_mode,
+        help=("hybrid=q6 PBD with q1 fallback; slow=q1 AR "
+              f"(default: {runtime.default_generation_mode})"),
     )
     parser.add_argument(
         "--nms-iou",
         type=float,
-        default=DEFAULT_NMS_IOU,
-        help="same-label Detection NMS threshold (default: 0.90)",
+        default=runtime.default_nms_iou,
+        help=f"same-label Detection NMS threshold (default: {runtime.default_nms_iou:.2f})",
     )
     parser.add_argument(
         "--no-nms",
         action="store_true",
         help="disable Detection NMS while retaining raw model boxes",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    args.runtime = runtime
     args.image = args.image or args.image_positional
     args.prompt = args.prompt or args.prompt_positional
+    if args.output is not None and args.output_dir is not None:
+        parser.error("use --output-dir or the deprecated --output option, not both")
     if args.image is None or args.prompt is None:
         parser.error("provide IMAGE and PROMPT, either positionally or with --image/--prompt")
     return args
@@ -527,33 +909,32 @@ def main() -> int:
         raise FileNotFoundError(args.image)
     if args.max_new_tokens <= 0:
         raise ValueError("--max-new-tokens must be positive")
+    if not 0.0 <= args.nms_iou <= 1.0:
+        raise ValueError("--nms-iou must be between 0 and 1")
 
-    runtime_dir = Path(__file__).resolve().parent
-    repo_root = runtime_dir.parent
-    tokenizer_dir = runtime_dir / "tokenizer"
-    vision_runner = runtime_dir / "build" / "vision_hbm_runner"
-    language_runner = runtime_dir / "build" / "language_hbm_runner"
-    vision_model = resolve_repo_path(repo_root, os.environ.get("LA_VISION_MODEL", VISION_MODEL))
-    language_model = resolve_repo_path(
-        repo_root, os.environ.get("LA_LANGUAGE_MODEL", LANGUAGE_MODEL)
-    )
-    embeddings = resolve_repo_path(repo_root, os.environ.get("LA_EMBEDDINGS", EMBEDDINGS))
-    for required in (tokenizer_dir, vision_runner, language_runner, vision_model, language_model, embeddings):
-        if not required.exists():
-            raise FileNotFoundError(required)
+    runtime: RuntimeConfig = args.runtime
+    require_runtime_paths(runtime)
+    tokenizer_dir = runtime.tokenizer_dir
+    vision_runner = runtime.vision_runner
+    vision_model = runtime.vision_model
 
-    output_path = args.output or args.image.with_suffix(".locateanything.json")
-    output_path = output_path.resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_log = output_path.with_suffix(".runtime.log")
-    env = os.environ.copy()
-    env.setdefault("HB_DNN_USER_DEFINED_L2M_SIZES", "6:6:6:6")
+    env = build_runtime_environment(runtime)
 
     task_prompt, annotate = unwrap_box_command(args.prompt)
     normalized_prompt, task = normalize_prompt(task_prompt)
     started = time.monotonic()
+    compatibility_output = args.output.resolve() if args.output else None
+    paths = create_prediction_paths(
+        runtime.layout_root,
+        args.image,
+        output_dir=(compatibility_output.parent if compatibility_output else args.output_dir),
+    )
+    output_path = compatibility_output or paths.prediction
+    runtime_log = paths.runtime_log
+
+    print_stage(1, "Vision")
+    vision_stage_started = time.monotonic()
     vision_input, transform = prepare_image(args.image)
-    prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
     with tempfile.TemporaryDirectory(prefix="locateanything-") as temporary:
         work_dir = Path(temporary)
         vision_input_path = work_dir / "vision_input.f16.bin"
@@ -561,7 +942,6 @@ def main() -> int:
         prompt_tokens_path = work_dir / "prompt_tokens.i32.bin"
         generation_path = work_dir / "generation.txt"
         vision_input.tofile(vision_input_path)
-        prompt_tokens.tofile(prompt_tokens_path)
 
         vision_output, vision_elapsed = run_command(
             [
@@ -577,13 +957,15 @@ def main() -> int:
             env,
         )
         vision_log = runtime_log.read_text(encoding="utf-8")
+        vision_stage_seconds = time.monotonic() - vision_stage_started
+        print_stage(1, "Vision", vision_stage_seconds)
+
+        print_stage(2, "Language")
+        language_stage_started = time.monotonic()
+        prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
+        prompt_tokens.tofile(prompt_tokens_path)
         language_output, language_elapsed = run_command(
-            [
-                str(language_runner),
-                "--model",
-                str(language_model),
-                "--embed",
-                str(embeddings),
+            language_runner_command(runtime) + [
                 "--mode",
                 "all",
                 "--tokens",
@@ -601,6 +983,8 @@ def main() -> int:
             env,
         )
         language_log = runtime_log.read_text(encoding="utf-8")
+        language_stage_seconds = time.monotonic() - language_stage_started
+        print_stage(2, "Language", language_stage_seconds)
         runtime_log.write_text(
             "================== VISION ==================\n"
             + vision_log
@@ -610,6 +994,8 @@ def main() -> int:
         )
         stop_reason, token_ids = read_generation(generation_path)
 
+    print_stage(3, "Postprocess")
+    postprocess_started = time.monotonic()
     text = decode_tokens(tokenizer_dir, token_ids)
     raw_detections = parse_detections(text, transform)
     detections, suppressed_detections = postprocess_detections(
@@ -620,11 +1006,38 @@ def main() -> int:
     )
     points = parse_points(text, transform)
     annotated_image = None
-    if annotate:
-        annotated_image = annotated_output_path(args.image, task)
+    if annotate or detections or points:
+        annotated_image = paths.annotated_image
         save_annotated_image(args.image, detections, points, annotated_image)
+    postprocess_seconds = time.monotonic() - postprocess_started
+    total_seconds = time.monotonic() - started
+    print_stage(3, "Postprocess", postprocess_seconds)
+
+    timing_data = {
+        "schema_version": 1,
+        "stages_seconds": {
+            "vision": round(vision_stage_seconds, 6),
+            "language": round(language_stage_seconds, 6),
+            "postprocess": round(postprocess_seconds, 6),
+        },
+        "runner_seconds": {
+            "vision_hbm": round(vision_elapsed, 6),
+            "language_hbm": round(language_elapsed, 6),
+        },
+        "total_seconds": round(total_seconds, 6),
+    }
+    paths.timings.write_text(
+        json.dumps(timing_data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     result = {
         "schema_version": 1,
+        "runtime": {
+            "version": RUNTIME_VERSION,
+            "config": str(runtime.source),
+            "model_type": runtime.model_type,
+            "runtime_specification": runtime.specification(),
+        },
         "image": str(args.image.resolve()),
         "prompt": args.prompt,
         "normalized_prompt": normalized_prompt,
@@ -652,7 +1065,8 @@ def main() -> int:
             "kept_detection_count": len(detections),
             "suppressed_detection_count": len(suppressed_detections),
         },
-        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "timings": timing_data,
+        "elapsed_seconds": round(total_seconds, 3),
         "runtime_log": str(runtime_log),
     }
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -661,7 +1075,7 @@ def main() -> int:
         str(detection["label"]) for detection in detections if detection["label"]
     ))
     display_text = ", ".join(labels) if labels else text
-    total_elapsed = time.monotonic() - started
+    total_elapsed = total_seconds
     print("================== LOCATEANYTHING S600 ==================")
     print("模型类别：图像、文本定位")
     print(f"加载图像：{args.image}")
@@ -703,6 +1117,8 @@ def main() -> int:
     print(f"STATUS: {'COMPLETE' if stop_reason == 'im_end' else 'TRUNCATED'}")
     print(f"STOP_REASON: {stop_reason}")
     print(f"OUTPUT: {output_path}")
+    print(f"TIMINGS: {paths.timings}")
+    print(f"RUN_DIR: {paths.root}")
     return 0
 
 

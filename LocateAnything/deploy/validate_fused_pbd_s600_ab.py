@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate legacy and fused-PBD Language HBMs through the resident S600 runner."""
+"""Compare standard and fused-decode Language HBMs on S600."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ BASE_GRAPHS = ("prefill", "decode", "decode_ar")
 FUSED_PBD_GRAPHS = tuple(f"decode_pbd_q{q_len}" for q_len in range(7, 13))
 FUSED_AR_GRAPHS = tuple(f"decode_ar_q{q_len}" for q_len in range(2, 6))
 EXPECTED_FUSED_GRAPHS = BASE_GRAPHS + FUSED_PBD_GRAPHS + FUSED_AR_GRAPHS
-FUSED_CONTRACT = "[INFO] hybrid cache contract=fused PBD prefix profiles"
-LEGACY_CONTRACT = "[INFO] hybrid cache contract=legacy padded q6 commit"
+FUSED_DECODE_LOG = "[INFO] Language graph set=fused_decode"
+STANDARD_LOG = "[INFO] Language graph set=standard"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 NUMBER_PATTERN = r"-?(?:\d+(?:\.\d*)?|\.\d+)"
 BOX_RE = re.compile(
@@ -144,6 +144,7 @@ class ResidentLanguageServer:
         runner: Path,
         model: Path,
         embedding: Path,
+        graph_set: str,
         log_path: Path,
         startup_timeout: float,
         request_timeout: float,
@@ -151,6 +152,7 @@ class ResidentLanguageServer:
         self.runner = runner
         self.model = model
         self.embedding = embedding
+        self.graph_set = graph_set
         self.log_path = log_path
         self.startup_timeout = startup_timeout
         self.request_timeout = request_timeout
@@ -170,6 +172,8 @@ class ResidentLanguageServer:
                 str(self.model),
                 "--embed",
                 str(self.embedding),
+                "--graph-set",
+                self.graph_set,
                 "--server",
             ],
             stdin=subprocess.PIPE,
@@ -293,6 +297,7 @@ def run_model(
     runner: Path,
     model: Path,
     embedding: Path,
+    graph_set: str,
     token_path: Path,
     visual_path: Path,
     output_dir: Path,
@@ -306,6 +311,7 @@ def run_model(
         runner,
         model,
         embedding,
+        graph_set,
         model_dir / "server.log",
         startup_timeout,
         request_timeout,
@@ -522,17 +528,17 @@ def validate_ab(
         missing = sorted(set(EXPECTED_FUSED_GRAPHS) - new_graphs)
         extra = sorted(new_graphs - set(EXPECTED_FUSED_GRAPHS))
         raise ValidationError(
-            f"new HBM graph contract mismatch: count={len(new.graph_names)} "
+            f"new HBM graph set mismatch: count={len(new.graph_names)} "
             f"missing={missing} extra={extra}"
         )
-    if old.log_lines.count(LEGACY_CONTRACT) < RUN_COUNT:
-        raise ValidationError("old HBM did not use the legacy q6 cache contract in every round")
-    if FUSED_CONTRACT in old.log_lines:
-        raise ValidationError("old HBM unexpectedly used the fused cache contract")
-    if new.log_lines.count(FUSED_CONTRACT) < RUN_COUNT:
-        raise ValidationError("new HBM did not use the fused cache contract in every round")
-    if LEGACY_CONTRACT in new.log_lines:
-        raise ValidationError("new HBM fell back to the legacy q6 cache contract")
+    if old.log_lines.count(STANDARD_LOG) < RUN_COUNT:
+        raise ValidationError("old HBM did not use the standard graph set in every round")
+    if FUSED_DECODE_LOG in old.log_lines:
+        raise ValidationError("old HBM unexpectedly used the fused_decode graph set")
+    if new.log_lines.count(FUSED_DECODE_LOG) < RUN_COUNT:
+        raise ValidationError("new HBM did not use the fused_decode graph set in every round")
+    if STANDARD_LOG in new.log_lines:
+        raise ValidationError("new HBM unexpectedly used the standard graph set")
     output_comparisons: list[dict[str, object]] = []
     for index, (old_output, new_output) in enumerate(
         zip(old.generations, new.generations), 1
@@ -639,6 +645,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner,
             old_model,
             embedding,
+            "standard",
             token_path,
             visual_path,
             output_dir,
@@ -651,6 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner,
             new_model,
             embedding,
+            "fused_decode",
             token_path,
             visual_path,
             output_dir,

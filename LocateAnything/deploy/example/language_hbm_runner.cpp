@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -21,6 +22,7 @@
 
 #include "locateanything_runtime/attention_mask.hpp"
 #include "locateanything_runtime/embed_lookup.hpp"
+#include "locateanything_runtime/language_graph_set.hpp"
 #include "locateanything_runtime/hbm_session.hpp"
 #include "locateanything_runtime/hybrid_decoder.hpp"
 #include "locateanything_runtime/kv_cache_ring.hpp"
@@ -85,6 +87,79 @@ struct PreparedInputs {
   rt::Tensor mask;
   std::vector<const rt::Tensor*> views;
 };
+
+uint64_t FingerprintCache(const CacheState& cache) {
+  // A small identity marker for a graph input state.  Full cache dumps are
+  // deliberately avoided because a 4096-token cache is large on the board.
+  uint64_t value = 1469598103934665603ULL;
+  for (const rt::Tensor& tensor : cache.tensors) {
+    for (uint8_t byte : tensor.data) {
+      value ^= static_cast<uint64_t>(byte);
+      value *= 1099511628211ULL;
+    }
+  }
+  return value;
+}
+
+bool DumpGraphDebug(const std::string& graph_name, int32_t token_base,
+                    int32_t past_len, bool pbd, int32_t pbd_prefix_len,
+                    const std::vector<int32_t>* explicit_tokens,
+                    const CacheState& cache,
+                    const std::vector<rt::Tensor>& outputs) {
+  const char* raw_dir = std::getenv("LA_GRAPH_DUMP_DIR");
+  if (raw_dir == nullptr || raw_dir[0] == '\0') return true;
+  if (outputs.empty()) return false;
+
+  static uint64_t invocation = 0;
+  const uint64_t current = ++invocation;
+  const std::filesystem::path directory(raw_dir);
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) {
+    std::fprintf(stderr, "[FAIL] cannot create LA_GRAPH_DUMP_DIR=%s: %s\n",
+                 raw_dir, error.message().c_str());
+    return false;
+  }
+
+  char stem[128] = {};
+  std::snprintf(stem, sizeof(stem), "%04llu_%s",
+                static_cast<unsigned long long>(current), graph_name.c_str());
+  const std::filesystem::path logits_path = directory / (std::string(stem) + ".logits.f16.bin");
+  const std::filesystem::path metadata_path = directory / (std::string(stem) + ".json");
+  const rt::Tensor& logits = outputs[0];
+  std::ofstream logits_file(logits_path, std::ios::binary | std::ios::trunc);
+  if (!logits_file) return false;
+  logits_file.write(reinterpret_cast<const char*>(logits.data.data()),
+                    static_cast<std::streamsize>(logits.data.size()));
+  if (!logits_file) return false;
+
+  std::ofstream metadata(metadata_path, std::ios::trunc);
+  if (!metadata) return false;
+  metadata << "{\n"
+           << "  \"graph\": \"" << graph_name << "\",\n"
+           << "  \"invocation\": " << current << ",\n"
+           << "  \"token_base\": " << token_base << ",\n"
+           << "  \"past_len\": " << past_len << ",\n"
+           << "  \"pbd\": " << (pbd ? "true" : "false") << ",\n"
+           << "  \"pbd_prefix_len\": " << pbd_prefix_len << ",\n"
+           << "  \"cache_fnv1a64\": \"0x" << std::hex
+           << static_cast<unsigned long long>(FingerprintCache(cache)) << std::dec << "\",\n"
+           << "  \"logits_dtype\": " << logits.dtype << ",\n"
+           << "  \"logits_shape\": [";
+  for (size_t index = 0; index < logits.shape.size(); ++index) {
+    metadata << logits.shape[index]
+             << (index + 1 == logits.shape.size() ? "" : ", ");
+  }
+  metadata << "],\n  \"explicit_tokens\": [";
+  if (explicit_tokens != nullptr) {
+    for (size_t index = 0; index < explicit_tokens->size(); ++index) {
+      metadata << explicit_tokens->at(index)
+               << (index + 1 == explicit_tokens->size() ? "" : ", ");
+    }
+  }
+  metadata << "]\n}\n";
+  return static_cast<bool>(metadata);
+}
 
 struct InputPayload {
   std::vector<int32_t> prompt_ids;
@@ -164,7 +239,7 @@ bool LoadPayload(const std::string& token_path, const std::string& visual_path,
   return image_count > 0;
 }
 
-void PrintGraphContract(const rt::Graph& graph, const std::string& name) {
+void PrintGraphMetadata(const rt::Graph& graph, const std::string& name) {
   std::printf("[graph:%s] inputs=%zu outputs=%zu\n", name.c_str(),
               graph.GetInputNames().size(), graph.GetOutputNames().size());
   for (size_t index = 0; index < graph.GetInputNames().size(); ++index) {
@@ -576,6 +651,12 @@ bool RunGraph(rt::HbmSession* session, const std::string& name,
                  result.code, result.message.c_str());
     return false;
   }
+  if (!DumpGraphDebug(name, token_base, past_len, pbd, pbd_prefix_len,
+                      explicit_tokens, cache, *outputs)) {
+    std::fprintf(stderr, "[FAIL] cannot dump debug outputs for %s\n",
+                 name.c_str());
+    return false;
+  }
   if (std::getenv("LA_PROFILE_EXECUTION") != nullptr) {
     std::printf(
         "[profile] graph=%s total=%.3f prepare=%.3f pack=%.3f "
@@ -809,20 +890,6 @@ bool RunHybridGenerationLegacy(rt::HbmSession* session,
   return true;
 }
 
-bool HasFusedPbdProfiles(rt::HbmSession* session) {
-  for (int32_t q_len = 7; q_len <= 12; ++q_len) {
-    if (session->GetGraph("decode_pbd_q" + std::to_string(q_len)) == nullptr) {
-      return false;
-    }
-  }
-  for (int32_t q_len = 2; q_len <= 5; ++q_len) {
-    if (session->GetGraph("decode_ar_q" + std::to_string(q_len)) == nullptr) {
-      return false;
-    }
-  }
-  return true;
-}
-
 std::string PbdGraphName(int32_t prefix_len) {
   return prefix_len == 0 ? "decode"
                          : "decode_pbd_q" + std::to_string(6 + prefix_len);
@@ -963,17 +1030,18 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
 
 bool RunHybridGeneration(rt::HbmSession* session, const rt::EmbedLookup& embed,
                          const InputPayload& payload, int32_t max_new_tokens,
+                         rt::LanguageGraphSet graph_set,
                          CacheState* cache, int32_t* history_len,
                          std::vector<int32_t>* response,
                          std::string* stop_reason,
                          const TokenCallback& token_callback = {}) {
-  if (HasFusedPbdProfiles(session)) {
-    std::printf("[INFO] hybrid cache contract=fused PBD prefix profiles\n");
+  if (graph_set == rt::LanguageGraphSet::kFusedDecode) {
+    std::printf("[INFO] Language graph set=fused_decode\n");
     return RunHybridGenerationFused(session, embed, payload, max_new_tokens,
                                     cache, history_len, response, stop_reason,
                                     token_callback);
   }
-  std::printf("[INFO] hybrid cache contract=legacy padded q6 commit\n");
+  std::printf("[INFO] Language graph set=standard\n");
   return RunHybridGenerationLegacy(session, embed, payload, max_new_tokens,
                                    cache, history_len, response, stop_reason,
                                    token_callback);
@@ -1044,6 +1112,7 @@ bool WriteTokenOutput(const std::string& path,
 bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
                 const InputPayload& payload, int32_t max_new_tokens,
                 const std::string& generation_mode,
+                rt::LanguageGraphSet graph_set,
                 const std::string& output_path, std::string* stop_reason,
                 size_t* response_size, GenerationMetrics* metrics,
                 const TokenCallback& token_callback = {}) {
@@ -1076,7 +1145,8 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
                         prefill_outputs, &full_cache, &active_len, &response,
                         stop_reason, token_callback)
       : RunHybridGeneration(session, *embed, payload, max_new_tokens,
-                            &full_cache, &active_len, &response, stop_reason,
+                            graph_set,
+                             &full_cache, &active_len, &response, stop_reason,
                             token_callback);
   if (!generated) return false;
   const double decode_ms = std::chrono::duration<double, std::milli>(
@@ -1104,6 +1174,7 @@ int main(int argc, char** argv) {
   if (argc < 5) {
     std::fprintf(stderr,
                  "usage: %s --model LANGUAGE.hbm --embed embed_tokens.bin "
+                 "--graph-set standard|fused_decode "
                  "[--mode all|prefill|decode|decode_ar] "
                  "[--tokens prompt.i32.bin --visual visual.f16.bin] "
                  "[--generation-mode hybrid|slow] "
@@ -1119,6 +1190,8 @@ int main(int argc, char** argv) {
   int32_t max_new_tokens = 0;
   std::string mode = "all";
   std::string generation_mode = "hybrid";
+  std::string graph_set_name;
+  rt::LanguageGraphSet graph_set = rt::LanguageGraphSet::kStandard;
   bool server = false;
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -1134,6 +1207,9 @@ int main(int argc, char** argv) {
     else if (arg == "--generation-mode" && index + 1 < argc) {
       generation_mode = argv[++index];
     }
+    else if (arg == "--graph-set" && index + 1 < argc) {
+      graph_set_name = argv[++index];
+    }
     else if (arg == "--server") {
       server = true;
     }
@@ -1143,6 +1219,7 @@ int main(int argc, char** argv) {
     }
   }
   if (model_path.empty() || embed_path.empty() ||
+      !rt::ParseLanguageGraphSet(graph_set_name, &graph_set) ||
       (token_path.empty() != visual_path.empty()) ||
       max_new_tokens < 0 || (max_new_tokens > 0 && token_path.empty()) ||
       (generation_mode != "hybrid" && generation_mode != "slow") ||
@@ -1159,12 +1236,31 @@ int main(int argc, char** argv) {
     return 2;
   }
   std::printf("[ok] loaded graphs:");
-  for (const auto& name : session.GetGraphNames()) std::printf(" %s", name.c_str());
+  const std::vector<std::string> graph_names = session.GetGraphNames();
+  for (const auto& name : graph_names) std::printf(" %s", name.c_str());
   std::printf("\n");
-  for (const auto& name : {std::string("prefill"), std::string("decode"),
-                           std::string("decode_ar")}) {
+  const rt::GraphSetValidation graph_set_validation =
+      rt::ValidateGraphSet(graph_set, graph_names);
+  if (!graph_set_validation.ok()) {
+    std::fprintf(stderr, "[FAIL] Language graph set %s mismatch",
+                 graph_set_name.c_str());
+    for (const auto& name : graph_set_validation.missing) {
+      std::fprintf(stderr, " missing=%s", name.c_str());
+    }
+    for (const auto& name : graph_set_validation.unexpected) {
+      std::fprintf(stderr, " unexpected=%s", name.c_str());
+    }
+    for (const auto& name : graph_set_validation.duplicates) {
+      std::fprintf(stderr, " duplicate=%s", name.c_str());
+    }
+    std::fprintf(stderr, "\n");
+    return 4;
+  }
+  std::printf("[ok] Language graph set=%s graphs=%zu\n", graph_set_name.c_str(),
+              graph_names.size());
+  for (const auto& name : rt::ExpectedGraphNames(graph_set)) {
     rt::Graph* graph = session.GetGraph(name);
-    if (graph) PrintGraphContract(*graph, name);
+    if (graph) PrintGraphMetadata(*graph, name);
   }
 
   rt::EmbedLookup embed;
@@ -1176,10 +1272,7 @@ int main(int argc, char** argv) {
   rt::Graph* prefill = session.GetGraph("prefill");
   rt::Graph* decode = session.GetGraph("decode");
   rt::Graph* decode_ar = session.GetGraph("decode_ar");
-  if (!prefill || !decode || !decode_ar) {
-    std::fprintf(stderr, "[FAIL] HBM must contain prefill, decode, decode_ar\n");
-    return 4;
-  }
+  if (!prefill || !decode || !decode_ar) return 4;
 
   if (server) {
     std::printf("LAHBM/1\tREADY\tlanguage\n");
@@ -1214,7 +1307,7 @@ int main(int argc, char** argv) {
                 (request_mode == "slow" || request_mode == "hybrid") &&
                 LoadPayload(fields[3], fields[4], &request_payload) &&
                 RunPayload(&session, &embed, request_payload, request_tokens,
-                           request_mode, fields[5], &request_stop,
+                           request_mode, graph_set, fields[5], &request_stop,
                            &request_response_size, &request_metrics,
                            token_callback);
       if (!ok) {
@@ -1232,7 +1325,7 @@ int main(int argc, char** argv) {
   }
   CacheState prefill_cache;
   if (!BuildZeroCaches(*prefill, &prefill_cache)) {
-    std::fprintf(stderr, "[FAIL] unsupported prefill cache contract\n");
+    std::fprintf(stderr, "[FAIL] unsupported prefill cache layout\n");
     return 5;
   }
   InputPayload payload;
@@ -1269,7 +1362,9 @@ int main(int argc, char** argv) {
           ? RunArGeneration(&session, embed, payload, max_new_tokens, outputs,
                             &prefill_cache, &active_len, &response, &stop_reason)
           : RunHybridGeneration(&session, embed, payload, max_new_tokens,
-                                &prefill_cache, &active_len, &response, &stop_reason);
+                                graph_set,
+                                &prefill_cache, &active_len, &response,
+                                &stop_reason);
       if (!generated) {
         std::fprintf(stderr, "[FAIL] %s generation failed\n", generation_mode.c_str());
         return 12;

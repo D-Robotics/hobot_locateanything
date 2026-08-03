@@ -50,7 +50,7 @@ EXPECTED_TOKEN_IDS = {
     "<switch>": 152679,
 }
 EXPECTED_SAMPLE_COUNT = 1200
-EXPECTED_MANIFEST_SHA256 = "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+EXPECTED_MANIFEST_SHA256 = "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
 EXPECTED_CHECKPOINT_SHA256 = {
     "model-00001-of-00002.safetensors": (
         "923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58"
@@ -63,19 +63,30 @@ EXPECTED_CHECKPOINT_INDEX_SHA256 = (
     "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
 )
 EXPECTED_TASK_COUNTS = {
-    "detection": 620,
-    "gui": 180,
+    "detection": 660,
+    "gui": 150,
     "referring": 120,
     "ocr": 120,
-    "layout": 100,
+    "layout": 90,
     "pointing": 60,
 }
 EXPECTED_SOURCE_ROLE_COUNTS = {
-    "coco_multicategory_detection": 500,
-    "dense_retail_detection": 120,
-    "existing_non_detection": 580,
+    "coco_detection": 240,
+    "openimages_v6": 90,
+    "v3det": 60,
+    "paco": 50,
+    "bdd100k": 50,
+    "egoobjects": 40,
+    "humanparts": 40,
+    "mot17det": 45,
+    "mot20det": 45,
+    "groundcua": 150,
+    "refcocog": 120,
+    "hiertext": 120,
+    "doclaynet": 90,
+    "pixmo_points": 60,
 }
-EXPECTED_COCO_STRATUM_COUNTS = {"single": 200, "double": 220, "multi": 80}
+EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 BOX_RE = re.compile(r"<box>(.*?)</box>")
 COORD_RE = re.compile(r"<([0-9]{1,4})>")
@@ -176,7 +187,7 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
         raise PreflightError("calibration.coco_stratum_counts does not match the release profile")
     if sum(task_counts.values()) != samples or sum(role_counts.values()) != samples:
         raise PreflightError("task/source-role counts must each sum to sample_count")
-    if sum(strata.values()) != role_counts.get("coco_multicategory_detection"):
+    if sum(strata.values()) != role_counts.get("coco_detection"):
         raise PreflightError("COCO strata must sum to the COCO source-role count")
 
     width = int(model.get("image_width", 0))
@@ -299,7 +310,7 @@ def validate_prompt_target(record: Mapping[str, Any], context: str) -> None:
 
     category_prefixes = {
         "detection": "Locate all the instances that matches the following description: ",
-        "layout": "Detect all the objects in the image that belong to the category set: ",
+        "layout": "Locate all the instances that matches the following description: ",
     }
     if task in category_prefixes:
         prefix = category_prefixes[task]
@@ -315,8 +326,12 @@ def validate_prompt_target(record: Mapping[str, Any], context: str) -> None:
         return
 
     if task == "referring":
-        prefix = "Locate a single instance that matches the following description: "
-        expected = prompt[len(prefix):-1] if prompt.startswith(prefix) and prompt.endswith(".") else None
+        prefixes = (
+            "Locate a single instance that matches the following description: ",
+            "Locate all the instances that match the following description: ",
+        )
+        prefix = next((value for value in prefixes if prompt.startswith(value)), None)
+        expected = prompt[len(prefix):-1] if prefix and prompt.endswith(".") else None
         if expected is None or references != [expected]:
             raise PreflightError(f"{context}: referring prompt/target contract mismatch")
         return
@@ -437,10 +452,10 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         max_box_groups = max(max_box_groups, box_groups)
         validate_prompt_target(record, context)
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-        role = str(metadata.get("calibration_source_role") or "existing_non_detection")
+        role = str(metadata.get("calibration_source_role") or "unknown")
         tasks[task] += 1
         roles[role] += 1
-        if role == "coco_multicategory_detection":
+        if role == "coco_detection":
             stratum = str(metadata.get("calibration_stratum") or "")
             strata[stratum] += 1
         image_hashes.add(claimed_hash)

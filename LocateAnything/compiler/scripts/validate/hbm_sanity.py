@@ -18,15 +18,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+COMPILER_ROOT = Path(__file__).resolve().parents[2]
+if str(COMPILER_ROOT) not in sys.path:
+    sys.path.insert(0, str(COMPILER_ROOT))
+
+from leap_llm.language_graphs import (  # noqa: E402
+    LANGUAGE_GRAPH_SET_NAMES,
+    language_graph_set,
+)
+
 MASK_VALUE = -32768
-LANGUAGE_GRAPH_QUERIES = {
-    "prefill": 1024,
-    "decode": 6,
-    "decode_ar": 1,
-    **{f"decode_pbd_q{q_len}": q_len for q_len in range(7, 13)},
-    **{f"decode_ar_q{q_len}": q_len for q_len in range(2, 6)},
-}
-GRAPH_ORDER = ("visual", *LANGUAGE_GRAPH_QUERIES)
 
 
 def _expected_logits_query(graph_name: str, input_query: int) -> int:
@@ -86,6 +87,28 @@ class ExpectedProfile:
         return self.decoder_layers * 2
 
 
+def language_graph_queries(
+    graph_set: str, profile: ExpectedProfile
+) -> dict[str, int]:
+    """Derive query lengths from the canonical graph catalog."""
+
+    queries: dict[str, int] = {}
+    for graph_name in language_graph_set(graph_set).graphs:
+        if graph_name == "prefill":
+            queries[graph_name] = profile.prefill_query
+        elif graph_name == "decode":
+            queries[graph_name] = profile.pbd_query
+        elif graph_name == "decode_ar":
+            queries[graph_name] = profile.ar_query
+        else:
+            queries[graph_name] = int(graph_name.rsplit("_q", 1)[1])
+    return queries
+
+
+def graph_order(graph_set: str) -> tuple[str, ...]:
+    return ("visual", *language_graph_set(graph_set).graphs)
+
+
 def _fail(message: str) -> None:
     raise ValueError(message)
 
@@ -110,12 +133,16 @@ def _canonical_dtype(tensor: TensorDescriptor) -> str:
 
 
 def validate_descriptor_contract(
-    graphs: Mapping[str, GraphDescriptor], profile: ExpectedProfile
+    graphs: Mapping[str, GraphDescriptor],
+    profile: ExpectedProfile,
+    *,
+    graph_set: str = "standard",
 ) -> dict[str, Any]:
-    """Validate the complete release graph contract using metadata only."""
-    missing = [name for name in GRAPH_ORDER if name not in graphs]
+    """Validate the complete expected graph set using metadata only."""
+    expected_order = graph_order(graph_set)
+    missing = [name for name in expected_order if name not in graphs]
     _require(not missing, f"required graph(s) missing: {', '.join(missing)}")
-    unexpected = sorted(set(graphs) - set(GRAPH_ORDER))
+    unexpected = sorted(set(graphs) - set(expected_order))
     _require(not unexpected, f"unexpected graph(s): {', '.join(unexpected)}")
 
     visual = graphs["visual"]
@@ -132,12 +159,7 @@ def validate_descriptor_contract(
 
     language_summary: dict[str, Any] = {}
     common_cache_dtype: str | None = None
-    expected_queries = {
-        **LANGUAGE_GRAPH_QUERIES,
-        "prefill": profile.prefill_query,
-        "decode": profile.pbd_query,
-        "decode_ar": profile.ar_query,
-    }
+    expected_queries = language_graph_queries(graph_set, profile)
     for graph_name, expected_q in expected_queries.items():
         graph = graphs[graph_name]
         expected_logits_q = _expected_logits_query(graph_name, expected_q)
@@ -197,6 +219,7 @@ def validate_descriptor_contract(
         }
 
     return {
+        "graph_set": graph_set,
         "profile": asdict(profile),
         "derived": {
             "patch_vector": profile.patch_vector,
@@ -255,7 +278,12 @@ def describe_graph(graph: Any) -> GraphDescriptor:
     )
 
 
-def load_hbm_descriptors(vision_hbm: Path, language_hbm: Path) -> tuple[dict[str, GraphDescriptor], dict[str, Any], dict[str, Any]]:
+def load_hbm_descriptors(
+    vision_hbm: Path,
+    language_hbm: Path,
+    *,
+    graph_set: str = "standard",
+) -> tuple[dict[str, GraphDescriptor], dict[str, Any], dict[str, Any]]:
     _require(vision_hbm.is_file(), f"Vision HBM missing: {vision_hbm}")
     _require(language_hbm.is_file(), f"Language HBM missing: {language_hbm}")
     try:
@@ -268,10 +296,16 @@ def load_hbm_descriptors(vision_hbm: Path, language_hbm: Path) -> tuple[dict[str
     vgraphs = {str(g.name): g for g in vhbm.graphs}
     lgraphs = {str(g.name): g for g in lhbm.graphs}
     unexpected_vision = sorted(set(vgraphs) - {"visual"})
-    unexpected_language = sorted(set(lgraphs) - set(LANGUAGE_GRAPH_QUERIES))
+    expected_language = set(language_graph_set(graph_set).graphs)
+    missing_language = sorted(expected_language - set(lgraphs))
+    unexpected_language = sorted(set(lgraphs) - expected_language)
     _require(
         not unexpected_vision,
         f"Vision HBM contains unexpected graph(s): {', '.join(unexpected_vision)}",
+    )
+    _require(
+        not missing_language,
+        f"Language HBM is missing graph(s): {', '.join(missing_language)}",
     )
     _require(
         not unexpected_language,
@@ -279,7 +313,7 @@ def load_hbm_descriptors(vision_hbm: Path, language_hbm: Path) -> tuple[dict[str
     )
     graphs: dict[str, GraphDescriptor] = {}
     runtime_graphs: dict[str, Any] = {}
-    for name in GRAPH_ORDER:
+    for name in graph_order(graph_set):
         source = vgraphs if name == "visual" else lgraphs
         if name in source:
             graphs[name] = describe_graph(source[name])
@@ -331,11 +365,17 @@ def _build_graph_inputs(graph: Any, graph_name: str, embed_path: Path, profile: 
     return feed
 
 
-def simulate_graphs(runtime_graphs: Mapping[str, Any], embed_path: Path, profile: ExpectedProfile) -> dict[str, Any]:
+def simulate_graphs(
+    runtime_graphs: Mapping[str, Any],
+    embed_path: Path,
+    profile: ExpectedProfile,
+    *,
+    graph_set: str = "standard",
+) -> dict[str, Any]:
     import numpy as np
 
     evidence: dict[str, Any] = {}
-    for graph_name in GRAPH_ORDER:
+    for graph_name in graph_order(graph_set):
         graph = runtime_graphs[graph_name]
         feed = _build_graph_inputs(graph, graph_name, embed_path, profile)
         started = time.monotonic()
@@ -395,6 +435,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decoder-layers", type=int, default=36)
     parser.add_argument("--cache-groups", type=int, default=2)
     parser.add_argument("--head-dim", type=int, default=128)
+    parser.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=LANGUAGE_GRAPH_SET_NAMES,
+        default="standard",
+        help="exact Language graph catalog expected in the HBM",
+    )
     return parser
 
 
@@ -431,8 +478,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         profile = _profile_from_args(args)
-        graphs, runtime_graphs, metadata = load_hbm_descriptors(args.vision_hbm, args.language_hbm)
-        contract = validate_descriptor_contract(graphs, profile)
+        graphs, runtime_graphs, metadata = load_hbm_descriptors(
+            args.vision_hbm,
+            args.language_hbm,
+            graph_set=args.graph_set,
+        )
+        contract = validate_descriptor_contract(
+            graphs,
+            profile,
+            graph_set=args.graph_set,
+        )
         embed = validate_embed_file(args.embed_bin, profile, scan_finite=not args.skip_embed_finite_scan)
         report: dict[str, Any] = {
             "schema_version": 1,
@@ -452,7 +507,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             report["artifacts"]["language_hbm"]["sha256"] = sha256_file(args.language_hbm)
             report["artifacts"]["embed_bin"]["sha256"] = sha256_file(args.embed_bin)
         if args.mode == "simulate":
-            report["simulation"] = simulate_graphs(runtime_graphs, args.embed_bin, profile)
+            report["simulation"] = simulate_graphs(
+                runtime_graphs,
+                args.embed_bin,
+                profile,
+                graph_set=args.graph_set,
+            )
         if args.report_json:
             _write_report(args.report_json, report)
         print(json.dumps(report, indent=2, sort_keys=True))

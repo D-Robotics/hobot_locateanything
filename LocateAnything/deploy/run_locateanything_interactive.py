@@ -11,40 +11,46 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 from run_locateanything import (
-    DEFAULT_GENERATION_MODE,
-    DEFAULT_NMS_IOU,
-    EMBEDDINGS,
-    LANGUAGE_MODEL,
+    RUNTIME_VERSION,
+    RuntimeConfig,
     TASK_COMMANDS,
-    VISION_MODEL,
+    build_runtime_environment,
+    create_prediction_paths,
     decode_tokens,
+    language_runner_command,
     load_tokenizer,
+    load_runtime_config_from_args,
     normalize_prompt,
-    annotated_output_path,
     parse_detections,
     parse_points,
+    parse_s600_resource_status,
     postprocess_detections,
     prepare_image,
-    resolve_repo_path,
+    print_stage,
+    read_generation,
+    require_runtime_paths,
     save_annotated_image,
     tokenize_prompt,
     unwrap_box_command,
 )
 
 
-VERSION = "0.4.0"
+VERSION = RUNTIME_VERSION
 RESET = "\033[0m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -55,14 +61,6 @@ BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
 SUCCESS = "\033[42;37;1m SUCCESS \033[0m"
-BPU_STATUS_RE = re.compile(
-    r"^\s*bpu(?P<core>[0-3])\s*:\s*(?P<value>\d+(?:\.\d+)?)\s*%?\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-BPU_TEMPERATURE_RE = re.compile(
-    r"pvt_bpu_[^:]+:\s*(?P<value>-?\d+(?:\.\d+)?)\s*\(C\)",
-    re.IGNORECASE,
-)
 PROFILE_VALUE_RE = re.compile(r"([a-z_]+)=(-?\d+(?:\.\d+)?)")
 LOGO = r"""
   ██╗      ██████╗  ██████╗ █████╗ ████████╗███████╗
@@ -76,7 +74,13 @@ LOGO = r"""
 
 
 class HbmServer:
-    def __init__(self, command: list[str], env: dict[str, str], name: str) -> None:
+    def __init__(
+        self,
+        command: list[str],
+        env: dict[str, str],
+        name: str,
+        startup_timeout_seconds: float,
+    ) -> None:
         self.name = name
         self.process = subprocess.Popen(
             command,
@@ -89,7 +93,27 @@ class HbmServer:
         )
         self.recent_output: list[str] = []
         self.startup_output: list[str] = []
-        self._wait_ready()
+        self._output_queue: queue.Queue[str | None] = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._read_output,
+            name=f"{name}-output",
+            daemon=True,
+        )
+        try:
+            self._reader_thread.start()
+            self._wait_ready(startup_timeout_seconds)
+        except BaseException:
+            self._terminate()
+            raise
+
+    def _read_output(self) -> None:
+        try:
+            if self.process.stdout is None:
+                return
+            for line in self.process.stdout:
+                self._output_queue.put(line.rstrip("\r\n"))
+        finally:
+            self._output_queue.put(None)
 
     def _write(self, value: str) -> None:
         if self.process.stdin is None:
@@ -97,24 +121,30 @@ class HbmServer:
         self.process.stdin.write(value + "\n")
         self.process.stdin.flush()
 
-    def _readline(self) -> str:
-        if self.process.stdout is None:
-            raise RuntimeError(f"{self.name} server stdout is closed")
-        line = self.process.stdout.readline()
-        if not line:
+    def _readline(self, timeout: float | None = None) -> str:
+        try:
+            value = self._output_queue.get(timeout=timeout)
+        except queue.Empty as error:
+            raise TimeoutError(f"{self.name} server did not become ready in time") from error
+        if value is None:
             details = " | ".join(self.recent_output[-8:])
             suffix = f"; output: {details}" if details else ""
             raise RuntimeError(
                 f"{self.name} server exited with code {self.process.poll()}{suffix}"
             )
-        value = line.rstrip("\r\n")
         self.recent_output.append(value)
         del self.recent_output[:-32]
         return value
 
-    def _wait_ready(self) -> None:
+    def _wait_ready(self, timeout_seconds: float) -> None:
+        deadline = time.monotonic() + timeout_seconds
         while True:
-            line = self._readline()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"{self.name} server did not become ready within {timeout_seconds:.1f}s"
+                )
+            line = self._readline(remaining)
             if line.startswith("LAHBM/1\tREADY\t"):
                 return
             self.startup_output.append(line)
@@ -127,41 +157,92 @@ class HbmServer:
         self._write("\t".join(fields))
         log: list[str] = []
         request_id = fields[2]
-        while True:
-            line = self._readline()
-            if line.startswith("LAHBM/1\tTOKEN\t"):
-                token_fields = line.split("\t")
-                if len(token_fields) != 4 or token_fields[2] != request_id:
-                    raise RuntimeError(f"invalid token frame: {line}")
-                if on_token is not None:
-                    on_token(int(token_fields[3]))
-                continue
-            if line.startswith("LAHBM/1\tRESULT\t"):
-                return line, log
-            if line.startswith("LAHBM/1\tERROR\t"):
-                raise RuntimeError(line)
-            log.append(line)
+        callback_error: Exception | None = None
+        terminal_seen = False
+        try:
+            while True:
+                line = self._readline()
+                if line.startswith("LAHBM/1\tTOKEN\t"):
+                    token_fields = line.split("\t")
+                    if len(token_fields) != 4 or token_fields[2] != request_id:
+                        raise RuntimeError(f"invalid token frame: {line}")
+                    if on_token is not None and callback_error is None:
+                        try:
+                            on_token(int(token_fields[3]))
+                        except Exception as error:
+                            # The runner keeps producing this request. Drain it
+                            # to a terminal frame before returning the callback
+                            # failure, otherwise the next request is misaligned.
+                            callback_error = error
+                    continue
+                if line.startswith(("LAHBM/1\tRESULT\t", "LAHBM/1\tERROR\t")):
+                    terminal_fields = line.split("\t")
+                    if len(terminal_fields) < 3 or terminal_fields[2] != request_id:
+                        raise RuntimeError(f"invalid terminal frame: {line}")
+                    terminal_seen = True
+                    if callback_error is not None:
+                        raise callback_error
+                    if terminal_fields[1] == "ERROR":
+                        raise RuntimeError(line)
+                    return line, log
+                log.append(line)
+        except BaseException:
+            if not terminal_seen:
+                self._terminate()
+            raise
+
+    def _terminate(self) -> None:
+        if self.process.poll() is not None:
+            if self._reader_thread.ident is not None:
+                try:
+                    self._reader_thread.join(timeout=1)
+                except KeyboardInterrupt:
+                    pass
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            self.process.kill()
+            try:
+                self.process.wait(timeout=2)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                pass
+        if self._reader_thread.ident is not None:
+            try:
+                self._reader_thread.join(timeout=1)
+            except KeyboardInterrupt:
+                pass
 
     def close(self) -> None:
         if self.process.poll() is not None:
+            if self._reader_thread.ident is not None:
+                self._reader_thread.join(timeout=1)
             return
         try:
             self._write("LAHBM/1\tQUIT")
             self.process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        except (OSError, ValueError, subprocess.TimeoutExpired, KeyboardInterrupt):
+            self._terminate()
+        else:
+            if self._reader_thread.ident is not None:
+                try:
+                    self._reader_thread.join(timeout=1)
+                except KeyboardInterrupt:
+                    pass
 
 
 class ResourceDashboard:
     """Fixed terminal footer backed only by measured board/runtime counters."""
 
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(self, enabled: bool = True, interval_seconds: float = 1.0) -> None:
+        if interval_seconds < 0.25:
+            raise ValueError("dashboard interval must be at least 0.25 seconds")
         self.enabled = enabled and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+        self.interval_seconds = interval_seconds
         self._stop = threading.Event()
+        self._active = threading.Event()
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._bpu: list[float | None] = [None] * 4
@@ -172,6 +253,7 @@ class ResourceDashboard:
         self._previous_cpu: tuple[int, int] | None = None
         self._profile_bytes_mib = 0.0
         self._profile_ms = 0.0
+        self._completed_request = False
         self._rows = max(2, shutil.get_terminal_size((140, 32)).lines)
 
     @staticmethod
@@ -211,14 +293,7 @@ class ResourceDashboard:
             return [None] * 4, None
         if completed.returncode != 0:
             return [None] * 4, None
-        bpu: list[float | None] = [None] * 4
-        for match in BPU_STATUS_RE.finditer(completed.stdout):
-            bpu[int(match.group("core"))] = float(match.group("value"))
-        temperatures = [
-            float(match.group("value"))
-            for match in BPU_TEMPERATURE_RE.finditer(completed.stdout)
-        ]
-        return bpu, max(temperatures) if temperatures else None
+        return parse_s600_resource_status(completed.stdout)
 
     @staticmethod
     def _color_percent(value: float | None) -> str:
@@ -231,6 +306,29 @@ class ResourceDashboard:
         with self._lock:
             self._profile_bytes_mib = 0.0
             self._profile_ms = 0.0
+            self._ucp_gib_s = None
+            self._cpu = None
+            self._memory = None
+            self._bpu = [None] * 4
+            self._temperature = None
+            self._completed_request = False
+        self._previous_cpu = self._read_system_cpu()
+        self._active.set()
+        self._wake.set()
+
+    def end_request(self) -> None:
+        self._active.clear()
+        with self._lock:
+            self._completed_request = True
+        self._wake.set()
+
+    @contextmanager
+    def request_scope(self):
+        self.begin_request()
+        try:
+            yield
+        finally:
+            self.end_request()
 
     def observe_profile(self, line: str) -> None:
         values = {name: float(value) for name, value in PROFILE_VALUE_RE.findall(line)}
@@ -244,6 +342,7 @@ class ResourceDashboard:
             self._profile_bytes_mib += host_mib
             self._profile_ms += host_ms
             self._ucp_gib_s = self._profile_bytes_mib * 1000.0 / self._profile_ms / 1024.0
+        self._wake.set()
 
     def _sample(self) -> None:
         cpu_now = self._read_system_cpu()
@@ -274,11 +373,17 @@ class ResourceDashboard:
             temperature = (
                 f"{self._temperature:.1f} C" if self._temperature is not None else "--"
             )
+            state = (
+                "ACTIVE" if self._active.is_set()
+                else "LAST REQUEST" if self._completed_request
+                else "IDLE"
+            )
             return (
-                f"{BOLD}{CYAN}◆ S600 LIVE{RESET}  BPU[{bpu}]  │  "
-                f"CPU {self._color_percent(self._cpu)}  │  "
+                f"{BOLD}{CYAN}◆ S600 {state}{RESET}  "
+                f"BPU[{bpu}]  │  "
+                f"SYS CPU {self._color_percent(self._cpu)}  │  "
                 f"MEM {self._color_percent(self._memory)}  │  "
-                f"Host↔UCP {ucp}  │  BPU {temperature}"
+                f"Host I/O(est.) {ucp}  │  BPU {temperature}"
             )
 
     def _draw(self) -> None:
@@ -303,14 +408,24 @@ class ResourceDashboard:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self._sample()
+            if self._active.is_set():
+                self._sample()
             self._draw()
-            self._stop.wait(0.5)
+            if self._stop.is_set():
+                break
+            timeout = self.interval_seconds if self._active.is_set() else None
+            self._wake.wait(timeout)
+            self._wake.clear()
 
     def start(self) -> None:
         if not self.enabled:
             return
-        sys.stdout.write(f"\033[1;{self._rows - 1}r")
+        # DECSTBM resets the cursor to the home position. Move it back to the
+        # last scrollable row before input() writes the interactive prompt.
+        sys.stdout.flush()
+        sys.stdout.write(
+            f"\033[1;{self._rows - 1}r\033[{self._rows - 1};1H"
+        )
         sys.stdout.flush()
         self._thread = threading.Thread(target=self._run, name="s600-dashboard", daemon=True)
         self._thread.start()
@@ -319,13 +434,55 @@ class ResourceDashboard:
         if not self.enabled:
             return
         self._stop.set()
+        self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=1.5)
         sys.stdout.write(f"\0337\033[r\033[{self._rows};1H\033[2K\0338")
         sys.stdout.flush()
 
 
-def parse_args() -> argparse.Namespace:
+def close_runtime_resources(
+    dashboard: ResourceDashboard | None,
+    language: HbmServer | None,
+    vision: HbmServer | None,
+) -> None:
+    """Attempt every shutdown step so one broken stream cannot leak a runner."""
+    failures: list[tuple[str, BaseException]] = []
+    resources = (
+        ("dashboard", dashboard, "stop"),
+        ("language", language, "close"),
+        ("vision", vision, "close"),
+    )
+    previous_sigint = None
+    can_mask_sigint = threading.current_thread() is threading.main_thread()
+    if can_mask_sigint:
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        for label, resource, method_name in resources:
+            if resource is None:
+                continue
+            try:
+                getattr(resource, method_name)()
+            except (Exception, KeyboardInterrupt) as error:
+                failures.append((label, error))
+    finally:
+        if can_mask_sigint and previous_sigint is not None:
+            signal.signal(signal.SIGINT, previous_sigint)
+    for label, error in failures:
+        try:
+            print(
+                f"[WARN] failed to close {label}: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+        except Exception:
+            # Output streams may be the reason cleanup started failing. All
+            # resource shutdown attempts have already completed at this point.
+            break
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    runtime = load_runtime_config_from_args(argv)
     parser = argparse.ArgumentParser(
         prog="LocateAnything",
         description="Resident interactive LocateAnything Vision + Language HBM runtime.",
@@ -338,49 +495,56 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument(
+        "-c", "--config", type=Path, default=runtime.source,
+        help=f"runtime config (default: {runtime.source})",
+    )
     parser.add_argument("-i", "--image", type=Path, help="initial image")
     parser.add_argument("-p", "--prompt", help="run one initial prompt after startup")
-    parser.add_argument("-o", "--output-dir", type=Path, help="optional per-request JSON directory")
     parser.add_argument(
-        "--max-new-tokens", type=int, default=2048,
-        help="maximum generated tokens per request (default: 2048)",
+        "-o",
+        "--output-dir",
+        type=Path,
+        help="session directory; each request gets prediction, image, timings, and logs",
+    )
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=runtime.default_max_new_tokens,
+        help=("maximum generated tokens per request "
+              f"(default: {runtime.default_max_new_tokens})"),
     )
     parser.add_argument(
         "--no-dashboard", action="store_true",
         help="disable the live S600 resource footer",
     )
     parser.add_argument(
-        "--show-profiles", action="store_true",
-        help="print raw graph profile lines in addition to the live footer",
+        "--show-runner-details",
+        action="store_true",
+        help="print detailed runner timing lines in addition to the live footer",
+    )
+    parser.add_argument(
+        "--show-profiles",
+        dest="show_runner_details",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--generation-mode", choices=("hybrid", "slow"),
-        default=DEFAULT_GENERATION_MODE,
-        help="hybrid=q6 PBD with q1 fallback; slow=q1 AR (default: hybrid)",
+        default=runtime.default_generation_mode,
+        help=("hybrid=q6 PBD with q1 fallback; slow=q1 AR "
+              f"(default: {runtime.default_generation_mode})"),
     )
     parser.add_argument(
-        "--nms-iou", type=float, default=DEFAULT_NMS_IOU,
-        help="same-label Detection NMS threshold (default: 0.90)",
+        "--nms-iou", type=float, default=runtime.default_nms_iou,
+        help=f"same-label Detection NMS threshold (default: {runtime.default_nms_iou:.2f})",
     )
     parser.add_argument(
         "--no-nms", action="store_true",
         help="disable Detection NMS while retaining raw model boxes",
     )
     parser.add_argument("--version", action="version", version=f"LocateAnything {VERSION}")
-    return parser.parse_args()
-
-
-def parse_generation(path: Path) -> tuple[str, list[int]]:
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            values[key] = value
-    if "stop_reason" not in values or "token_ids" not in values:
-        raise ValueError(f"invalid Language output: {path}")
-    return values["stop_reason"], [
-        int(value) for value in values["token_ids"].split(",") if value
-    ]
+    args = parser.parse_args(argv)
+    args.runtime = runtime
+    return args
 
 
 def print_result(
@@ -441,13 +605,10 @@ def print_result(
 def print_runtime_info(
     vision: HbmServer,
     language: HbmServer,
-    vision_model: Path,
-    language_model: Path,
-    embeddings: Path,
+    runtime: RuntimeConfig,
     image: Path | None,
     generation_mode: str,
     max_new_tokens: int,
-    l2m: str,
 ) -> None:
     printed: set[str] = set()
     for line in vision.startup_output + language.startup_output:
@@ -456,21 +617,35 @@ def print_runtime_info(
         ):
             print(line)
             printed.add(line)
-    print("[INFO] model_type=LocateAnything-3B")
-    print("[INFO] backend=HBRT target=S600/Nash-P bpu_cores=0,1,2,3")
-    print(f"[INFO] load visual graph success: {vision_model}")
-    print(f"[INFO] load language graphs success: {language_model}")
-    print(f"[INFO] load token embeddings success: {embeddings}")
+    core_text = ",".join(str(core) for core in runtime.bpu_cores)
+    print(f"[INFO] runtime_version={RUNTIME_VERSION} config={runtime.source}")
+    print(f"[INFO] model_type={runtime.model_type}")
+    print(f"[INFO] backend=HBRT target=S600/Nash-P bpu_cores={core_text}")
+    print(f"[INFO] load visual graph success: {runtime.vision_model}")
+    print(f"[INFO] load language graphs success: {runtime.language_model}")
+    print(f"[INFO] load token embeddings success: {runtime.embeddings}")
     print(f"{SUCCESS} {GREEN}LocateAnything S600 Runtime is ready.{RESET}")
     print(LOGO)
     print(f"{CYAN}================== RUNTIME CONFIG =================={RESET}")
-    print(f"{BOLD}模型{RESET}  LocateAnything-3B  |  图像、文本定位")
-    print(f"{BOLD}Vision{RESET} {vision_model.name}  |  672x672, 576 visual tokens")
-    print(f"{BOLD}Language{RESET} {language_model.name}  |  prefill=1024, PBD=6, AR=1, cache=4096")
+    print(f"{BOLD}模型{RESET}  {runtime.model_type}  |  图像、文本定位")
+    print(
+        f"{BOLD}Vision{RESET} {runtime.vision_model.name}  |  "
+        f"{runtime.image_width}x{runtime.image_height}, {runtime.visual_tokens} visual tokens"
+    )
+    print(
+        f"{BOLD}Language{RESET} {runtime.language_model.name}  |  "
+        f"prefill={runtime.prefill_chunk}, PBD={runtime.pbd_query_len}, "
+        f"AR={runtime.ar_query_len}, cache={runtime.cache_len}"
+    )
     print(f"{BOLD}KV cache{RESET} UCP/DDR resident ring  |  Host only commits new rows")
-    print(f"{BOLD}Embedding{RESET} {embeddings.name}")
+    print(f"{BOLD}Embedding{RESET} {runtime.embeddings.name}")
     print(f"{BOLD}Generation{RESET} {generation_mode}  |  max_new_tokens={max_new_tokens}")
-    print(f"{BOLD}BPU{RESET} Nash-P core 0,1,2,3  |  L2M={l2m}")
+    print(f"{BOLD}BPU{RESET} Nash-P core {core_text}  |  L2M={runtime.l2m_sizes}")
+    print(
+        f"{BOLD}Telemetry{RESET} {runtime.telemetry_interval_seconds:.2f}s refresh  |  "
+        "disable with --no-dashboard"
+    )
+    print(f"{DIM}  SYS CPU=整机占用；Host I/O(est.)=由 profile 搬运字节与 Host 时间估算{RESET}")
     if image is not None:
         print(f"{BOLD}Image{RESET} {image.name}")
     print()
@@ -484,7 +659,7 @@ def print_runtime_info(
     print(f"  {YELLOW}/ground_text{RESET} <text>          {DIM}指定文本定位{RESET}")
     print(f"  {CYAN}/layout{RESET} title,table,figure      {DIM}文档版面分析{RESET}")
     print(f"  {RED}/point{RESET} <target>                 {DIM}通用点定位{RESET}")
-    print(f"  {GREEN}/box{RESET} /detect cat              {DIM}保存预测框图片到 ./output{RESET}")
+    print(f"  {GREEN}/box{RESET} /detect cat              {DIM}保存预测框图片{RESET}")
     print()
     print(f"{CYAN}================== SESSION ========================={RESET}")
     print(f"  {BOLD}/image{RESET} <image_path>             {DIM}加载图片{RESET}")
@@ -498,6 +673,8 @@ def main() -> int:
     args = parse_args()
     if args.max_new_tokens <= 0:
         raise ValueError("--max-new-tokens must be positive")
+    if not 0.0 <= args.nms_iou <= 1.0:
+        raise ValueError("--nms-iou must be between 0 and 1")
     if args.prompt and args.image is None:
         raise ValueError("--prompt requires --image")
 
@@ -505,64 +682,57 @@ def main() -> int:
     if current_image is not None and not current_image.is_file():
         raise FileNotFoundError(current_image)
 
-    runtime_dir = Path(__file__).resolve().parent
-    repo_root = runtime_dir.parent
-    vision_runner = resolve_repo_path(
-        repo_root,
-        os.environ.get("LA_VISION_RUNNER", str(runtime_dir / "build" / "vision_hbm_runner")),
-    )
-    language_runner = resolve_repo_path(
-        repo_root,
-        os.environ.get(
-            "LA_LANGUAGE_RUNNER", str(runtime_dir / "build" / "language_hbm_runner")
-        ),
-    )
-    tokenizer_dir = runtime_dir / "tokenizer"
-    vision_model = resolve_repo_path(repo_root, os.environ.get("LA_VISION_MODEL", VISION_MODEL))
-    language_model = resolve_repo_path(repo_root, os.environ.get("LA_LANGUAGE_MODEL", LANGUAGE_MODEL))
-    embeddings = resolve_repo_path(repo_root, os.environ.get("LA_EMBEDDINGS", EMBEDDINGS))
-    required = (vision_runner, language_runner, tokenizer_dir, vision_model, language_model, embeddings)
-    missing = [str(path) for path in required if not path.exists()]
-    if missing:
-        raise FileNotFoundError(", ".join(missing))
+    runtime: RuntimeConfig = args.runtime
+    require_runtime_paths(runtime)
+    vision_runner = runtime.vision_runner
+    tokenizer_dir = runtime.tokenizer_dir
+    vision_model = runtime.vision_model
     stream_tokenizer = load_tokenizer(tokenizer_dir)
+    output_dir = args.output_dir.resolve() if args.output_dir else None
 
-    env = os.environ.copy()
-    env.setdefault("HB_DNN_USER_DEFINED_L2M_SIZES", "6:6:6:6")
+    env = build_runtime_environment(runtime)
     env.setdefault("LA_PROFILE_EXECUTION", "1")
     vision = HbmServer(
-        [str(vision_runner), "--model", str(vision_model), "--server"], env, "vision"
+        [str(vision_runner), "--model", str(vision_model), "--server"],
+        env,
+        "vision",
+        runtime.runner_startup_timeout_seconds,
     )
     try:
         language = HbmServer(
-            [str(language_runner), "--model", str(language_model), "--embed", str(embeddings), "--server"],
+            language_runner_command(runtime) + ["--server"],
             env,
             "language",
+            runtime.runner_startup_timeout_seconds,
         )
-    except Exception:
-        vision.close()
+    except BaseException:
+        close_runtime_resources(None, None, vision)
         raise
 
     last_request: tuple[Path, str] | None = None
     vision_cache: tuple[tuple[str, int, int], bytes, dict[str, object]] | None = None
     request_index = 0
-    output_dir = args.output_dir.resolve() if args.output_dir else None
-    if output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
+    dashboard: ResourceDashboard | None = None
+    try:
+        dashboard = ResourceDashboard(
+            enabled=not args.no_dashboard,
+            interval_seconds=runtime.telemetry_interval_seconds,
+        )
+        print_runtime_info(
+            vision,
+            language,
+            runtime,
+            current_image,
+            args.generation_mode,
+            args.max_new_tokens,
+        )
+        dashboard.start()
+    except BaseException:
+        close_runtime_resources(dashboard, language, vision)
+        raise
 
-    print_runtime_info(
-        vision,
-        language,
-        vision_model,
-        language_model,
-        embeddings,
-        current_image,
-        args.generation_mode,
-        args.max_new_tokens,
-        env["HB_DNN_USER_DEFINED_L2M_SIZES"],
-    )
-    dashboard = ResourceDashboard(enabled=not args.no_dashboard)
-    dashboard.start()
+    # The initialization guard above guarantees this before infer() is defined.
+    assert dashboard is not None
 
     def infer(image: Path, prompt: str) -> None:
         nonlocal request_index, last_request, vision_cache
@@ -573,8 +743,19 @@ def main() -> int:
         request_index += 1
         last_request = (image, prompt)
         started = time.monotonic()
-        with tempfile.TemporaryDirectory(prefix="locateanything-interactive-") as raw_dir:
+        request_output_dir = (
+            output_dir / f"request_{request_index:04d}" if output_dir else None
+        )
+        paths = create_prediction_paths(
+            runtime.layout_root,
+            image,
+            output_dir=request_output_dir,
+        )
+        with dashboard.request_scope(), tempfile.TemporaryDirectory(
+            prefix="locateanything-interactive-"
+        ) as raw_dir:
             work_dir = Path(raw_dir)
+            print_stage(1, "Vision")
             vit_started = time.monotonic()
             vision_input_path = work_dir / "vision_input.f16.bin"
             visual_output_path = work_dir / "visual_features.f16.bin"
@@ -587,6 +768,7 @@ def main() -> int:
                 transform = vision_cache[2]
                 visual_output_path.write_bytes(vision_cache[1])
                 vit_infer_ms = 0.0
+                vision_result = "cached visual features"
             else:
                 vision_input, transform = prepare_image(image)
                 vision_input.tofile(vision_input_path)
@@ -599,7 +781,10 @@ def main() -> int:
                 vit_infer_ms = float(vision_fields[3])
                 vision_cache = (cache_key, visual_output_path.read_bytes(), transform)
             vit_ms = (time.monotonic() - vit_started) * 1000.0
+            print_stage(1, "Vision", vit_ms / 1000.0)
 
+            print_stage(2, "Language")
+            language_started = time.monotonic()
             tokens = tokenize_prompt(tokenizer_dir, task_prompt, stream_tokenizer)
             tokens.tofile(token_path)
 
@@ -620,7 +805,6 @@ def main() -> int:
                 print(f"[LocateAnything] task={task}")
                 print(f"[LocateAnything] prompt={normalized_prompt}")
             print("[Assistant] >>> ", end="", flush=True)
-            dashboard.begin_request()
             try:
                 language_result, language_log = language.request([
                     "LAHBM/1", "RUN", str(request_index), str(token_path),
@@ -638,7 +822,7 @@ def main() -> int:
             prefill_ms = float(language_fields[6])
             decode_ms = float(language_fields[7])
 
-            stop_reason, token_ids = parse_generation(generation_path)
+            stop_reason, token_ids = read_generation(generation_path)
             text = decode_tokens(tokenizer_dir, token_ids, stream_tokenizer)
             if text.startswith(streamed_text) and len(text) > len(streamed_text):
                 print(text[len(streamed_text):], end="", flush=True)
@@ -648,10 +832,15 @@ def main() -> int:
             for line in language_log:
                 if line.startswith("[profile]"):
                     dashboard.observe_profile(line)
-                    if args.show_profiles:
+                    if args.show_runner_details:
                         print(line)
                 elif line.startswith(("[pbd]", "[hybrid:")):
                     print(line)
+            language_seconds = time.monotonic() - language_started
+            print_stage(2, "Language", language_seconds)
+
+            print_stage(3, "Postprocess")
+            postprocess_started = time.monotonic()
             raw_detections = parse_detections(text, transform)
             detections, suppressed_detections = postprocess_detections(
                 raw_detections,
@@ -661,10 +850,12 @@ def main() -> int:
             )
             points = parse_points(text, transform)
             annotated_image = None
-            if annotate:
-                annotated_image = annotated_output_path(image, task)
+            if annotate or detections or points:
+                annotated_image = paths.annotated_image
                 save_annotated_image(image, detections, points, annotated_image)
+            postprocess_seconds = time.monotonic() - postprocess_started
             total_ms = (time.monotonic() - started) * 1000.0
+            print_stage(3, "Postprocess", postprocess_seconds)
             print_result(
                 detections,
                 points,
@@ -684,10 +875,40 @@ def main() -> int:
                 )
             if annotated_image:
                 print(f"[Output] annotated image: {annotated_image}")
-            if output_dir:
-                output_path = output_dir / f"request_{request_index:04d}.json"
-                output_path.write_text(json.dumps({
+            timing_data = {
+                "schema_version": 1,
+                "stages_seconds": {
+                    "vision": round(vit_ms / 1000.0, 6),
+                    "language": round(language_seconds, 6),
+                    "postprocess": round(postprocess_seconds, 6),
+                },
+                "runner_seconds": {
+                    "vision_hbm": round(vit_infer_ms / 1000.0, 6),
+                    "language_prefill_hbm": round(prefill_ms / 1000.0, 6),
+                    "language_decode_hbm": round(decode_ms / 1000.0, 6),
+                },
+                "total_seconds": round(total_ms / 1000.0, 6),
+            }
+            paths.timings.write_text(
+                json.dumps(timing_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            paths.runtime_log.write_text(
+                "VISION\n"
+                + vision_result
+                + "\n\nLANGUAGE\n"
+                + "\n".join(language_log)
+                + "\n",
+                encoding="utf-8",
+            )
+            paths.prediction.write_text(json.dumps({
                     "schema_version": 1,
+                    "runtime": {
+                        "version": RUNTIME_VERSION,
+                        "config": str(runtime.source),
+                        "model_type": runtime.model_type,
+                        "runtime_specification": runtime.specification(),
+                    },
                     "image": str(image),
                     "prompt": prompt,
                     "normalized_prompt": normalized_prompt,
@@ -723,8 +944,12 @@ def main() -> int:
                         "decode_tokens": decode_token_count,
                         "decode_ms": round(decode_ms, 3),
                     },
+                    "timings": timing_data,
+                    "runtime_log": str(paths.runtime_log),
                 }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                print(f"[Output] {output_path}")
+            print(f"[Output] prediction: {paths.prediction}")
+            print(f"[Output] timings: {paths.timings}")
+            print(f"[Output] run directory: {paths.root}")
 
     try:
         if current_image is not None and args.prompt:
@@ -773,9 +998,7 @@ def main() -> int:
             except Exception as error:
                 print(f"[LocateAnything] request failed: {error}", file=sys.stderr)
     finally:
-        dashboard.stop()
-        language.close()
-        vision.close()
+        close_runtime_resources(dashboard, language, vision)
     return 0
 
 

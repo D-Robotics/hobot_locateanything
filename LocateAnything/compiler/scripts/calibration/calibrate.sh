@@ -7,18 +7,19 @@ if [[ ${1:-} == "--help" ]]; then
 Run LocateAnything activation calibration.
 
 Required variables:
-  GENERATED_JSONL  prepared calibration manifest
-  SELECTED_JSONL   frozen 1200-sample source manifest
+  GENERATED_JSONL  prepared calibration index
+  SELECTED_JSONL   frozen 1200-sample dataset index
   UPSTREAM_REPO    frozen LocateAnything Float source tree
   OUTPUT_DIR       activation statistics output directory
 
 Release defaults:
-  MODEL_PATH          workspace/models/LocateAnything-3B
+  MODEL_PATH          artifacts/models/LocateAnything-3B
   CALIBRATION_COMPONENT  all
   MAX_SAMPLES         1200
   CHECKPOINT_SAMPLES  512
   CHUNK_SIZE          1024
   CACHE_LEN           4096
+  LANGUAGE_GRAPH_SET   standard (Prefill + PBD q6 + repeated AR q1)
   LM_HEAD_W_BITS      8
   REPLAY_SEED         20260729
 
@@ -32,10 +33,10 @@ fi
 REPO_ROOT=${REPO_ROOT:-"$(cd "$(dirname "$0")/../../.." && pwd)"}
 PYTHON_BIN=${PYTHON_BIN:-python3}
 REPLAY_SCRIPT=${REPLAY_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/calibrate.py"}
-GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration manifest}
-SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the frozen selected manifest}
+GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration index}
+SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the frozen dataset index}
 UPSTREAM_REPO=${UPSTREAM_REPO:?set UPSTREAM_REPO to the LocateAnything Float source tree}
-MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/workspace/models/LocateAnything-3B"}
+MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/artifacts/models/LocateAnything-3B"}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation calibration output directory}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-float16}
@@ -44,6 +45,7 @@ CACHE_LEN=${CACHE_LEN:-4096}
 CALIBRATION_COMPONENT=${CALIBRATION_COMPONENT:-all}
 LM_HEAD_W_BITS=${LM_HEAD_W_BITS:-8}
 REPLAY_SEED=${REPLAY_SEED:-20260729}
+LANGUAGE_GRAPH_SET=${LANGUAGE_GRAPH_SET:-standard}
 MAX_SAMPLES=${MAX_SAMPLES:-1200}
 CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:-512}
 IMAGE_TOKEN_ID=${IMAGE_TOKEN_ID:-151665}
@@ -60,14 +62,18 @@ RESUME=${RESUME:-0}
   echo "RESUME must be 0 or 1"
   exit 1
 }
+[[ "$LANGUAGE_GRAPH_SET" == "standard" || "$LANGUAGE_GRAPH_SET" == "fused_decode" ]] || {
+  echo "LANGUAGE_GRAPH_SET must be standard or fused_decode; got $LANGUAGE_GRAPH_SET"
+  exit 1
+}
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/workspace/logs"
+mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/artifacts/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_calibrate"}
-LOG_PATH=${LOG_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.log"}
-EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.exit.txt"}
+LOG_PATH=${LOG_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.log"}
+EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
-PID_PATH=${PID_PATH:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.pid"}
-LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/workspace/logs/${JOB_NAME}.launcher.log"}
+PID_PATH=${PID_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.pid"}
+LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.launcher.log"}
 ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/calibration_environment.json"}
 ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 STARTED_AT=$(date --iso-8601=seconds)
@@ -109,23 +115,24 @@ write_initial_metadata() {
     "$OUTPUT_DIR" "$REPLAY_SCRIPT" "$DEVICE" "$DTYPE" "$CHUNK_SIZE" "$CACHE_LEN" \
     "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
     "$LM_HEAD_W_BITS" "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" "$LOG_PATH" \
-    "$PREFLIGHT_ONLY" <<'PY'
+    "$PREFLIGHT_ONLY" "$LANGUAGE_GRAPH_SET" "$REPO_ROOT" <<'PY'
 import json, os, socket, sys
 from pathlib import Path
 
 (path, started_at, generated, selected, upstream, model, output, replay, device, dtype, chunk, cache,
  max_samples, checkpoint, image_token, component, lm_head_w_bits, replay_seed,
- rotation, log_path, preflight_only) = sys.argv[1:]
-language_stages = [
-    "prefill",
-    *(f"pbd_q{q_len}" for q_len in range(6, 13)),
-    *(f"ar_q{q_len}" for q_len in range(1, 6)),
-]
+ rotation, log_path, preflight_only, graph_set, repo_root) = sys.argv[1:]
+sys.path.insert(0, repo_root)
+from compiler.leap_llm.language_graphs import (
+    language_graph_set,
+    normalize_graph_set_metadata,
+)
+profile = language_graph_set(graph_set)
 expected_graph_paths = []
 if component in {"all", "vision"}:
     expected_graph_paths.append("vision")
 if component in {"all", "language"}:
-    expected_graph_paths.extend(language_stages)
+    expected_graph_paths.extend(profile.calibration_stages)
 value = {
     "schema_version": 1,
     "phase": "calibrate",
@@ -150,6 +157,7 @@ value = {
     "image_token_id": int(image_token),
     "lm_head_w_bits": int(lm_head_w_bits),
     "replay_seed": int(replay_seed),
+    "graph_set": profile.name,
     "hidden_rotation_path": rotation or None,
     "expected_graph_paths": expected_graph_paths,
     "log_path": log_path,
@@ -242,7 +250,7 @@ if [[ "$environment_status" -ne 0 ]]; then
 fi
 
 echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
-echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES lm_head_w_bits=$LM_HEAD_W_BITS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
+echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT graph_set=$LANGUAGE_GRAPH_SET device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES lm_head_w_bits=$LM_HEAD_W_BITS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
 
 "$PYTHON_BIN" - "$REPLAY_SCRIPT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
   "$UPSTREAM_REPO" "$MODEL_PATH" \
@@ -320,6 +328,7 @@ replay_args=(
   --checkpoint-samples "$CHECKPOINT_SAMPLES"
   --image-token-id "$IMAGE_TOKEN_ID"
   --replay-seed "$REPLAY_SEED"
+  --graph-set "$LANGUAGE_GRAPH_SET"
 )
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   replay_args+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
@@ -343,7 +352,7 @@ fi
 
 # A zero replay exit is accepted only when all durable calibration evidence agrees.
 "$PYTHON_BIN" - "$OUTPUT_DIR" "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$CALIBRATION_COMPONENT" \
-  "$LM_HEAD_W_BITS" "$REPLAY_SEED" 2>&1 <<'PY' | tee -a "$LOG_PATH"
+  "$LM_HEAD_W_BITS" "$REPLAY_SEED" "$LANGUAGE_GRAPH_SET" "$REPO_ROOT" 2>&1 <<'PY' | tee -a "$LOG_PATH"
 import hashlib, json, sys
 from pathlib import Path
 
@@ -352,6 +361,13 @@ max_samples, checkpoint = map(int, sys.argv[2:4])
 component = sys.argv[4]
 lm_head_w_bits = int(sys.argv[5])
 replay_seed = int(sys.argv[6])
+graph_set = sys.argv[7]
+sys.path.insert(0, sys.argv[8])
+from compiler.leap_llm.language_graphs import (
+    language_graph_set,
+    normalize_graph_set_metadata,
+)
+profile_contract = language_graph_set(graph_set)
 coverage_path = output / "calibration_graph_coverage.json"
 manifest_path = output / "calibration_scale_manifest.json"
 convergence_path = output / f"scale_convergence_{checkpoint}_vs_{max_samples}.json"
@@ -395,22 +411,28 @@ if component in {"all", "language"}:
         errors.append("coverage language_context_count is outside the one-to-two contexts/sample contract")
 elif language_context_count != 0:
     errors.append("Vision-only calibration must not report Language contexts")
-language_stages = [
-    "prefill",
-    *(f"pbd_q{q_len}" for q_len in range(6, 13)),
-    *(f"ar_q{q_len}" for q_len in range(1, 6)),
-]
 expected_stages = []
 if component in {"all", "vision"}:
     expected_stages.append("vision")
 if component in {"all", "language"}:
-    expected_stages.extend(language_stages)
+    expected_stages.extend(profile_contract.calibration_stages)
+language_expected_counts = profile_contract.calibration_execution_counts(
+    language_context_count
+)
 for graph_stage in expected_stages:
-    expected_count = max_samples if graph_stage == "vision" else language_context_count
+    expected_count = (
+        max_samples
+        if graph_stage == "vision"
+        else language_expected_counts[graph_stage]
+    )
     if counts.get(graph_stage) != expected_count:
         errors.append(f"{graph_stage} count={counts.get(graph_stage)} expected {expected_count}")
 expected_counts = {
-    graph_stage: max_samples if graph_stage == "vision" else language_context_count
+    graph_stage: (
+        max_samples
+        if graph_stage == "vision"
+        else language_expected_counts[graph_stage]
+    )
     for graph_stage in expected_stages
 }
 if coverage.get("expected_stage_execution_counts") != expected_counts:
@@ -433,6 +455,12 @@ profile = manifest.get("profile", {})
 if profile.get("component") != component:
     errors.append(
         f"scale manifest component={profile.get('component')} expected {component}"
+    )
+stored_profile = profile.get("graph_set", profile.get("graph_profile"))
+stored_graph_set = normalize_graph_set_metadata(stored_profile)
+if language_graph_set(stored_graph_set).name != graph_set:
+    errors.append(
+        f"activation scale profile={stored_profile} expected {graph_set}"
     )
 if component in {"all", "language"} and profile.get("language_lm_head_weight_bits") != lm_head_w_bits:
     errors.append("scale manifest lm_head weight bits do not match the requested run")

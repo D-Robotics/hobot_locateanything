@@ -64,12 +64,8 @@ def test_compile_wrappers_validate_all_four_evidence_inputs_before_build():
             "--expected-samples",
         ):
             assert argument in validation, f"{path.name} misses validation argument {argument}"
-        assert "EXPECTED_SAMPLES=1200" in validation
-        assert (
-            'EXPECTED_SELECTED_MANIFEST_SHA256="'
-            '22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"'
-            in validation
-        )
+        assert 'EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"' in validation
+        assert "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b" in validation
         assert "--calibration_scale_manifest" in build
         assert "--calib_json_path" not in build
         assert "--calib_image_path" not in build
@@ -133,7 +129,6 @@ def test_oellm_build_rejects_nonrelease_locateanything_vision_profiles(
         (("--decode_seq_len", "1"), "--chunk_size 1024 --cache_len 4096 --decode_seq_len 6"),
         (("--w_bits", "4"), "--w_bits 8 --lm_head_w_bits 8"),
         (("--lm_head_w_bits", "4"), "--w_bits 8 --lm_head_w_bits 8"),
-        (("--no-fused_pbd_profiles",), "--fused_pbd_profiles"),
     ],
 )
 def test_oellm_build_rejects_nonrelease_locateanything_language_profiles(
@@ -156,6 +151,15 @@ def test_oellm_build_accepts_locateanything_release_profiles(tmp_path, model_nam
     build, parser, args = parse_release_profile(tmp_path, model_name)
 
     build.validate_args(parser, args)
+
+
+@pytest.mark.parametrize("profile", ("standard", "fused_decode"))
+def test_oellm_build_accepts_both_language_graph_sets(tmp_path, profile):
+    build, parser, args = parse_release_profile(
+        tmp_path, "locateanything-lm-3b", "--graph-set", profile
+    )
+    build.validate_args(parser, args)
+    assert args.graph_set == profile
 
 
 @pytest.mark.parametrize(

@@ -73,7 +73,7 @@ PHASES = ("vision", "language", "full_model")
 CAPTURE_LEVELS = {"small": "final", "medium": "boundary", "high": "deep"}
 CANDIDATE_STAGES = ("exported_bc", "converted_bc", "hbm")
 VISION_OUTPUT_SHAPE = (1, 576, 2048)
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "workspace" / "evaluation" / "pipeline"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "artifacts" / "evaluation" / "pipeline"
 DEFAULT_CONFIG = REPO_ROOT / "compiler" / "config.yaml"
 
 
@@ -441,7 +441,7 @@ def resolve_scale_manifest(
         if not manifest.is_file():
             raise FileNotFoundError(manifest)
         return manifest
-    calibration_root = REPO_ROOT / "workspace" / "calibration" / "current"
+    calibration_root = REPO_ROOT / "artifacts" / "calibration" / "current"
     candidates = sorted(calibration_root.glob("**/calibration_scale_manifest.json"))
     if len(candidates) == 1:
         return candidates[0].resolve()
@@ -457,13 +457,18 @@ def resolve_scale_manifest(
     )
 
 
-def release_language_graphs(config_path: Path = DEFAULT_CONFIG) -> tuple[str, ...]:
+def release_language_graphs(
+    config_path: Path = DEFAULT_CONFIG,
+    graph_set: str | None = None,
+) -> tuple[str, ...]:
     """Return the ordered Language graph catalog fixed by compiler/config.yaml."""
 
+    from compiler.leap_llm.language_graphs import language_graph_set
     from compiler.quantize import load_config
 
     config = load_config(config_path)
-    return tuple(str(graph) for graph in config["language"]["graphs"])
+    graph_set_name = graph_set or str(config["language"]["graph_set"])
+    return language_graph_set(graph_set_name).graphs
 
 
 def validate_language_hbm_catalog(
@@ -2677,8 +2682,33 @@ def _language_bc_artifact_identity(paths: dict[str, Path]) -> tuple[dict[str, An
     return files, hashlib.sha256(encoded).hexdigest()
 
 
+def _language_bc_prefill_provider_path(
+    paths: dict[str, Path], *, converted: bool
+) -> Path | None:
+    """Find the matching Prefill BC when a quantized Decode file is selected alone."""
+
+    if "prefill" in paths:
+        return None
+    decode_graphs = [graph for graph in paths if graph in {"decode", "decode_ar"}]
+    if not converted or not decode_graphs:
+        return None
+    graph = decode_graphs[0]
+    path = paths[graph]
+    marker = "_convert" if converted else ""
+    suffix = f".{graph}{marker}.bc"
+    if not path.name.endswith(suffix):
+        raise ValueError(f"cannot derive Prefill BC from {path}")
+    provider = Path(f"{str(path)[: -len(suffix)]}.prefill{marker}.bc")
+    if not provider.is_file():
+        raise FileNotFoundError(
+            f"quantized Language Decode requires matching Prefill BC: {provider}"
+        )
+    return provider
+
+
 def load_language_hbm_artifacts(
     model_path: Path,
+    graph_set: str | None = None,
 ) -> tuple[Any, dict[str, LanguageBCArtifact]]:
     """Validate the release catalog, then expose the three numerical test graphs."""
 
@@ -2686,7 +2716,9 @@ def load_language_hbm_artifacts(
 
     hbm = hb.Hbm(str(model_path))
     catalog = tuple(str(function.name) for function in hbm.graphs)
-    validate_language_hbm_catalog(catalog, release_language_graphs())
+    validate_language_hbm_catalog(
+        catalog, release_language_graphs(graph_set=graph_set)
+    )
     functions = {str(function.name): function for function in hbm.graphs}
     artifacts = {
         graph: LanguageBCArtifact(
@@ -2809,7 +2841,15 @@ def run_language_bc_collection(args: argparse.Namespace) -> int:
         args.output_dir, float_stage, records
     )
 
-    artifact_files, artifact_set_sha256 = _language_bc_artifact_identity(resolved_paths)
+    cache_provider_path = (
+        None
+        if is_hbm
+        else _language_bc_prefill_provider_path(resolved_paths, converted=converted)
+    )
+    identity_paths = dict(resolved_paths)
+    if cache_provider_path is not None:
+        identity_paths["cache_provider_prefill"] = cache_provider_path
+    artifact_files, artifact_set_sha256 = _language_bc_artifact_identity(identity_paths)
     metadata["artifact_set_sha256"] = artifact_set_sha256
     stage_dir = args.output_dir / stage_name
     canonical_artifact = next(iter(resolved_paths.values()))
@@ -2840,16 +2880,31 @@ def run_language_bc_collection(args: argparse.Namespace) -> int:
         float_model_path, stage_dir / "work" / "float_model", device
     )
     hbm = None
+    cache_provider = None
     if is_hbm:
-        hbm, artifacts = load_language_hbm_artifacts(args.model_path)
+        hbm, artifacts = load_language_hbm_artifacts(
+            args.model_path, args.graph_set
+        )
     else:
         artifacts = load_language_bc_artifacts(
             args.model_path,
             converted=converted,
             loader=load_artifact,
         )
-    runner = LanguageBCRunner(model, rotation, device, artifacts)
+        if cache_provider_path is not None:
+            cache_provider = load_language_bc_artifacts(
+                cache_provider_path,
+                converted=converted,
+                loader=load_artifact,
+            )["prefill"]
+    runner = LanguageBCRunner(
+        model, rotation, device, artifacts, cache_provider=cache_provider
+    )
     artifact_contract = runner.describe_artifacts()
+    if cache_provider is not None:
+        artifact_contract["cache_provider_prefill"] = cache_provider.describe(
+            runner.num_layers
+        )
     candidate_type = (
         "LanguageHBM"
         if is_hbm
@@ -2929,7 +2984,9 @@ def run_language_bc_collection(args: argparse.Namespace) -> int:
         stage_dir,
         level=args.level,
         graphs=",".join(resolved_paths),
-        decode_cache_source="float_prefill",
+        decode_cache_source=(
+            "compiled_prefill" if converted or is_hbm else "float_prefill"
+        ),
     )
     atomic_json(
         stage_dir / "stage.json",
@@ -2946,10 +3003,17 @@ def run_language_bc_collection(args: argparse.Namespace) -> int:
             "completed": len(completed),
             "capture_policy": {"small": "selected graph final logits only"},
             "cache_policy": {
-                graph: "zero" if graph == "prefill" else "float_prefill"
+                graph: (
+                    "zero"
+                    if graph == "prefill"
+                    else "compiled_prefill" if converted or is_hbm else "float_prefill"
+                )
                 for graph in resolved_paths
             } | {
-                "purpose": "isolate each Decode BC graph from Prefill BC error",
+                "purpose": (
+                    "Converted BC/HBM Decode consumes matching compiled int8 Prefill KV; "
+                    "Exported BC Decode consumes Float Prefill float32 KV"
+                ),
             },
             "artifact_files": artifact_files,
             "artifacts": artifact_contract,
@@ -3823,7 +3887,7 @@ def parser() -> argparse.ArgumentParser:
   --mode analysis     --output_dir OUTPUTS
 Add --nums N to process an exact subset; omit it to process all inputs.
 All modes share --output_dir. The default is:
-  workspace/evaluation/pipeline
+  artifacts/evaluation/pipeline
 """,
     )
     root.add_argument("--mode", choices=MODES, required=True, help="one execution stage")
@@ -3846,6 +3910,13 @@ All modes share --output_dir. The default is:
     root.add_argument(
         "--scale-manifest", "--scale_manifest", dest="scale_manifest", type=Path,
         help="frozen calibration Scale manifest; required when no single current manifest exists",
+    )
+    root.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=("standard", "fused_decode"),
+        default="standard",
+        help="expected LocateAnything Language HBM graph family",
     )
     root.add_argument(
         "--input_dir", type=Path,

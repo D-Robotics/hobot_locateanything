@@ -12,12 +12,15 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from compiler.leap_llm import language_graphs as language_graphs_module
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "compiler" / "scripts" / "build"
 
 
 def load_stage_module(monkeypatch, filename: str, module_name: str):
+    monkeypatch.syspath_prepend(str(ROOT / "compiler"))
     hbdk4 = ModuleType("hbdk4")
     compiler = ModuleType("hbdk4.compiler")
     hbm = ModuleType("hbdk4.compiler.hbm")
@@ -38,6 +41,9 @@ def load_stage_module(monkeypatch, filename: str, module_name: str):
     monkeypatch.setitem(sys.modules, "leap_llm", leap_llm)
     monkeypatch.setitem(sys.modules, "leap_llm.nn", leap_nn)
     monkeypatch.setitem(sys.modules, "leap_llm.nn.utils", leap_utils)
+    monkeypatch.setitem(
+        sys.modules, "leap_llm.language_graphs", language_graphs_module
+    )
 
     spec = importlib.util.spec_from_file_location(module_name, BUILD / filename)
     module = importlib.util.module_from_spec(spec)
@@ -82,7 +88,11 @@ def test_language_bc_check_requires_all_13_release_graphs(tmp_path, monkeypatch)
     prefix = "release_language_fusedpbd"
     contracts = dict(module.BASE_EXPECTED)
     contracts.update(
-        {name: module.expected_contract(name) for name in module.FUSED_STAGES}
+        {
+            name: module.expected_contract(name)
+            for name in module.language_graph_set("fused_decode").graphs
+            if name not in module.BASE_EXPECTED
+        }
     )
     by_path = {}
     for name, (logits, cache) in contracts.items():
@@ -92,15 +102,15 @@ def test_language_bc_check_requires_all_13_release_graphs(tmp_path, monkeypatch)
     module.load = lambda path: by_path[path]
 
     discovered = module.discover_bc(
-        tmp_path, artifact_prefix=prefix, require_fused=True
+        tmp_path, artifact_prefix=prefix, graph_set="fused_decode"
     )
     assert set(discovered) == set(module.KNOWN_STAGES)
     assert len(discovered) == 13
 
     missing = tmp_path / f"{prefix}.decode_pbd_q12.bc"
     missing.unlink()
-    with pytest.raises(RuntimeError, match="graph family is incomplete"):
-        module.discover_bc(tmp_path, artifact_prefix=prefix, require_fused=True)
+    with pytest.raises(RuntimeError, match="missing BC graphs"):
+        module.discover_bc(tmp_path, artifact_prefix=prefix, graph_set="fused_decode")
 
 
 def test_language_graph_contract_checks_last_kv_and_every_dtype(monkeypatch):
@@ -150,7 +160,7 @@ def test_language_resume_invalidates_changed_bc_identity(tmp_path, monkeypatch):
         decode_core_num=4,
         ar_core_nums=[4],
         jobs=16,
-        require_fused=True,
+        graph_set="fused_decode",
         hbm_path=tmp_path / "release.hbm",
         resume=False,
     )
@@ -173,7 +183,7 @@ def test_language_resume_skips_completed_converted_hbo_and_hbm(tmp_path, monkeyp
         path.write_bytes(b"complete")
         module.write_digest(path)
     module.load = lambda _path: language_module(
-        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "float32"
+        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "int8"
     )
     module.Hbo = lambda _path: object()
     hbm_graph = language_module(
@@ -288,7 +298,7 @@ def test_resume_requires_matching_stage_digest(tmp_path, monkeypatch):
     converted = tmp_path / "release.prefill_convert.bc"
     converted.write_bytes(b"converted")
     module.load = lambda _path: language_module(
-        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "float32"
+        "prefill", (1, 1, 152681), (1, 1024, 2, 128), "int8"
     )
 
     assert module.valid_function(converted, "prefill") is False
@@ -328,7 +338,7 @@ def test_shell_wrappers_reuse_bc_and_forward_resume_to_stage_builders():
         assert "artifact_manifest.py" in source
         assert 'bash "$0"' in source
 
-    assert "--require_fused" in language
+    assert '--graph-set "$LANGUAGE_GRAPH_SET"' in language
     assert "EXPECTED_EMBEDDING_BYTES=$((152681 * 2048 * 2))" in language
 
 

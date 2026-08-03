@@ -93,7 +93,11 @@ target_link_libraries(kv_cache_ring_test PRIVATE locateanything_runtime)
 add_executable(hybrid_decoder_test example/hybrid_decoder_test.cpp)
 target_link_libraries(hybrid_decoder_test PRIVATE locateanything_runtime)
 
-# Current Language HBM deployment smoke: discovers the 1024/4096 W8/W8 graph
-# contract and exercises prefill -> PBD q=6 -> AR q=1 with artifact-declared KV.
+# Exact Language HBM validation for both supported graph sets.
+add_executable(language_graph_set_test example/language_graph_set_test.cpp)
+target_include_directories(language_graph_set_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Current Language HBM deployment smoke: validates the 1024/4096 W8/W8 graph
+# set and exercises prefill -> PBD q=6 -> AR q=1 with artifact-declared KV.
 add_executable(language_hbm_runner example/language_hbm_runner.cpp)
 target_link_libraries(language_hbm_runner PRIVATE locateanything_runtime)

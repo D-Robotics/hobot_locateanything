@@ -1,0 +1,89 @@
+schema_version: 1
+
+paths:
+  model: artifacts/models/LocateAnything-3B
+  upstream_source: artifacts/upstream/Eagle/Embodied
+  selected_jsonl: artifacts/calibration/current/source/selected.jsonl
+  generated_dir: artifacts/calibration/current/generated
+  generated_jsonl: artifacts/calibration/current/generated/generated.jsonl
+
+model:
+  checkpoint_index_sha256: 2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271
+  checkpoint_sha256:
+    model-00001-of-00002.safetensors: 923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58
+    model-00002-of-00002.safetensors: 3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47
+  image_width: 672
+  image_height: 672
+  resize_mode: letterbox
+  letterbox_fill: 128
+  patch_size: 14
+  spatial_merge: 2
+  hidden_size: 2048
+  vocab_size: 152681
+
+calibration:
+  sample_count: 1200
+  checkpoint_samples: 512
+  dataset_index_sha256: 521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b
+  task_counts:
+    detection: 660
+    gui: 150
+    referring: 120
+    ocr: 120
+    layout: 90
+    pointing: 60
+  source_role_counts:
+    coco_detection: 240
+    openimages_v6: 90
+    v3det: 60
+    paco: 50
+    bdd100k: 50
+    egoobjects: 40
+    humanparts: 40
+    mot17det: 45
+    mot20det: 45
+    groundcua: 150
+    refcocog: 120
+    hiertext: 120
+    doclaynet: 90
+    pixmo_points: 60
+  coco_stratum_counts:
+    single: 80
+    double: 100
+    multi: 60
+  device: cuda:0
+  prepare_dtype: bfloat16
+  calibrate_dtype: float16
+  slow_samples: 128
+  max_new_tokens: 1024
+  seed: 20260729
+  image_token_id: 151665
+  hidden_rotation_path: null
+
+language:
+  chunk_size: 1024
+  cache_len: 4096
+  pbd_query_len: 6
+  ar_query_len: 1
+  decoder_w_bits: 8
+  lm_head_w_bits: 8
+
+vision:
+  w_bits: 8
+
+build:
+  march: nash-p
+  jobs: 16
+  device: cuda:0
+  conda_env: oellm_clean
+  python: python3
+  bash: bash
+  cores:
+    vision: 4
+    prefill: 4
+    pbd: 4
+    ar: 4
+
+verification:
+  iou_threshold: 0.9
+  reference_jsonl: artifacts/evaluation/current/selected.jsonl

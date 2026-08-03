@@ -1,6 +1,7 @@
+import io
+import sys
 from dataclasses import replace
 from pathlib import Path
-import sys
 
 import pytest
 
@@ -8,6 +9,33 @@ import pytest
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
 import validate_fused_pbd_s600_ab as ab  # noqa: E402
+
+
+@pytest.mark.parametrize("profile", ["standard", "fused_decode"])
+def test_resident_server_passes_graph_set(monkeypatch, tmp_path, profile):
+    commands = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = io.StringIO("LAHBM/1\tREADY\tlanguage\n")
+
+    def fake_popen(command, **kwargs):
+        commands.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(ab.subprocess, "Popen", fake_popen)
+    server = ab.ResidentLanguageServer(
+        Path("runner"),
+        Path("model.hbm"),
+        Path("embed.bin"),
+        profile,
+        tmp_path / "server.log",
+        1.0,
+        1.0,
+    )
+    server.start()
+
+    assert commands[0][-3:] == ["--graph-set", profile, "--server"]
 
 
 def generation(
@@ -36,7 +64,7 @@ def make_run(tag: str, fused: bool) -> ab.ModelRun:
         for index in range(1, ab.RUN_COUNT + 1)
     )
     graphs = ab.EXPECTED_FUSED_GRAPHS if fused else ab.BASE_GRAPHS
-    contract = ab.FUSED_CONTRACT if fused else ab.LEGACY_CONTRACT
+    profile_log = ab.FUSED_DECODE_LOG if fused else ab.STANDARD_LOG
     return ab.ModelRun(
         tag=tag,
         model_path=Path(f"/{tag}.hbm"),
@@ -45,7 +73,7 @@ def make_run(tag: str, fused: bool) -> ab.ModelRun:
         metrics=metrics,
         log_path=Path(f"/{tag}.log"),
         log_lines=(f"[ok] loaded graphs: {' '.join(graphs)}",)
-        + (contract,) * ab.RUN_COUNT,
+        + (profile_log,) * ab.RUN_COUNT,
     )
 
 
@@ -69,9 +97,9 @@ def test_parses_generation_graphs_and_result_frame():
     assert result.decode_ms == pytest.approx(80.125)
 
 
-def test_strips_ansi_prefix_before_contract_matching():
-    raw = "\x1b[31m\x1b[1m" + ab.LEGACY_CONTRACT + "\x1b[0m"
-    assert ab.ANSI_ESCAPE_RE.sub("", raw) == ab.LEGACY_CONTRACT
+def test_strips_ansi_prefix_before_profile_matching():
+    raw = "\x1b[31m\x1b[1m" + ab.STANDARD_LOG + "\x1b[0m"
+    assert ab.ANSI_ESCAPE_RE.sub("", raw) == ab.STANDARD_LOG
 
 
 def test_acceptance_discards_warmup_and_reports_speedup():
@@ -88,14 +116,14 @@ def test_acceptance_discards_warmup_and_reports_speedup():
 def test_rejects_incomplete_new_graph_family():
     new = make_run("new", True)
     new = replace(new, graph_names=new.graph_names[:-1])
-    with pytest.raises(ab.ValidationError, match="graph contract mismatch"):
+    with pytest.raises(ab.ValidationError, match="graph set mismatch"):
         ab.validate_ab(make_run("old", False), new)
 
 
-def test_rejects_new_legacy_fallback():
+def test_rejects_new_standard_fallback():
     new = make_run("new", True)
-    new = replace(new, log_lines=new.log_lines + (ab.LEGACY_CONTRACT,))
-    with pytest.raises(ab.ValidationError, match="fell back"):
+    new = replace(new, log_lines=new.log_lines + (ab.STANDARD_LOG,))
+    with pytest.raises(ab.ValidationError, match="standard graph set"):
         ab.validate_ab(make_run("old", False), new)
 
 

@@ -42,17 +42,20 @@ from compiler.scripts.common.identity import (  # noqa: E402
 from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     ActivationTracker,
     DECODE_CONTEXT_POLICY,
+    append_cache_updates,
     build_decode_inputs,
     build_prefill_inputs,
     build_right_aligned_caches,
     compare_snapshots,
     load_tensor_payload,
     read_generated_manifest,
+    replay_sequential_ar_q1,
     select_decode_replay_contexts,
     select_pbd_tokens,
     sha256_file,
     summarize_decode_context_coverage,
 )
+from leap_llm.language_graphs import language_graph_set  # noqa: E402
 from leap_llm.models.locateanything.hidden_rotation import load_hidden_rotation  # noqa: E402
 from report import generate_activation_report  # noqa: E402
 
@@ -61,7 +64,7 @@ STANDARD_CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
 RELEASE_SAMPLE_COUNT = 1200
 RELEASE_CONVERGENCE_CHECKPOINT = 512
 RELEASE_SELECTED_MANIFEST_SHA256 = (
-    "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+    "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
 )
 
 
@@ -76,7 +79,27 @@ def torch_dtype(name: str) -> torch.dtype:
     return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[name]
 
 
-def activation_statistics_audit(snapshot: dict[str, Any]) -> dict[str, Any]:
+def activation_statistics_audit(
+    snapshot: dict[str, Any],
+    *,
+    required_point_count: int | None = None,
+) -> dict[str, Any]:
+    """Validate collected activation scales against the model's tracked points.
+
+    A component with no static activation-scale modules is valid when the
+    tracker reports zero required points.  An omitted count retains the old
+    strict behavior and treats an empty snapshot as a failure.
+    """
+    observed_point_count = len(snapshot)
+    if required_point_count is None:
+        expected_point_count = observed_point_count
+        empty_snapshot_is_valid = False
+    else:
+        if required_point_count < 0:
+            raise ValueError("required_point_count must be non-negative")
+        expected_point_count = required_point_count
+        empty_snapshot_is_valid = required_point_count == 0
+    point_count_mismatch = observed_point_count != expected_point_count
     unexecuted = [name for name, value in snapshot.items() if not value.get("executions")]
     zero_absmax = [
         name for name, value in snapshot.items()
@@ -101,17 +124,28 @@ def activation_statistics_audit(snapshot: dict[str, Any]) -> dict[str, Any]:
     nonfinite = [
         name for name, value in snapshot.items() if value.get("nonfinite_count", 0) > 0
     ]
+    has_valid_points = not (
+        unexecuted or zero_absmax or invalid_norm or nonfinite
+    )
+    passed = (
+        has_valid_points
+        and not point_count_mismatch
+        and (bool(snapshot) or empty_snapshot_is_valid)
+    )
     return {
-        "activation_point_count": len(snapshot),
+        "activation_point_count": observed_point_count,
+        "required_point_count": expected_point_count,
+        "point_count_mismatch": point_count_mismatch,
         # Deprecated compatibility field for existing deployment validators.
-        "observer_count": len(snapshot),
+        "observer_count": observed_point_count,
         "unexecuted": unexecuted,
         "zero_absmax": zero_absmax,
         "invalid_norm": invalid_norm,
         "nonfinite": nonfinite,
-        "passed": bool(snapshot) and not (
-            unexecuted or zero_absmax or invalid_norm or nonfinite
+        "status": "not_applicable" if passed and not snapshot else (
+            "passed" if passed else "failed"
         ),
+        "passed": passed,
     }
 
 
@@ -164,6 +198,7 @@ def progress(records: list[dict[str, Any]], description: str):
 
 
 def run(args: argparse.Namespace) -> int:
+    graph_set = language_graph_set(args.graph_set)
     if args.lm_head_w_bits != 8:
         raise RuntimeError("release activation calibration requires lm_head W8")
     if args.dtype != "float16":
@@ -259,6 +294,7 @@ def run(args: argparse.Namespace) -> int:
             "image_token_id": args.image_token_id,
             "replay_seed": args.replay_seed,
             "decode_context_policy": DECODE_CONTEXT_POLICY,
+            "graph_set": graph_set.name,
         },
     }
     run_identity_sha256 = sha256_json(run_identity)
@@ -312,7 +348,9 @@ def run(args: argparse.Namespace) -> int:
 
     vision_snapshots = {}
     vision_cosines = []
+    vision_required_point_count = None
     language_snapshots = {}
+    language_required_point_count = None
     stage_counts = Counter()
     decode_context_records: list[dict[str, Any]] = []
     activation_rows: list[dict[str, Any]] = []
@@ -330,6 +368,7 @@ def run(args: argparse.Namespace) -> int:
         vision = vision_api.model.to(device=device, dtype=dtype).eval()
         vision.compile_mode(False)
         vision_tracker = ActivationTracker(vision, component="vision")
+        vision_required_point_count = vision_tracker.tracked_module_count
         with torch.no_grad():
             for index, record in enumerate(progress(records, "Vision activation statistics"), 1):
                 payload = load_tensor_payload(record)
@@ -357,10 +396,12 @@ def run(args: argparse.Namespace) -> int:
             device=args.device, w_bits=8, lm_head_w_bits=args.lm_head_w_bits,
             hidden_rotation_path=args.hidden_rotation_path,
             apply_hidden_rotation=True, export_only=True,
+            graph_set=graph_set.name,
         )
         language = language_api.text_model.to(device=device, dtype=dtype).eval()
         language.compile_mode(False)
         language_tracker = ActivationTracker(language, component="language")
+        language_required_point_count = language_tracker.tracked_module_count
         num_layers = language.config.num_hidden_layers
         num_kv = language.config.num_key_value_heads
         head_dim = language.config.hidden_size // language.config.num_attention_heads
@@ -421,43 +462,59 @@ def run(args: argparse.Namespace) -> int:
                     stage_counts["pbd_q6"] += 1
                     del pbd_out, pbd_embeds, pbd_pos, pbd_mask
 
-                    for prefix_len in range(1, 7):
-                        prefix = list(replay_context.pending_token_ids[:prefix_len])
-                        fused_tokens = [
-                            *prefix,
-                            prefix[-1],
-                            *([int(language.config.text_mask_token_id)] * 5),
-                        ]
-                        q_len = prefix_len + 6
-                        stage = f"pbd_q{q_len}"
-                        language_tracker.stage = stage
-                        fused_embeds, fused_pos, fused_mask = build_decode_inputs(
-                            language, fused_tokens, q_len=q_len, past_len=active_len,
-                            cache_len=args.cache_len, is_pbd=True,
-                            pbd_prefix_len=prefix_len, device=device, dtype=dtype,
-                        )
-                        fused_out = language(
-                            fused_embeds, fused_pos, fused_mask,
-                            *(cache_keys + cache_values),
-                        )
-                        stage_counts[stage] += 1
-                        del fused_out, fused_embeds, fused_pos, fused_mask
+                    if graph_set.uses_fused_decode:
+                        for prefix_len in range(1, 7):
+                            prefix = list(replay_context.pending_token_ids[:prefix_len])
+                            fused_tokens = [
+                                *prefix,
+                                prefix[-1],
+                                *([int(language.config.text_mask_token_id)] * 5),
+                            ]
+                            q_len = prefix_len + 6
+                            stage = f"pbd_q{q_len}"
+                            language_tracker.stage = stage
+                            fused_embeds, fused_pos, fused_mask = build_decode_inputs(
+                                language, fused_tokens, q_len=q_len, past_len=active_len,
+                                cache_len=args.cache_len, is_pbd=True,
+                                pbd_prefix_len=prefix_len, device=device, dtype=dtype,
+                            )
+                            fused_out = language(
+                                fused_embeds, fused_pos, fused_mask,
+                                *(cache_keys + cache_values),
+                            )
+                            stage_counts[stage] += 1
+                            del fused_out, fused_embeds, fused_pos, fused_mask
 
-                    for q_len in range(1, 6):
-                        ar_tokens = list(replay_context.pending_token_ids[:q_len])
-                        stage = f"ar_q{q_len}"
-                        language_tracker.stage = stage
-                        ar_embeds, ar_pos, ar_mask = build_decode_inputs(
-                            language, ar_tokens, q_len=q_len, past_len=active_len,
-                            cache_len=args.cache_len, is_pbd=False,
-                            device=device, dtype=dtype,
+                        for q_len in range(1, 6):
+                            ar_tokens = list(replay_context.pending_token_ids[:q_len])
+                            stage = f"ar_q{q_len}"
+                            language_tracker.stage = stage
+                            ar_embeds, ar_pos, ar_mask = build_decode_inputs(
+                                language, ar_tokens, q_len=q_len, past_len=active_len,
+                                cache_len=args.cache_len, is_pbd=False,
+                                device=device, dtype=dtype,
+                            )
+                            ar_out = language(
+                                ar_embeds, ar_pos, ar_mask,
+                                *(cache_keys + cache_values),
+                            )
+                            stage_counts[stage] += 1
+                            del ar_out, ar_embeds, ar_pos, ar_mask
+                    else:
+                        language_tracker.stage = "ar_q1"
+                        cache_keys, cache_values = replay_sequential_ar_q1(
+                            language,
+                            replay_context.pending_token_ids,
+                            cache_keys,
+                            cache_values,
+                            active_len=active_len,
+                            cache_len=args.cache_len,
+                            device=device,
+                            dtype=dtype,
                         )
-                        ar_out = language(
-                            ar_embeds, ar_pos, ar_mask,
-                            *(cache_keys + cache_values),
+                        stage_counts["ar_q1"] += len(
+                            replay_context.pending_token_ids
                         )
-                        stage_counts[stage] += 1
-                        del ar_out, ar_embeds, ar_pos, ar_mask
                     del (
                         cache_keys, cache_values, new_keys, new_values,
                         embeds, positions, mask,
@@ -475,9 +532,15 @@ def run(args: argparse.Namespace) -> int:
     full = str(full_samples)
     audits = {}
     if vision_snapshots:
-        audits["vision"] = activation_statistics_audit(vision_snapshots[full])
+        audits["vision"] = activation_statistics_audit(
+            vision_snapshots[full],
+            required_point_count=vision_required_point_count,
+        )
     if language_snapshots:
-        audits["language"] = activation_statistics_audit(language_snapshots[full])
+        audits["language"] = activation_statistics_audit(
+            language_snapshots[full],
+            required_point_count=language_required_point_count,
+        )
     scale_manifest = {
         "schema_version": 3,
         "generated_manifest": str(manifest),
@@ -503,6 +566,7 @@ def run(args: argparse.Namespace) -> int:
             "cache_len": args.cache_len,
             "pbd_query_len": 6,
             "ar_query_len": 1,
+            "graph_set": graph_set.name,
         },
     }
     if vision_snapshots:
@@ -514,8 +578,13 @@ def run(args: argparse.Namespace) -> int:
             "language_lm_head_weight_bits": args.lm_head_w_bits,
             "text_mask_token_id": 151676,
             "pbd_block_size": 6,
-            "pbd_total_query_lengths": list(range(6, 13)),
-            "ar_total_query_lengths": list(range(1, 6)),
+            "pbd_total_query_lengths": (
+                list(range(6, 13)) if graph_set.uses_fused_decode else [6]
+            ),
+            "ar_total_query_lengths": (
+                list(range(1, 6)) if graph_set.uses_fused_decode else [1]
+            ),
+            "ar_q1_calls_per_context": graph_set.sequential_ar_q1_tokens,
             "pbd_q6_role": "post_prefill_bootstrap_only",
             "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
             "decode_context_policy": DECODE_CONTEXT_POLICY,
@@ -528,15 +597,11 @@ def run(args: argparse.Namespace) -> int:
         stage_execution_counts["vision"] = full_samples
         expected_stage_execution_counts["vision"] = full_samples
     if language_snapshots:
-        expected_stages.extend([
-            "prefill",
-            *(f"pbd_q{q_len}" for q_len in range(6, 13)),
-            *(f"ar_q{q_len}" for q_len in range(1, 6)),
-        ])
+        expected_stages.extend(graph_set.calibration_stages)
         stage_execution_counts.update(stage_counts)
-        expected_stage_execution_counts.update({
-            stage: language_context_count for stage in expected_stages if stage != "vision"
-        })
+        expected_stage_execution_counts.update(
+            graph_set.calibration_execution_counts(language_context_count)
+        )
     coverage = {
         "schema_version": 3,
         "generated_manifest_sha256": sha256_file(manifest),
@@ -639,7 +704,7 @@ def run(args: argparse.Namespace) -> int:
             output_dir / f"scale_convergence_{legacy_checkpoint}_vs_{full_samples}.json",
             legacy_convergence,
         )
-    generate_activation_report(
+    activation_report = generate_activation_report(
         output_dir,
         activation_rows,
         convergence,
@@ -651,6 +716,12 @@ def run(args: argparse.Namespace) -> int:
             "task_counts": task_counts,
         },
     )
+    plot_status = activation_report.get("plots", {})
+    if plot_status.get("status") != "generated":
+        raise RuntimeError(
+            "calibration report generation did not complete: "
+            + str(plot_status.get("reason") or "required figures are missing")
+        )
     print(json.dumps(coverage, sort_keys=True), flush=True)
     if not coverage["all_stages_executed"]:
         raise RuntimeError("not all required calibration graph paths were executed")
@@ -699,6 +770,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--image-token-id", type=int, default=151665)
     result.add_argument("--hidden-rotation-path")
     result.add_argument("--replay-seed", type=int, default=20260729)
+    result.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=("standard", "fused_decode"),
+        default="standard",
+    )
     result.add_argument("--resume", action="store_true")
     return result
 

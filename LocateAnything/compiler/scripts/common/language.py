@@ -257,7 +257,7 @@ class LanguageBCArtifact:
             ],
         }
 
-    def run_logits(self, values: list[Any]):
+    def run_outputs(self, values: list[Any]) -> list[Any]:
         import numpy as np
 
         if len(values) != len(self.inputs):
@@ -271,13 +271,28 @@ class LanguageBCArtifact:
             str(descriptor.name): _coerce_bc_input(value, descriptor)
             for descriptor, value in zip(self.inputs, values, strict=True)
         }
-        raw = self.function.feed(inputs=feed)
-        output_name = str(self.outputs[0].name)
-        if output_name not in raw:
+        # BC functions accept ``inputs=`` while HBM graph simulation accepts
+        # the same mapping as its first positional argument.  Keep the
+        # descriptor-driven packing shared across both validation stages.
+        try:
+            raw = self.function.feed(inputs=feed)
+        except TypeError as error:
+            if "unexpected keyword argument 'inputs'" not in str(error):
+                raise
+            raw = self.function.feed(feed)
+        missing = [
+            str(descriptor.name)
+            for descriptor in self.outputs
+            if str(descriptor.name) not in raw
+        ]
+        if missing:
             raise KeyError(
-                f"Language BC graph {self.graph} did not return logits output {output_name}"
+                f"Language BC graph {self.graph} did not return outputs {missing}"
             )
-        return np.asarray(raw[output_name])
+        return [np.asarray(raw[str(descriptor.name)]) for descriptor in self.outputs]
+
+    def run_logits(self, values: list[Any]):
+        return self.run_outputs(values)[0]
 
 
 def load_language_bc_artifacts(
@@ -832,6 +847,8 @@ def _compact_bc_logits(graph: str, logits: Any, active_len: int):
         )
     value = value[..., :VOCAB_SIZE]
     if graph == "prefill":
+        if value.shape[1] == 1:
+            return np.ascontiguousarray(value[:, 0])
         if active_len < 1 or active_len > value.shape[1]:
             raise ValueError(
                 f"Language BC prefill active length {active_len} is outside q={value.shape[1]}"
@@ -861,6 +878,7 @@ class LanguageBCRunner:
         rotation: Any,
         device: str,
         artifacts: dict[str, LanguageBCArtifact],
+        cache_provider: LanguageBCArtifact | None = None,
     ) -> None:
         import torch
 
@@ -872,6 +890,7 @@ class LanguageBCRunner:
         self.device = torch.device(device)
         self.dtype = torch.float16
         self.artifacts = artifacts
+        self.cache_provider = cache_provider
         self.num_layers = int(model.config.num_hidden_layers)
         self.expected_inputs = 3 + 2 * self.num_layers
         for graph, artifact in artifacts.items():
@@ -879,6 +898,14 @@ class LanguageBCRunner:
                 raise ValueError(
                     f"Language BC graph {graph} has {len(artifact.inputs)} inputs; "
                     f"expected {self.expected_inputs}"
+                )
+        if self.cache_provider is not None:
+            if self.cache_provider.graph != "prefill":
+                raise ValueError("Language BC cache provider must be the prefill graph")
+            if len(self.cache_provider.inputs) != self.expected_inputs:
+                raise ValueError(
+                    "Language BC prefill cache provider has "
+                    f"{len(self.cache_provider.inputs)} inputs; expected {self.expected_inputs}"
                 )
         num_kv = int(model.config.num_key_value_heads)
         head_dim = int(model.config.hidden_size // model.config.num_attention_heads)
@@ -967,6 +994,47 @@ class LanguageBCRunner:
             for cache, descriptor in zip(caches, descriptors, strict=True)
         ]
 
+    def _right_aligned_bc_caches(
+        self,
+        updates: list[Any],
+        active_len: int,
+        artifact: LanguageBCArtifact,
+    ) -> list[Any]:
+        import numpy as np
+
+        descriptors = artifact.inputs[3:]
+        if len(updates) != len(descriptors):
+            raise ValueError(
+                f"Language BC Prefill produced {len(updates)} cache updates, "
+                f"Decode expects {len(descriptors)} caches"
+            )
+        caches: list[Any] = []
+        for update, descriptor in zip(updates, descriptors, strict=True):
+            array = _as_numpy(update)
+            expected = _descriptor_shape(descriptor)
+            if array.ndim != 4 or len(expected) != 4:
+                raise ValueError(
+                    f"Language BC cache {descriptor.name} must be rank 4, "
+                    f"got update={array.shape} input={expected}"
+                )
+            if (
+                array.shape[0] != expected[0]
+                or array.shape[2:] != expected[2:]
+                or active_len < 1
+                or active_len > array.shape[1]
+                or active_len > expected[1]
+            ):
+                raise ValueError(
+                    f"Language BC cache {descriptor.name} cannot right-align "
+                    f"update={array.shape}, active_len={active_len}, input={expected}"
+                )
+            cache = np.zeros(expected, dtype=_descriptor_dtype(descriptor))
+            cache[:, -active_len:] = array[:, :active_len].astype(
+                cache.dtype, copy=False
+            )
+            caches.append(np.ascontiguousarray(cache))
+        return caches
+
     def _execute(
         self,
         graph: str,
@@ -980,6 +1048,7 @@ class LanguageBCRunner:
         return _compact_bc_logits(graph, logits, active_len), elapsed
 
     def run(self, payload: dict[str, Any]) -> LanguageBCRunResult:
+        import numpy as np
         import torch
 
         outputs: dict[str, Any] = {}
@@ -990,21 +1059,45 @@ class LanguageBCRunner:
 
         with torch.no_grad():
             cache_keys = cache_values = None
-            if "decode" in self.artifacts or "decode_ar" in self.artifacts:
+            cache_artifact = self.artifacts.get("decode") or self.artifacts.get("decode_ar")
+            compiled_prefill = self.artifacts.get("prefill") or self.cache_provider
+            quantized_cache = bool(
+                cache_artifact is not None
+                and not np.issubdtype(
+                    _descriptor_dtype(cache_artifact.inputs[3]), np.floating
+                )
+            )
+            compiled_prefill_outputs = None
+            if compiled_prefill is not None and (
+                "prefill" in self.artifacts or quantized_cache
+            ):
+                compiled_started = time.monotonic()
+                compiled_prefill_outputs = compiled_prefill.run_outputs(
+                    [
+                        *prefill_inputs,
+                        *self._bc_zeros(compiled_prefill),
+                    ]
+                )
+                timings["compiled_prefill_seconds"] = (
+                    time.monotonic() - compiled_started
+                )
+
+            if (
+                ("decode" in self.artifacts or "decode_ar" in self.artifacts)
+                and not quantized_cache
+            ):
                 float_started = time.monotonic()
                 _, keys, values = self.model(*prefill_inputs, *self.zero_caches)
                 cache_keys, cache_values = self._right_aligned(keys, values, active_len)
                 timings["float_prefill_cache_seconds"] = time.monotonic() - float_started
 
             if "prefill" in self.artifacts:
-                prefill_output, elapsed = self._execute(
-                    "prefill",
-                    prefill_inputs,
-                    self._bc_zeros(self.artifacts["prefill"]),
-                    active_len,
+                assert compiled_prefill_outputs is not None
+                prefill_output = _compact_bc_logits(
+                    "prefill", compiled_prefill_outputs[0], active_len
                 )
                 outputs["prefill_logits"] = prefill_output
-                timings["prefill_bc_seconds"] = elapsed
+                timings["prefill_bc_seconds"] = timings["compiled_prefill_seconds"]
                 execution["prefill"] = {
                     "graph": "prefill",
                     "output": "prefill_logits",
@@ -1013,13 +1106,22 @@ class LanguageBCRunner:
                     "logits_selection": "last active prompt token",
                 }
 
-            cache_artifact = self.artifacts.get("decode") or self.artifacts.get("decode_ar")
             decode_caches = None
             if cache_artifact is not None:
-                assert cache_keys is not None and cache_values is not None
-                decode_caches = self._cache_arrays(
-                    cache_keys, cache_values, cache_artifact
-                )
+                if quantized_cache:
+                    if compiled_prefill_outputs is None:
+                        raise ValueError(
+                            "quantized Language Decode cache requires the matching "
+                            "compiled Prefill graph; refusing to cast Float KV directly"
+                        )
+                    decode_caches = self._right_aligned_bc_caches(
+                        compiled_prefill_outputs[1:], active_len, cache_artifact
+                    )
+                else:
+                    assert cache_keys is not None and cache_values is not None
+                    decode_caches = self._cache_arrays(
+                        cache_keys, cache_values, cache_artifact
+                    )
 
             if "decode" in self.artifacts:
                 assert decode_caches is not None
@@ -1037,10 +1139,16 @@ class LanguageBCRunner:
                 execution["pbd_q6"] = {
                     "graph": "decode",
                     "output": "pbd_logits",
-                    "cache_source": "float_prefill",
+                    "cache_source": (
+                        "compiled_prefill" if quantized_cache else "float_prefill"
+                    ),
                     "q_len": PBD_QUERY_LEN,
                     "past_len": active_len,
-                    "purpose": "isolate PBD BC error from Prefill BC error",
+                    "purpose": (
+                        "replay compiled Prefill-to-Decode KV contract"
+                        if quantized_cache
+                        else "isolate PBD BC error from Prefill BC error"
+                    ),
                 }
 
             if "decode_ar" in self.artifacts and "slow" in payload["prediction_token_ids"]:
@@ -1059,10 +1167,16 @@ class LanguageBCRunner:
                 execution["ar_q1"] = {
                     "graph": "decode_ar",
                     "output": "ar_logits",
-                    "cache_source": "float_prefill",
+                    "cache_source": (
+                        "compiled_prefill" if quantized_cache else "float_prefill"
+                    ),
                     "q_len": AR_QUERY_LEN,
                     "past_len": active_len,
-                    "purpose": "isolate AR BC error from Prefill BC error",
+                    "purpose": (
+                        "replay compiled Prefill-to-Decode KV contract"
+                        if quantized_cache
+                        else "isolate AR BC error from Prefill BC error"
+                    ),
                 }
 
         return LanguageBCRunResult(outputs, execution, timings)

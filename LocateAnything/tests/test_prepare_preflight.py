@@ -39,7 +39,7 @@ def write_manifest(tmp_path: Path) -> tuple[Path, dict]:
         "image": "images/sample.jpg",
         "image_sha256": sha256(image),
         "metadata": {
-            "calibration_source_role": "coco_multicategory_detection",
+            "calibration_source_role": "coco_detection",
             "calibration_stratum": "single",
         },
         "prompt": "Locate all the instances that matches the following description: cat.",
@@ -55,7 +55,7 @@ def write_manifest(tmp_path: Path) -> tuple[Path, dict]:
         "manifest_sha256": sha256(manifest),
         "sample_count": 1,
         "task_counts": {"detection": 1},
-        "source_role_counts": {"coco_multicategory_detection": 1},
+        "source_role_counts": {"coco_detection": 1},
         "coco_stratum_counts": {"single": 1},
     }
     return manifest, profile

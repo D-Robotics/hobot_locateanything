@@ -151,7 +151,7 @@ def test_parser_exposes_quantized_eager_with_shared_bc_implementation():
 
 
 def test_scale_manifest_search_uses_current_calibration_profile(tmp_path, monkeypatch):
-    calibration_root = tmp_path / "workspace" / "calibration" / "current"
+    calibration_root = tmp_path / "artifacts" / "calibration" / "current"
     manifest = calibration_root / "statistics" / "calibration_scale_manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("{}", encoding="utf-8")
@@ -169,8 +169,10 @@ def test_scale_manifest_override_is_explicit_and_phase_independent(tmp_path):
 
 
 def test_release_language_graph_catalog_is_ordered_and_complete():
-    graphs = MODULE.release_language_graphs()
+    legacy = MODULE.release_language_graphs()
+    graphs = MODULE.release_language_graphs(graph_set="fused_decode")
 
+    assert legacy == ("prefill", "decode", "decode_ar")
     assert len(graphs) == 13
     assert graphs[:3] == ("prefill", "decode", "decode_ar")
     assert graphs[3:9] == tuple(f"decode_pbd_q{q_len}" for q_len in range(7, 13))
@@ -178,7 +180,7 @@ def test_release_language_graph_catalog_is_ordered_and_complete():
 
 
 def test_release_language_graph_catalog_rejects_missing_or_reordered_graphs():
-    expected = MODULE.release_language_graphs()
+    expected = MODULE.release_language_graphs(graph_set="fused_decode")
 
     with pytest.raises(ValueError, match="missing=.*decode_ar_q5"):
         MODULE.validate_language_hbm_catalog(expected[:-1], expected)
@@ -194,7 +196,7 @@ def test_language_hbm_loader_validates_release_catalog_before_exposing_test_grap
     import sys
     from types import ModuleType
 
-    expected = MODULE.release_language_graphs()
+    expected = MODULE.release_language_graphs(graph_set="fused_decode")
     container = SimpleNamespace(
         graphs=[
             SimpleNamespace(name=name, inputs=[], outputs=[])
@@ -210,14 +212,14 @@ def test_language_hbm_loader_validates_release_catalog_before_exposing_test_grap
 
     model = tmp_path / "language.hbm"
     model.write_bytes(b"hbm")
-    loaded, artifacts = MODULE.load_language_hbm_artifacts(model)
+    loaded, artifacts = MODULE.load_language_hbm_artifacts(model, "fused_decode")
 
     assert loaded is container
     assert tuple(artifacts) == MODULE.LANGUAGE_BC_GRAPHS
 
     container.graphs.pop()
     with pytest.raises(ValueError, match="missing=.*decode_ar_q5"):
-        MODULE.load_language_hbm_artifacts(model)
+        MODULE.load_language_hbm_artifacts(model, "fused_decode")
 
 
 def test_hbm_backend_detection_requires_arm64_and_hobot_runtime(tmp_path):
@@ -868,7 +870,7 @@ def test_parser_has_default_output_and_scale_manifest_aliases():
     assert option_names == {
         "--mode", "--level", "--phase", "--nums",
         "--output_dir", "--scale-manifest", "--scale_manifest",
-        "--input_dir", "--model_path",
+        "--graph-set", "--input_dir", "--model_path",
     }
 
     dashed = root.parse_args(["--mode", "float", "--scale-manifest", "scale.json"])

@@ -255,14 +255,19 @@ p.add_argument('--cache-len'); p.add_argument('--max-samples', type=int)
 p.add_argument('--checkpoint-samples', type=int); p.add_argument('--image-token-id')
 p.add_argument('--component'); p.add_argument('--lm-head-w-bits', type=int)
 p.add_argument('--replay-seed', type=int)
+p.add_argument('--graph-set', choices=('standard', 'fused_decode'), default='standard')
 p.add_argument('--hidden-rotation-path', default=None)
 a = p.parse_args()
 out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
-language_stages = [
-  'prefill',
-  *(f'pbd_q{q_len}' for q_len in range(6, 13)),
-  *(f'ar_q{q_len}' for q_len in range(1, 6)),
-]
+language_stages = (
+  ['prefill', 'pbd_q6', 'ar_q1']
+  if a.graph_set == 'standard'
+  else [
+    'prefill',
+    *(f'pbd_q{q_len}' for q_len in range(6, 13)),
+    *(f'ar_q{q_len}' for q_len in range(1, 6)),
+  ]
+)
 expected_stages = []
 if a.component in {'all', 'vision'}: expected_stages.append('vision')
 if a.component in {'all', 'language'}: expected_stages.extend(language_stages)
@@ -271,6 +276,8 @@ stage_counts = {
   stage: a.max_samples if stage == 'vision' else language_context_count
   for stage in expected_stages
 }
+if a.graph_set == 'standard' and 'ar_q1' in stage_counts:
+  stage_counts['ar_q1'] = language_context_count * 6
 decode_context = {
   'policy': 'bundle_hash_base_plus_detection_target_tail_v2',
   'sample_count': a.max_samples,
@@ -313,6 +320,7 @@ generated = Path(a.generated_jsonl)
   'replay_seed': a.replay_seed,
   'profile': {
     'component': a.component,
+    'graph_set': a.graph_set,
     'language_lm_head_weight_bits': a.lm_head_w_bits,
     'decode_context_policy': 'bundle_hash_base_plus_detection_target_tail_v2',
   }}))
@@ -356,7 +364,8 @@ generated = Path(a.generated_jsonl)
     assert metadata["component"] == "all"
     assert metadata["lm_head_w_bits"] == 8
     assert metadata["replay_seed"] == 20260729
-    assert len(metadata["expected_graph_paths"]) == 14
+    assert metadata["graph_set"] == "standard"
+    assert len(metadata["expected_graph_paths"]) == 4
     assert metadata["expected_graph_paths"][0:3] == ["vision", "prefill", "pbd_q6"]
 
 

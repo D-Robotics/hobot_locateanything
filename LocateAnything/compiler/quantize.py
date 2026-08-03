@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orchestrate LocateAnything Prepare, Calibrate, Build, and Verify stages.
 
-Source selection produces the frozen manifest consumed by this CLI. Numerical
+Source selection produces the frozen dataset index consumed by this CLI. Numerical
 calibration, BC export, HBDK compilation, and validation algorithms remain in
 ``compiler/scripts`` and ``compiler/leap_llm``.
 """
@@ -38,23 +38,41 @@ DEFAULT_CONFIG = COMPILER_ROOT / "config.yaml"
 COMPONENTS = ("vision", "language", "all")
 BUILD_TARGETS = ("bc", "hbm")
 PROGRESS_MODES = ("auto", "bar", "log", "off")
-VERIFY_LEVELS = ("contract", "pipeline", "task", "all")
+VERIFY_STAGES = ("specification", "pipeline", "task", "all")
+if str(COMPILER_ROOT) not in sys.path:
+    sys.path.insert(0, str(COMPILER_ROOT))
+
+from leap_llm.language_graphs import (  # noqa: E402
+    LANGUAGE_GRAPH_SET_NAMES,
+    language_graph_set,
+)
 EXPECTED_CALIBRATION_TASK_COUNTS = {
-    "detection": 620,
-    "gui": 180,
+    "detection": 660,
+    "gui": 150,
     "referring": 120,
     "ocr": 120,
-    "layout": 100,
+    "layout": 90,
     "pointing": 60,
 }
 EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS = {
-    "coco_multicategory_detection": 500,
-    "dense_retail_detection": 120,
-    "existing_non_detection": 580,
+    "coco_detection": 240,
+    "openimages_v6": 90,
+    "v3det": 60,
+    "paco": 50,
+    "bdd100k": 50,
+    "egoobjects": 40,
+    "humanparts": 40,
+    "mot17det": 45,
+    "mot20det": 45,
+    "groundcua": 150,
+    "refcocog": 120,
+    "hiertext": 120,
+    "doclaynet": 90,
+    "pixmo_points": 60,
 }
-EXPECTED_COCO_STRATUM_COUNTS = {"single": 200, "double": 220, "multi": 80}
-EXPECTED_SELECTED_MANIFEST_SHA256 = (
-    "22cc670b2b600b2e5ea3dfbc3d169c07540ef108a0e2a135d8b20f949ed62b03"
+EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
+EXPECTED_DATASET_INDEX_SHA256 = (
+    "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
 )
 EXPECTED_CHECKPOINT_SHA256 = {
     "model-00001-of-00002.safetensors": (
@@ -67,31 +85,26 @@ EXPECTED_CHECKPOINT_SHA256 = {
 EXPECTED_CHECKPOINT_INDEX_SHA256 = (
     "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
 )
-EXPECTED_LANGUAGE_GRAPHS = (
-    "prefill", "decode", "decode_ar",
-    *(f"decode_pbd_q{q_len}" for q_len in range(7, 13)),
-    *(f"decode_ar_q{q_len}" for q_len in range(2, 6)),
-)
 PATH_ENV_OVERRIDES = {
     "model": "LA_MODEL_PATH",
     "upstream_source": "LA_UPSTREAM_SOURCE",
 }
 PATH_ROOT_OVERRIDES = {
-    "model": ("LA_MODEL_ROOT", Path("workspace/models")),
-    "selected_jsonl": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "generated_dir": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "generated_jsonl": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "calibration_dir": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "scale_manifest": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "coverage_json": ("LA_CALIBRATION_ROOT", Path("workspace/calibration")),
-    "build_root": ("LA_BUILD_ROOT", Path("workspace/builds")),
-    "log_root": ("LA_RUN_ROOT", Path("workspace/logs")),
-    "verification_root": ("LA_EVALUATION_ROOT", Path("workspace/evaluation")),
+    "model": ("LA_MODEL_ROOT", Path("artifacts/models")),
+    "selected_jsonl": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "generated_dir": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "generated_jsonl": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "calibration_dir": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "scale_manifest": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "coverage_json": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
+    "build_root": ("LA_BUILD_ROOT", Path("artifacts/builds")),
+    "log_root": ("LA_LOG_ROOT", Path("artifacts/logs")),
+    "verification_root": ("LA_EVALUATION_ROOT", Path("artifacts/evaluation")),
 }
 
 
 class ConfigurationError(ValueError):
-    """Raised when config.yaml violates the fixed LocateAnything contract."""
+    """Raised when a build config violates the fixed LocateAnything specification."""
 
 
 @dataclass(frozen=True)
@@ -109,14 +122,42 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
-def load_config(path: Path) -> dict[str, Any]:
+def _merge_config(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_config_file(path: Path, chain: tuple[Path, ...] = ()) -> dict[str, Any]:
+    path = path.resolve()
+    if path in chain:
+        cycle = " -> ".join(str(item) for item in (*chain, path))
+        raise ConfigurationError(f"config inheritance cycle: {cycle}")
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ConfigurationError(f"config file not found: {path}") from exc
     except yaml.YAMLError as exc:
         raise ConfigurationError(f"invalid YAML in {path}: {exc}") from exc
-    config = _mapping(raw, "config")
+    config = _mapping(raw, f"config {path}")
+    parent = config.pop("extends", None)
+    if parent is None:
+        return config
+    parent_path = Path(str(parent)).expanduser()
+    if not parent_path.is_absolute():
+        parent_path = path.parent / parent_path
+    return _merge_config(
+        _load_config_file(parent_path, (*chain, path)),
+        config,
+    )
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    config = _load_config_file(path)
     validate_config(config)
     return config
 
@@ -149,7 +190,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
     if image_width != 672 or image_height != 672:
         raise ConfigurationError("release image size is fixed at 672x672")
     if patch_size != 14 or spatial_merge != 2:
-        raise ConfigurationError("release Vision contract requires patch_size=14, spatial_merge=2")
+        raise ConfigurationError("Vision specification requires patch_size=14, spatial_merge=2")
     if image_width % (patch_size * spatial_merge) or image_height % (patch_size * spatial_merge):
         raise ConfigurationError("image dimensions must align to patch_size * spatial_merge")
     if model.get("resize_mode") != "letterbox":
@@ -157,7 +198,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
     if model.get("letterbox_fill") != 128:
         raise ConfigurationError("release letterbox_fill must be 128")
     if model.get("hidden_size") != 2048 or model.get("vocab_size") != 152681:
-        raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model contracts")
+        raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model specifications")
     if model.get("checkpoint_sha256") != EXPECTED_CHECKPOINT_SHA256:
         raise ConfigurationError("model.checkpoint_sha256 does not match the frozen checkpoint")
     if model.get("checkpoint_index_sha256") != EXPECTED_CHECKPOINT_INDEX_SHA256:
@@ -192,23 +233,24 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError(
             "release calibration coco_stratum_counts do not match the 500-sample COCO profile"
         )
-    if calibration.get("selected_manifest_sha256") != EXPECTED_SELECTED_MANIFEST_SHA256:
-        raise ConfigurationError("release selected manifest SHA256 does not match the frozen profile")
+    if calibration.get("dataset_index_sha256") != EXPECTED_DATASET_INDEX_SHA256:
+        raise ConfigurationError(
+            "calibration.dataset_index_sha256 does not match the frozen dataset index"
+        )
 
     language = _mapping(config.get("language"), "language")
     chunk_size = _positive_int(language.get("chunk_size"), "language.chunk_size")
     cache_len = _positive_int(language.get("cache_len"), "language.cache_len")
     if chunk_size != 1024 or cache_len != 4096:
-        raise ConfigurationError("release Language contract requires chunk_size=1024, cache_len=4096")
+        raise ConfigurationError("Language specification requires chunk_size=1024, cache_len=4096")
     if language.get("pbd_query_len") != 6 or language.get("ar_query_len") != 1:
         raise ConfigurationError("LocateAnything requires PBD q=6 and AR q=1")
     if language.get("decoder_w_bits") != 8 or language.get("lm_head_w_bits") != 8:
         raise ConfigurationError("release Language and LM Head weights must use W8")
-    if language.get("fused_pbd") is not True:
-        raise ConfigurationError("release profile requires fused_pbd=true")
-    graphs = language.get("graphs")
-    if not isinstance(graphs, list) or tuple(graphs) != EXPECTED_LANGUAGE_GRAPHS:
-        raise ConfigurationError("fused Language profile must declare the canonical 13 graphs")
+    try:
+        language_graph_set(str(language.get("graph_set")))
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
     vision = _mapping(config.get("vision"), "vision")
     if vision.get("w_bits") != 8:
@@ -253,14 +295,14 @@ def _resolve_config_path(
                 ) from exc
             return (Path(configured_root).expanduser() / suffix).resolve()
 
-    workspace = os.environ.get("LA_WORKSPACE")
-    if workspace:
+    artifacts_root = os.environ.get("LA_ARTIFACTS_ROOT")
+    if artifacts_root:
         try:
-            suffix = expanded.relative_to("workspace")
+            suffix = expanded.relative_to("artifacts")
         except ValueError:
             pass
         else:
-            return (Path(workspace).expanduser() / suffix).resolve()
+            return (Path(artifacts_root).expanduser() / suffix).resolve()
     return (PROJECT_ROOT / expanded).resolve()
 
 
@@ -277,6 +319,13 @@ def resolve_path(config: Mapping[str, Any], key: str, override: str | None = Non
 
 def select_components(value: str) -> tuple[str, ...]:
     return ("vision", "language") if value == "all" else (value,)
+
+
+def selected_graph_set(
+    args: argparse.Namespace, config: Mapping[str, Any]
+):
+    requested = args.graph_set or config["language"]["graph_set"]
+    return language_graph_set(str(requested))
 
 
 def python_command(config: Mapping[str, Any]) -> str:
@@ -357,6 +406,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
     calibration = _mapping(config["calibration"], "calibration")
     language = _mapping(config["language"], "language")
     build = _mapping(config["build"], "build")
+    graph_set = selected_graph_set(args, config)
     requested_samples = args.max_samples or calibration["sample_count"]
     requested_checkpoint = args.checkpoint_samples or calibration["checkpoint_samples"]
     if requested_samples != 1200 or requested_checkpoint != 512:
@@ -383,6 +433,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
         "CHECKPOINT_SAMPLES": str(requested_checkpoint),
         "IMAGE_TOKEN_ID": str(calibration["image_token_id"]),
         "REPLAY_SEED": str(calibration["seed"]),
+        "LANGUAGE_GRAPH_SET": graph_set.name,
         "RESUME": "1" if args.resume else "0",
     })
     rotation = calibration.get("hidden_rotation_path")
@@ -390,7 +441,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
         env["HIDDEN_ROTATION_PATH"] = str(resolve_path_value(rotation))
     note = None
     if args.resume:
-        note = "calibration replay has no partial-resume contract; completed manifests are reused"
+        note = "calibration replay is atomic; only completed statistics are reused"
     command = (str(build.get("bash", "bash")), str(CALIBRATION_SCRIPTS / "calibrate.sh"))
     return [PlanStep("collect activation statistics", command, env=env, note=note)]
 
@@ -402,7 +453,7 @@ def resolve_path_value(value: Any) -> Path:
 def resolve_evaluation_path(value: Any) -> Path:
     return _resolve_config_path(
         value,
-        root_override=("LA_EVALUATION_ROOT", Path("workspace/evaluation")),
+        root_override=("LA_EVALUATION_ROOT", Path("artifacts/evaluation")),
     )
 
 
@@ -413,6 +464,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
     vision = _mapping(config["vision"], "vision")
     build = _mapping(config["build"], "build")
     cores = _mapping(build["cores"], "build.cores")
+    graph_set = selected_graph_set(args, config)
     build_root = resolve_path(config, "build_root", args.output_dir)
     log_root = resolve_path(config, "log_root")
     bash = str(build.get("bash", "bash"))
@@ -428,8 +480,8 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
             "CALIBRATION_COVERAGE_JSON": str(resolve_path(config, "coverage_json")),
             "EXPECTED_SAMPLES": str(calibration["sample_count"]),
-            "EXPECTED_SELECTED_MANIFEST_SHA256": str(
-                calibration["selected_manifest_sha256"]
+            "EXPECTED_DATASET_INDEX_SHA256": str(
+                calibration["dataset_index_sha256"]
             ),
             "DEVICE": args.device or str(build["device"]),
             "MARCH": str(build["march"]),
@@ -438,7 +490,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "CACHE_LEN": str(language["cache_len"]),
             "DECODE_SEQ_LEN": str(language["pbd_query_len"]),
             "LM_HEAD_W_BITS": str(language["lm_head_w_bits"]),
-            "FUSED_PBD_PROFILES": "1" if language["fused_pbd"] else "0",
+            "LANGUAGE_GRAPH_SET": graph_set.name,
             "EXPORT_ONLY": "1" if args.target == "bc" else "0",
             "RESUME": "1" if args.resume else "0",
             "BUILD_TARGET": args.target,
@@ -475,7 +527,8 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
     language = _mapping(config["language"], "language")
     model = _mapping(config["model"], "model")
     component = "full" if args.component == "all" else args.component
-    contract_command = [
+    graph_set = selected_graph_set(args, config)
+    specification_command = [
         python_command(config),
         str(VALIDATE_SCRIPTS / "deployment.py"),
         "--component", component,
@@ -485,17 +538,18 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--coverage-json", str(resolve_path(config, "coverage_json")),
         "--model-path", str(resolve_path(config, "model")),
         "--expected-samples", str(calibration["sample_count"]),
-        "--expected-selected-sha256", str(calibration["selected_manifest_sha256"]),
+        "--expected-dataset-index-sha256", str(calibration["dataset_index_sha256"]),
         "--image-width", str(model["image_width"]),
         "--image-height", str(model["image_height"]),
         "--chunk-size", str(language["chunk_size"]),
         "--cache-len", str(language["cache_len"]),
         "--decode-seq-len", str(language["pbd_query_len"]),
         "--lm-head-w-bits", str(language["lm_head_w_bits"]),
+        "--graph-set", graph_set.name,
     ]
     rotation = calibration.get("hidden_rotation_path")
     if rotation:
-        contract_command.extend(("--hidden-rotation-path", str(resolve_path_value(rotation))))
+        specification_command.extend(("--hidden-rotation-path", str(resolve_path_value(rotation))))
 
     verification = _mapping(config["verification"], "verification")
     verification_root = resolve_path(config, "verification_root")
@@ -505,6 +559,7 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--mode", "analysis",
         "--output_dir", str(verification_root / "pipeline"),
         "--scale_manifest", str(resolve_path(config, "scale_manifest")),
+        "--graph-set", graph_set.name,
     )
     predictions = (
         resolve_path_value(args.predictions_jsonl)
@@ -526,20 +581,28 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--iou-threshold", str(verification["iou_threshold"]),
     )
     available = {
-        "contract": PlanStep("verify calibration and compile contract", tuple(contract_command)),
+        "specification": PlanStep(
+            "verify calibration and build specification",
+            tuple(specification_command),
+        ),
         "pipeline": PlanStep("summarize Float/BC/HBM comparisons", pipeline_command),
         "task": PlanStep("evaluate held-out grounding predictions", task_command),
     }
-    levels = ("contract", "pipeline", "task") if args.level == "all" else (args.level,)
-    return [available[level] for level in levels]
+    stages = (
+        ("specification", "pipeline", "task")
+        if args.stage == "all"
+        else (args.stage,)
+    )
+    return [available[stage] for stage in stages]
 
 
 def quote_command(command: Iterable[str]) -> str:
     return shlex.join(str(part) for part in command)
 
 
-def print_contract(config: Mapping[str, Any]) -> None:
+def print_build_summary(config: Mapping[str, Any]) -> None:
     language = config["language"]
+    graph_set = language_graph_set(str(language["graph_set"]))
     payload = {
         "image": f"{config['model']['image_width']}x{config['model']['image_height']}",
         "vision_w_bits": config["vision"]["w_bits"],
@@ -547,14 +610,16 @@ def print_contract(config: Mapping[str, Any]) -> None:
         "cache_len": language["cache_len"],
         "language_w_bits": language["decoder_w_bits"],
         "lm_head_w_bits": language["lm_head_w_bits"],
-        "fused_pbd": language["fused_pbd"],
-        "language_graphs": len(language["graphs"]),
+        "language_graph_set": graph_set.name,
+        "language_graph_count": len(graph_set.graphs),
     }
-    print("[contract] " + json.dumps(payload, sort_keys=True))
+    print("[build] " + json.dumps(payload, sort_keys=True))
 
 
 def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[str, Any]) -> int:
-    print_contract(config)
+    if args.graph_set:
+        config["language"]["graph_set"] = args.graph_set
+    print_build_summary(config)
     for index, step in enumerate(steps, 1):
         print(f"[plan {index}/{len(steps)}] {step.label}")
         print(f"  cwd: {step.cwd}")
@@ -582,6 +647,12 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--graph-set",
+        dest="graph_set",
+        choices=LANGUAGE_GRAPH_SET_NAMES,
+        help="Language graph set; defaults to language.graph_set in config.yaml",
+    )
     parser.add_argument("--progress", choices=PROGRESS_MODES, default="auto")
     parser.add_argument("--resume", action="store_true", help="reuse complete compatible outputs")
     parser.add_argument("--dry-run", action="store_true", help="print the resolved plan only")
@@ -591,7 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "LocateAnything prepare -> calibrate -> build -> verify orchestrator; "
-            "the four commands consume a frozen calibration manifest"
+            "the four commands consume a frozen calibration index"
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -639,10 +710,25 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--model-path")
     build.add_argument("--device")
 
-    verify = subparsers.add_parser("verify", help="validate data, scales, and build contract")
+    verify = subparsers.add_parser(
+        "verify", help="validate data, scales, and build specification"
+    )
     add_common_options(verify)
     verify.add_argument("--component", choices=COMPONENTS, default="all")
-    verify.add_argument("--level", choices=VERIFY_LEVELS, default="contract")
+    verify.add_argument(
+        "--stage",
+        dest="stage",
+        choices=VERIFY_STAGES,
+        default="specification",
+        help="verification stage",
+    )
+    verify.add_argument(
+        "--level",
+        dest="stage",
+        choices=VERIFY_STAGES,
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
     verify.add_argument("--predictions-jsonl")
     verify.add_argument("--reference-jsonl")
     return parser
