@@ -11,8 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from hbdk4.compiler import load, save
 from hbdk4.compiler.hbm import Hbm, Hbo
@@ -23,6 +28,7 @@ from leap_llm.language_graphs import (
     LANGUAGE_GRAPH_SETS,
     language_graph_set,
 )
+from compiler.scripts.common.progress import StageProgress  # noqa: E402
 
 
 BASE_EXPECTED = {
@@ -64,6 +70,20 @@ def query_length(name: str) -> int:
     if name not in KNOWN_STAGES:
         raise ValueError(f"unsupported Language graph: {name}")
     return int(name.rsplit("q", 1)[1])
+
+
+def graph_label(name: str) -> str:
+    if name == "prefill":
+        return "Prefill"
+    if name == "decode":
+        return "Decode PBD q=6"
+    if name == "decode_ar":
+        return "Decode AR q=1"
+    if name.startswith("decode_pbd_q"):
+        return f"Decode PBD q={query_length(name)}"
+    if name.startswith("decode_ar_q"):
+        return f"Decode AR q={query_length(name)}"
+    raise ValueError(f"unsupported Language graph: {name}")
 
 
 def _canonical_dtype(value: Any) -> str:
@@ -438,6 +458,16 @@ def main() -> int:
     write_compile_manifest(manifest_path, source_bc, args)
 
     stage_order = list(language_graph_set(args.graph_set).graphs)
+    pbd_stages = [
+        graph for graph in stage_order
+        if graph == "decode" or graph.startswith("decode_pbd_q")
+    ]
+    ar_stages = [graph for graph in stage_order if graph.startswith("decode_ar")]
+    total_stages = len(stage_order)
+    if not args.convert_only:
+        total_stages += 1 + len(pbd_stages)
+        total_stages += len(args.ar_core_nums) * (len(ar_stages) + 1)
+    progress = StageProgress(total_stages, "Language build")
     if args.hbm_path:
         converted = {
             name: args.hbm_path.with_suffix(f".{name}_convert.bc")
@@ -448,7 +478,8 @@ def main() -> int:
             name: converted_dir / f"{name}_convert.bc" for name in stage_order
         }
     for name in stage_order:
-        convert_stage(source_bc[name], converted[name], name, args.march, args.resume)
+        with progress.stage(f"Convert {graph_label(name)}"):
+            convert_stage(source_bc[name], converted[name], name, args.march, args.resume)
     if args.convert_only:
         heading("CONVERT ONLY COMPLETED")
         return 0
@@ -458,15 +489,13 @@ def main() -> int:
         if args.hbm_path
         else hbo_dir / f"prefill_core{args.prefill_core_num}.hbo"
     )
-    compile_stage(
-        converted["prefill"], prefill_hbo, "prefill",
-        args.prefill_core_num, args,
-    )
+    with progress.stage(f"Compile {graph_label('prefill')} HBO"):
+        compile_stage(
+            converted["prefill"], prefill_hbo, "prefill",
+            args.prefill_core_num, args,
+        )
     shared_hbos = {"prefill": prefill_hbo}
-    for name in (
-        graph for graph in stage_order
-        if graph == "decode" or graph.startswith("decode_pbd_q")
-    ):
+    for name in pbd_stages:
         if name not in converted:
             continue
         hbo = (
@@ -474,13 +503,12 @@ def main() -> int:
             if args.hbm_path
             else hbo_dir / f"{name}_core{args.decode_core_num}.hbo"
         )
-        compile_stage(converted[name], hbo, name, args.decode_core_num, args)
+        with progress.stage(f"Compile {graph_label(name)} HBO"):
+            compile_stage(converted[name], hbo, name, args.decode_core_num, args)
         shared_hbos[name] = hbo
     for ar_core in args.ar_core_nums:
         ar_hbos: dict[str, Path] = {}
-        for name in (
-            graph for graph in stage_order if graph.startswith("decode_ar")
-        ):
+        for name in ar_stages:
             if name not in converted:
                 continue
             ar_hbo = (
@@ -488,7 +516,8 @@ def main() -> int:
                 if args.hbm_path
                 else hbo_dir / f"{name}_core{ar_core}.hbo"
             )
-            compile_stage(converted[name], ar_hbo, name, ar_core, args)
+            with progress.stage(f"Compile {graph_label(name)} HBO"):
+                compile_stage(converted[name], ar_hbo, name, ar_core, args)
             ar_hbos[name] = ar_hbo
         graph_set_suffix = "_fused_decode" if args.graph_set == "fused_decode" else ""
         hbm = args.hbm_path or args.output_dir / (
@@ -498,12 +527,13 @@ def main() -> int:
             f"{graph_set_suffix}.hbm"
         )
         all_hbos = {**shared_hbos, **ar_hbos}
-        link_variant(
-            [all_hbos[name] for name in stage_order],
-            hbm,
-            args.resume,
-            stage_order,
-        )
+        with progress.stage(f"Link Language HBM (AR cores={ar_core})"):
+            link_variant(
+                [all_hbos[name] for name in stage_order],
+                hbm,
+                args.resume,
+                stage_order,
+            )
 
     heading("ALL VARIANTS COMPLETED")
     return 0

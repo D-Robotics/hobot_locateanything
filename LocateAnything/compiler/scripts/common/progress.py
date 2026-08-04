@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, Generic, TextIO, TypeVar
 
 
@@ -122,3 +123,64 @@ def track(
         mode=mode,
         stream=stream,
     )
+
+
+class StageProgress:
+    """Report overall progress across a small number of long build stages."""
+
+    def __init__(
+        self,
+        total: int,
+        description: str,
+        *,
+        mode: str | None = None,
+        stream: TextIO | None = None,
+    ) -> None:
+        if total <= 0:
+            raise ValueError("stage total must be positive")
+        self.total = total
+        self.description = description
+        self.stream = stream or sys.stderr
+        self.mode = resolve_progress_mode(mode, stream=self.stream)
+        self.current = 0
+        self.started = time.monotonic()
+
+    def _prefix(self) -> str:
+        percent = self.current / self.total * 100.0
+        filled = int(self.current / self.total * 20)
+        bar = "=" * filled + "-" * (20 - filled)
+        return (
+            f"[{bar}] {self.description} "
+            f"{self.current}/{self.total} {percent:5.1f}%"
+        )
+
+    @contextmanager
+    def stage(self, label: str) -> Iterator[None]:
+        self.current += 1
+        if self.current > self.total:
+            raise RuntimeError(
+                f"{self.description} reported more than {self.total} stages"
+            )
+        stage_started = time.monotonic()
+        if self.mode != "off":
+            print(f"{self._prefix()} START {label}", file=self.stream, flush=True)
+        try:
+            yield
+        except BaseException:
+            if self.mode != "off":
+                elapsed = _format_duration(time.monotonic() - stage_started)
+                print(
+                    f"{self._prefix()} FAILED {label} elapsed={elapsed}",
+                    file=self.stream,
+                    flush=True,
+                )
+            raise
+        if self.mode != "off":
+            elapsed = _format_duration(time.monotonic() - stage_started)
+            total_elapsed = _format_duration(time.monotonic() - self.started)
+            print(
+                f"{self._prefix()} DONE {label} elapsed={elapsed} "
+                f"total_elapsed={total_elapsed}",
+                file=self.stream,
+                flush=True,
+            )

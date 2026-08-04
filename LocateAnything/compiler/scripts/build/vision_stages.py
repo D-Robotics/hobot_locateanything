@@ -6,13 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from hbdk4.compiler import load, save
 from hbdk4.compiler.hbm import Hbm, Hbo
 
 from leap_llm.nn.utils import Model
+from compiler.scripts.common.progress import StageProgress  # noqa: E402
 
 
 INPUT_SHAPE = (1, 2304, 588)
@@ -171,68 +177,71 @@ def main() -> int:
 
     manifest = args.hbm_path.with_suffix(".compile_manifest.json")
     write_compile_manifest(manifest, args.bc_path, args)
+    progress = StageProgress(3, "Vision build")
 
     converted_path = args.hbm_path.with_suffix(".visual_convert.bc")
-    if args.resume and valid_function(converted_path, "visual"):
-        print(f"[RESUME] converted visual: {converted_path}", flush=True)
-    else:
-        heading("CONVERT VISUAL")
-        converted = Model.convert_mlir(
-            load(str(args.bc_path)),
-            enable_vpu=True,
-            march=args.march,
-            dynamic_quant=True,
-        )
-        function = converted.functions[0]
-        if str(function.name) != "visual":
-            raise RuntimeError(
-                f"converted function is {function.name}, expected visual"
+    with progress.stage("Convert Vision graph"):
+        if args.resume and valid_function(converted_path, "visual"):
+            print(f"[RESUME] converted visual: {converted_path}", flush=True)
+        else:
+            heading("CONVERT VISUAL")
+            converted = Model.convert_mlir(
+                load(str(args.bc_path)),
+                enable_vpu=True,
+                march=args.march,
+                dynamic_quant=True,
             )
-        function.remove_io_op(["Dequantize", "Quantize"])
-        temporary = converted_path.with_name(converted_path.stem + ".partial.bc")
-        save(converted, str(temporary))
-        os.replace(temporary, converted_path)
-        validate_visual_bc(converted_path)
-        print(f"[PASS] converted visual: {converted_path}", flush=True)
+            function = converted.functions[0]
+            if str(function.name) != "visual":
+                raise RuntimeError(
+                    f"converted function is {function.name}, expected visual"
+                )
+            function.remove_io_op(["Dequantize", "Quantize"])
+            temporary = converted_path.with_name(converted_path.stem + ".partial.bc")
+            save(converted, str(temporary))
+            os.replace(temporary, converted_path)
+            validate_visual_bc(converted_path)
+            print(f"[PASS] converted visual: {converted_path}", flush=True)
 
     hbo_path = args.hbm_path.with_suffix(".visual.hbo")
-    if args.resume and valid_hbo(hbo_path):
-        print(f"[RESUME] HBO visual core={args.core_num}: {hbo_path}", flush=True)
-    else:
-        heading(f"COMPILE VISUAL CORE={args.core_num}")
-        module = load(str(converted_path))
-        temporary = hbo_path.with_name(hbo_path.stem + ".partial.hbo")
-        kwargs = {
-            "march": args.march,
-            "jobs": args.jobs,
-            "progress_bar": True,
-            "max_time_per_fc": 0.0,
-            "opt": 2,
-            "debug": False,
-            "advice": 0.0,
-            "balance": 100,
-            "input_no_padding": True,
-            "output_no_padding": True,
-            "core_num": args.core_num,
-        }
-        if args.core_num > 1:
-            kwargs["max_l2m_size"] = 25165824
-        Model.compile_hbo(module, save_path=str(temporary), **kwargs)
-        os.replace(temporary, hbo_path)
-        Hbo(str(hbo_path))
-        print(f"[PASS] HBO visual core={args.core_num}: {hbo_path}", flush=True)
+    with progress.stage("Compile Vision HBO"):
+        if args.resume and valid_hbo(hbo_path):
+            print(f"[RESUME] HBO visual core={args.core_num}: {hbo_path}", flush=True)
+        else:
+            heading(f"COMPILE VISUAL CORE={args.core_num}")
+            module = load(str(converted_path))
+            temporary = hbo_path.with_name(hbo_path.stem + ".partial.hbo")
+            kwargs = {
+                "march": args.march,
+                "jobs": args.jobs,
+                "progress_bar": True,
+                "max_time_per_fc": 0.0,
+                "opt": 2,
+                "debug": False,
+                "advice": 0.0,
+                "balance": 100,
+                "input_no_padding": True,
+                "output_no_padding": True,
+                "core_num": args.core_num,
+            }
+            if args.core_num > 1:
+                kwargs["max_l2m_size"] = 25165824
+            Model.compile_hbo(module, save_path=str(temporary), **kwargs)
+            os.replace(temporary, hbo_path)
+            Hbo(str(hbo_path))
+            print(f"[PASS] HBO visual core={args.core_num}: {hbo_path}", flush=True)
 
-    if args.resume and valid_hbm(args.hbm_path):
-        print(f"[RESUME] HBM: {args.hbm_path}", flush=True)
-        return 0
-
-    heading(f"LINK {args.hbm_path.name}")
-    temporary = args.hbm_path.with_name(args.hbm_path.stem + ".partial.hbm")
-    Model.link_models([Hbo(str(hbo_path))], str(temporary))
-    os.replace(temporary, args.hbm_path)
-    if not hbm_contract_matches(args.hbm_path):
-        raise RuntimeError(f"linked HBM graph contract mismatch: {args.hbm_path}")
-    print(f"[PASS] HBM: {args.hbm_path}", flush=True)
+    with progress.stage("Link Vision HBM"):
+        if args.resume and valid_hbm(args.hbm_path):
+            print(f"[RESUME] HBM: {args.hbm_path}", flush=True)
+        else:
+            heading(f"LINK {args.hbm_path.name}")
+            temporary = args.hbm_path.with_name(args.hbm_path.stem + ".partial.hbm")
+            Model.link_models([Hbo(str(hbo_path))], str(temporary))
+            os.replace(temporary, args.hbm_path)
+            if not hbm_contract_matches(args.hbm_path):
+                raise RuntimeError(f"linked HBM graph contract mismatch: {args.hbm_path}")
+            print(f"[PASS] HBM: {args.hbm_path}", flush=True)
     return 0
 
 

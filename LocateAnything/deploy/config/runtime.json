@@ -29,7 +29,7 @@
   "default_max_new_tokens": 2048,
   "default_nms_iou": 0.9,
   "l2m_sizes": "6:6:6:6",
-  "telemetry_interval_ms": 1000,
+  "telemetry_interval_ms": 250,
   "runner_startup_timeout_seconds": 120,
   "image_net_mean": [0.5, 0.5, 0.5],
   "image_net_std": [0.5, 0.5, 0.5]

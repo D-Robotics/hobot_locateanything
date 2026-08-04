@@ -10,11 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import queue
-import re
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -22,9 +19,20 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
 from pathlib import Path
 
+from console import (
+    BLUE,
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    MAGENTA,
+    RED,
+    RESET,
+    YELLOW,
+    WaitIndicator,
+)
 from runtime import (
     RUNTIME_VERSION,
     RuntimeConfig,
@@ -38,39 +46,18 @@ from runtime import (
     normalize_prompt,
     parse_detections,
     parse_points,
-    parse_s600_resource_status,
     postprocess_detections,
     prepare_image,
-    print_stage,
     read_generation,
     require_runtime_paths,
     save_annotated_image,
     tokenize_prompt,
     unwrap_box_command,
 )
+from telemetry import ResourceMonitor, ResourceSummary, resource_summary_lines
 
 
 VERSION = RUNTIME_VERSION
-RESET = "\033[0m"
-DIM = "\033[2m"
-BOLD = "\033[1m"
-CYAN = "\033[38;2;0;128;255m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-BLUE = "\033[34m"
-MAGENTA = "\033[35m"
-RED = "\033[31m"
-SUCCESS = "\033[42;37;1m SUCCESS \033[0m"
-PROFILE_VALUE_RE = re.compile(r"([a-z_]+)=(-?\d+(?:\.\d+)?)")
-LOGO = r"""
-  ██╗      ██████╗  ██████╗ █████╗ ████████╗███████╗
-  ██║     ██╔═══██╗██╔════╝██╔══██╗╚══██╔══╝██╔════╝
-  ██║     ██║   ██║██║     ███████║   ██║   █████╗
-  ██║     ██║   ██║██║     ██╔══██║   ██║   ██╔══╝
-  ███████╗╚██████╔╝╚██████╗██║  ██║   ██║   ███████╗
-  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝
-                 L O C A T E   A N Y T H I N G
-"""
 
 
 class HbmServer:
@@ -232,224 +219,15 @@ class HbmServer:
                     pass
 
 
-class ResourceDashboard:
-    """Fixed terminal footer backed only by measured board/runtime counters."""
-
-    def __init__(self, enabled: bool = True, interval_seconds: float = 1.0) -> None:
-        if interval_seconds < 0.25:
-            raise ValueError("dashboard interval must be at least 0.25 seconds")
-        self.enabled = enabled and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
-        self.interval_seconds = interval_seconds
-        self._stop = threading.Event()
-        self._active = threading.Event()
-        self._wake = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-        self._bpu: list[float | None] = [None] * 4
-        self._cpu: float | None = None
-        self._memory: float | None = None
-        self._temperature: float | None = None
-        self._ucp_gib_s: float | None = None
-        self._previous_cpu: tuple[int, int] | None = None
-        self._profile_bytes_mib = 0.0
-        self._profile_ms = 0.0
-        self._completed_request = False
-        self._rows = max(2, shutil.get_terminal_size((140, 32)).lines)
-
-    @staticmethod
-    def _read_system_cpu() -> tuple[int, int] | None:
-        try:
-            fields = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
-            values = [int(value) for value in fields[1:]]
-        except (OSError, ValueError, IndexError):
-            return None
-        total = sum(values)
-        idle = values[3] + (values[4] if len(values) > 4 else 0)
-        return total, idle
-
-    @staticmethod
-    def _read_memory_percent() -> float | None:
-        try:
-            values: dict[str, int] = {}
-            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
-                key, separator, tail = line.partition(":")
-                if separator and key in {"MemTotal", "MemAvailable"}:
-                    values[key] = int(tail.split()[0])
-            return 100.0 * (1.0 - values["MemAvailable"] / values["MemTotal"])
-        except (OSError, ValueError, KeyError, ZeroDivisionError):
-            return None
-
-    @staticmethod
-    def _read_vendor_status() -> tuple[list[float | None], float | None]:
-        command = Path("/usr/hobot/bin/hrut_somstatus")
-        if not command.is_file():
-            return [None] * 4, None
-        try:
-            completed = subprocess.run(
-                [str(command)], capture_output=True, text=True, errors="replace",
-                timeout=0.8, check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return [None] * 4, None
-        if completed.returncode != 0:
-            return [None] * 4, None
-        return parse_s600_resource_status(completed.stdout)
-
-    @staticmethod
-    def _color_percent(value: float | None) -> str:
-        if value is None:
-            return f"{DIM}--{RESET}"
-        color = GREEN if value < 55 else YELLOW if value < 85 else RED
-        return f"{color}{value:3.0f}%{RESET}"
-
-    def begin_request(self) -> None:
-        with self._lock:
-            self._profile_bytes_mib = 0.0
-            self._profile_ms = 0.0
-            self._ucp_gib_s = None
-            self._cpu = None
-            self._memory = None
-            self._bpu = [None] * 4
-            self._temperature = None
-            self._completed_request = False
-        self._previous_cpu = self._read_system_cpu()
-        self._active.set()
-        self._wake.set()
-
-    def end_request(self) -> None:
-        self._active.clear()
-        with self._lock:
-            self._completed_request = True
-        self._wake.set()
-
-    @contextmanager
-    def request_scope(self):
-        self.begin_request()
-        try:
-            yield
-        finally:
-            self.end_request()
-
-    def observe_profile(self, line: str) -> None:
-        values = {name: float(value) for name, value in PROFILE_VALUE_RE.findall(line)}
-        host_mib = values.get("input_mib", 0.0) + values.get("output_mib", 0.0)
-        host_ms = sum(values.get(name, 0.0) for name in (
-            "pack", "input_flush", "output_flush", "unpack"
-        ))
-        if host_mib <= 0 or host_ms <= 0:
-            return
-        with self._lock:
-            self._profile_bytes_mib += host_mib
-            self._profile_ms += host_ms
-            self._ucp_gib_s = self._profile_bytes_mib * 1000.0 / self._profile_ms / 1024.0
-        self._wake.set()
-
-    def _sample(self) -> None:
-        cpu_now = self._read_system_cpu()
-        cpu_percent = None
-        if cpu_now is not None and self._previous_cpu is not None:
-            total_delta = cpu_now[0] - self._previous_cpu[0]
-            idle_delta = cpu_now[1] - self._previous_cpu[1]
-            if total_delta > 0:
-                cpu_percent = 100.0 * (1.0 - idle_delta / total_delta)
-        self._previous_cpu = cpu_now
-        bpu, temperature = self._read_vendor_status()
-        with self._lock:
-            self._bpu = bpu
-            self._cpu = cpu_percent
-            self._memory = self._read_memory_percent()
-            self._temperature = temperature
-
-    def _render(self) -> str:
-        with self._lock:
-            bpu = " ".join(
-                f"{index}:{self._color_percent(value)}"
-                for index, value in enumerate(self._bpu)
-            )
-            ucp = (
-                f"{GREEN}{self._ucp_gib_s:.2f} GiB/s{RESET}"
-                if self._ucp_gib_s is not None else f"{DIM}--{RESET}"
-            )
-            temperature = (
-                f"{self._temperature:.1f} C" if self._temperature is not None else "--"
-            )
-            state = (
-                "ACTIVE" if self._active.is_set()
-                else "LAST REQUEST" if self._completed_request
-                else "IDLE"
-            )
-            return (
-                f"{BOLD}{CYAN}◆ S600 {state}{RESET}  "
-                f"BPU[{bpu}]  │  "
-                f"SYS CPU {self._color_percent(self._cpu)}  │  "
-                f"MEM {self._color_percent(self._memory)}  │  "
-                f"Transfer(est.) {ucp}  │  BPU {temperature}"
-            )
-
-    def _draw(self) -> None:
-        if not self.enabled:
-            return
-        columns = shutil.get_terminal_size((140, 32)).columns
-        line = self._render()
-        # ANSI color sequences do not consume columns. A small margin avoids
-        # wrapping even on terminals narrower than the full dashboard.
-        if columns < 112:
-            with self._lock:
-                line = (
-                    f"{BOLD}{CYAN}◆ S600{RESET} BPU "
-                    + "/".join(
-                        "--" if value is None else f"{value:.0f}%" for value in self._bpu
-                    )
-                    + f" │ CPU {('--' if self._cpu is None else f'{self._cpu:.0f}%')}"
-                    + f" │ MEM {('--' if self._memory is None else f'{self._memory:.0f}%')}"
-                )
-        sys.stdout.write(f"\0337\033[{self._rows};1H\033[2K{line}\0338")
-        sys.stdout.flush()
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            if self._active.is_set():
-                self._sample()
-            self._draw()
-            if self._stop.is_set():
-                break
-            timeout = self.interval_seconds if self._active.is_set() else None
-            self._wake.wait(timeout)
-            self._wake.clear()
-
-    def start(self) -> None:
-        if not self.enabled:
-            return
-        # DECSTBM resets the cursor to the home position. Move it back to the
-        # last scrollable row before input() writes the interactive prompt.
-        sys.stdout.flush()
-        sys.stdout.write(
-            f"\033[1;{self._rows - 1}r\033[{self._rows - 1};1H"
-        )
-        sys.stdout.flush()
-        self._thread = threading.Thread(target=self._run, name="s600-dashboard", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        if not self.enabled:
-            return
-        self._stop.set()
-        self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1.5)
-        sys.stdout.write(f"\0337\033[r\033[{self._rows};1H\033[2K\0338")
-        sys.stdout.flush()
-
-
 def close_runtime_resources(
-    dashboard: ResourceDashboard | None,
+    monitor: ResourceMonitor | None,
     language: HbmServer | None,
     vision: HbmServer | None,
 ) -> None:
     """Attempt every shutdown step so one broken stream cannot leak a runner."""
     failures: list[tuple[str, BaseException]] = []
     resources = (
-        ("dashboard", dashboard, "stop"),
+        ("resource monitor", monitor, "stop"),
         ("language", language, "close"),
         ("vision", vision, "close"),
     )
@@ -558,6 +336,7 @@ def print_result(
     decode_tokens: int,
     decode_ms: float,
     total_ms: float,
+    resources: ResourceSummary,
 ) -> None:
     labels = list(dict.fromkeys(
         str(item["label"])
@@ -583,6 +362,9 @@ def print_result(
         f"{decode_tps:.3f} tokens/s"
     )
     print(f"  End-to-end   {total_ms:10.3f} ms")
+    print(f"{BOLD}{CYAN}Resources{RESET}")
+    for line in resource_summary_lines(resources):
+        print(line)
     print(f"{BOLD}{CYAN}Predictions{RESET}")
     print(f"  Labels  {', '.join(labels) if labels else '(none)'}")
     print(f"  Boxes   {len(detections)}")
@@ -608,6 +390,10 @@ def print_runtime_info(
     max_new_tokens: int,
     show_runner_details: bool = False,
 ) -> None:
+    def command(value: str, description: str, color: str = "") -> None:
+        padding = " " * max(2, 34 - len(value))
+        print(f"  {color}{value}{RESET}{padding}{DIM}{description}{RESET}")
+
     if show_runner_details:
         printed: set[str] = set()
         for line in vision.startup_output + language.startup_output:
@@ -617,52 +403,37 @@ def print_runtime_info(
                 print(line)
                 printed.add(line)
     core_text = ",".join(str(core) for core in runtime.bpu_cores)
-    print(f"{SUCCESS} {GREEN}LocateAnything S600 Runtime is ready.{RESET}")
-    print(LOGO)
-    print(f"{CYAN}================== RUNTIME CONFIG =================={RESET}")
-    print(f"{BOLD}Runtime{RESET} LocateAnything {RUNTIME_VERSION}  |  S600/Nash-P  |  BPU {core_text}")
-    print(f"{BOLD}模型{RESET}  {runtime.model_type}  |  图像、文本定位")
+    print(f"\n{BOLD}{CYAN}LocateAnything{RESET} {DIM}v{RUNTIME_VERSION}{RESET}")
+    print(f"{GREEN}Ready{RESET}  S600/Nash-P  |  {runtime.model_type}  |  BPU {core_text}")
     print(
-        f"{BOLD}Vision{RESET} {runtime.vision_model.name}  |  "
-        f"{runtime.image_width}x{runtime.image_height}, {runtime.visual_tokens} visual tokens"
+        f"Input {runtime.image_width}x{runtime.image_height}  |  "
+        f"Language graphs {runtime.language_graph_set}  |  "
+        f"Generation {generation_mode} ({max_new_tokens} token limit)"
     )
     print(
-        f"{BOLD}Language{RESET} {runtime.language_model.name}  |  "
-        f"prefill={runtime.prefill_chunk}, PBD={runtime.pbd_query_len}, "
-        f"AR={runtime.ar_query_len}, cache={runtime.cache_len}"
-    )
-    print(f"{BOLD}KV cache{RESET} UCP/DDR resident ring  |  Host only commits new rows")
-    print(f"{BOLD}Embedding{RESET} {runtime.embeddings.name}")
-    print(f"{BOLD}Generation{RESET} {generation_mode}  |  max_new_tokens={max_new_tokens}")
-    print(f"{BOLD}BPU{RESET} Nash-P core {core_text}  |  L2M={runtime.l2m_sizes}")
-    print(
-        f"{BOLD}Telemetry{RESET} {runtime.telemetry_interval_seconds:.2f}s refresh  |  "
-        "disable with --no-dashboard"
-    )
-    print(
-        f"{DIM}  Transfer(est.) uses runner-reported bytes divided by Host copy time; "
-        f"it is not measured DDR bandwidth.{RESET}"
+        f"Resources every {runtime.telemetry_interval_seconds:.2f}s  |  "
+        "BPU per core, CPU, memory, temperature"
     )
     if image is not None:
-        print(f"{BOLD}Image{RESET} {image.name}")
+        print(f"Image {image}")
     print()
-    print(f"{CYAN}================== TASK COMMANDS ==================={RESET}")
-    print(f"  {GREEN}/detect{RESET} cat,dog                 {DIM}目标检测{RESET}")
-    print(f"  {MAGENTA}/ground{RESET} <phrase>             {DIM}指代表达，多目标{RESET}")
-    print(f"  {MAGENTA}/ground_single{RESET} <phrase>      {DIM}指代表达，单目标{RESET}")
-    print(f"  {BLUE}/gui{RESET} <element>                 {DIM}GUI 点定位{RESET}")
-    print(f"  {BLUE}/gui_box{RESET} <element>             {DIM}GUI 框定位{RESET}")
-    print(f"  {YELLOW}/text{RESET}                         {DIM}文本 OCR{RESET}")
-    print(f"  {YELLOW}/ground_text{RESET} <text>          {DIM}指定文本定位{RESET}")
-    print(f"  {CYAN}/layout{RESET} title,table,figure      {DIM}文档版面分析{RESET}")
-    print(f"  {RED}/point{RESET} <target>                 {DIM}通用点定位{RESET}")
-    print(f"  {GREEN}/box{RESET} /detect cat              {DIM}保存预测框图片{RESET}")
+    print(f"{BOLD}{CYAN}Tasks{RESET}")
+    command("/detect cat,dog", "目标检测", GREEN)
+    command("/ground <phrase>", "指代表达，多目标", MAGENTA)
+    command("/ground_single <phrase>", "指代表达，单目标", MAGENTA)
+    command("/gui <element>", "GUI 点定位", BLUE)
+    command("/gui_box <element>", "GUI 框定位", BLUE)
+    command("/text", "文本 OCR", YELLOW)
+    command("/ground_text <text>", "指定文本定位", YELLOW)
+    command("/layout title,table,figure", "文档版面分析", CYAN)
+    command("/point <target>", "通用点定位", RED)
+    command("/box /detect cat", "保存预测框图片", GREEN)
     print()
-    print(f"{CYAN}================== SESSION ========================={RESET}")
-    print(f"  {BOLD}/image{RESET} <image_path>             {DIM}加载图片{RESET}")
-    print(f"  {BOLD}regen{RESET}                           {DIM}重跑上次请求{RESET}")
-    print(f"  {BOLD}reset{RESET}                           {DIM}清除当前图片与缓存{RESET}")
-    print(f"  {BOLD}exit{RESET}                            {DIM}退出程序{RESET}")
+    print(f"{BOLD}{CYAN}Session{RESET}")
+    command("/image <image_path>", "加载图片", BOLD)
+    command("regen", "重跑上次请求", BOLD)
+    command("reset", "清除当前图片与缓存", BOLD)
+    command("exit", "退出程序", BOLD)
     print()
 
 
@@ -688,20 +459,23 @@ def main() -> int:
     output_dir = args.output_dir.resolve() if args.output_dir else None
 
     env = build_runtime_environment(runtime)
-    env.setdefault("LA_PROFILE_EXECUTION", "1")
-    vision = HbmServer(
-        [str(vision_runner), "--model", str(vision_model), "--server"],
-        env,
-        "vision",
-        runtime.runner_startup_timeout_seconds,
-    )
-    try:
-        language = HbmServer(
-            language_runner_command(runtime) + ["--server"],
+    if args.show_runner_details:
+        env.setdefault("LA_PROFILE_EXECUTION", "1")
+    with WaitIndicator(1, 2, "Load Vision model"):
+        vision = HbmServer(
+            [str(vision_runner), "--model", str(vision_model), "--server"],
             env,
-            "language",
+            "vision",
             runtime.runner_startup_timeout_seconds,
         )
+    try:
+        with WaitIndicator(2, 2, "Load Language model"):
+            language = HbmServer(
+                language_runner_command(runtime) + ["--server"],
+                env,
+                "language",
+                runtime.runner_startup_timeout_seconds,
+            )
     except BaseException:
         close_runtime_resources(None, None, vision)
         raise
@@ -709,10 +483,10 @@ def main() -> int:
     last_request: tuple[Path, str] | None = None
     vision_cache: tuple[tuple[str, int, int], bytes, dict[str, object]] | None = None
     request_index = 0
-    dashboard: ResourceDashboard | None = None
+    monitor: ResourceMonitor | None = None
     try:
-        dashboard = ResourceDashboard(
-            enabled=not args.no_dashboard,
+        monitor = ResourceMonitor(
+            visible=not args.no_dashboard,
             interval_seconds=runtime.telemetry_interval_seconds,
         )
         print_runtime_info(
@@ -724,13 +498,13 @@ def main() -> int:
             args.max_new_tokens,
             show_runner_details=getattr(args, "show_runner_details", False),
         )
-        dashboard.start()
+        monitor.start()
     except BaseException:
-        close_runtime_resources(dashboard, language, vision)
+        close_runtime_resources(monitor, language, vision)
         raise
 
     # The initialization guard above guarantees this before infer() is defined.
-    assert dashboard is not None
+    assert monitor is not None
 
     def infer(image: Path, prompt: str) -> None:
         nonlocal request_index, last_request, vision_cache
@@ -749,11 +523,11 @@ def main() -> int:
             image,
             output_dir=request_output_dir,
         )
-        with dashboard.request_scope(), tempfile.TemporaryDirectory(
+        with monitor.request_scope(), tempfile.TemporaryDirectory(
             prefix="locateanything-interactive-"
         ) as raw_dir:
             work_dir = Path(raw_dir)
-            print_stage(1, "Vision")
+            monitor.set_stage(1, 3, "Vision")
             vit_started = time.monotonic()
             vision_input_path = work_dir / "vision_input.f16.bin"
             visual_output_path = work_dir / "visual_features.f16.bin"
@@ -779,9 +553,8 @@ def main() -> int:
                 vit_infer_ms = float(vision_fields[3])
                 vision_cache = (cache_key, visual_output_path.read_bytes(), transform)
             vit_ms = (time.monotonic() - vit_started) * 1000.0
-            print_stage(1, "Vision", vit_ms / 1000.0)
 
-            print_stage(2, "Language")
+            monitor.set_stage(2, 3, "Language")
             language_started = time.monotonic()
             tokens = tokenize_prompt(tokenizer_dir, task_prompt, stream_tokenizer)
             tokens.tofile(token_path)
@@ -791,6 +564,7 @@ def main() -> int:
 
             def stream_token(token: int) -> None:
                 nonlocal streamed_text
+                monitor.observe_token()
                 streamed_ids.append(token)
                 decoded = stream_tokenizer.decode(
                     streamed_ids, skip_special_tokens=False
@@ -828,16 +602,13 @@ def main() -> int:
                 print(f"\n[Assistant final] >>> {text}", end="", flush=True)
             print()
             for line in language_log:
-                if line.startswith("[profile]"):
-                    dashboard.observe_profile(line)
-                    if args.show_runner_details:
-                        print(line)
-                elif line.startswith(("[pbd]", "[hybrid:")):
+                if args.show_runner_details and line.startswith(
+                    ("[profile]", "[pbd]", "[hybrid:")
+                ):
                     print(line)
             language_seconds = time.monotonic() - language_started
-            print_stage(2, "Language", language_seconds)
 
-            print_stage(3, "Postprocess")
+            monitor.set_stage(3, 3, "Postprocess")
             postprocess_started = time.monotonic()
             raw_detections = parse_detections(text, transform)
             detections, suppressed_detections = postprocess_detections(
@@ -853,7 +624,8 @@ def main() -> int:
                 save_annotated_image(image, detections, points, annotated_image)
             postprocess_seconds = time.monotonic() - postprocess_started
             total_ms = (time.monotonic() - started) * 1000.0
-            print_stage(3, "Postprocess", postprocess_seconds)
+            monitor.end_request()
+            resource_summary = monitor.summary()
             print_result(
                 detections,
                 points,
@@ -865,6 +637,7 @@ def main() -> int:
                 decode_token_count,
                 decode_ms,
                 total_ms,
+                resource_summary,
             )
             if suppressed_detections:
                 print(
@@ -884,6 +657,7 @@ def main() -> int:
                     "language_decode_hbm": round(decode_ms / 1000.0, 6),
                 },
                 "total_seconds": round(total_ms / 1000.0, 6),
+                "resources": resource_summary.as_dict(),
             }
             paths.timings.write_text(
                 json.dumps(timing_data, ensure_ascii=False, indent=2) + "\n",
@@ -941,6 +715,7 @@ def main() -> int:
                         "decode_ms": round(decode_ms, 3),
                     },
                     "timings": timing_data,
+                    "resources": resource_summary.as_dict(),
                     "runtime_log": str(paths.runtime_log),
                 }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"{BOLD}{CYAN}Saved{RESET}")
@@ -997,7 +772,7 @@ def main() -> int:
             except Exception as error:
                 print(f"[LocateAnything] request failed: {error}", file=sys.stderr)
     finally:
-        close_runtime_resources(dashboard, language, vision)
+        close_runtime_resources(monitor, language, vision)
     return 0
 
 

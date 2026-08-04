@@ -20,6 +20,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from console import BOLD, CYAN, GREEN, RESET
+from telemetry import (
+    ResourceMonitor,
+    parse_s600_resource_status,
+    resource_summary_lines,
+)
+
 
 IMAGE_SIZE = 672
 PATCH_SIZE = 14
@@ -40,20 +47,8 @@ TASK_COMMANDS = (
 )
 
 BOX_COMMAND = "/box"
-RUNTIME_VERSION = "0.5.0"
+RUNTIME_VERSION = "0.6.0"
 DEFAULT_NMS_IOU = 0.90
-S600_BPU_RATIO_RE = re.compile(
-    r"\bbpu(?P<core>[0-3])\s+ratio\s*[:=]\s*(?P<value>\d+(?:\.\d+)?)\s*%?",
-    re.IGNORECASE,
-)
-S600_DIRECT_BPU_TEMPERATURE_RE = re.compile(
-    r"\bpvt_bpu_[^:]+:\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?:\(C\)|C\b)",
-    re.IGNORECASE,
-)
-S600_SECTION_VALUE_RE = re.compile(
-    r"^(?P<label>[A-Za-z0-9_]+)\s*:\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>m?C)\b",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -399,34 +394,6 @@ def require_runtime_paths(runtime: RuntimeConfig) -> None:
             raise PermissionError(
                 "runtime runner is not executable: " + "; ".join(not_executable)
             )
-
-
-def parse_s600_resource_status(text: str) -> tuple[list[float | None], float | None]:
-    """Parse four BPU ratios and the hottest BPU temperature from hrut_somstatus."""
-    bpu: list[float | None] = [None] * 4
-    for match in S600_BPU_RATIO_RE.finditer(text):
-        bpu[int(match.group("core"))] = float(match.group("value"))
-
-    temperatures = [
-        float(match.group("value"))
-        for match in S600_DIRECT_BPU_TEMPERATURE_RE.finditer(text)
-    ]
-    section: str | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.endswith("-->"):
-            section = line[:-3].strip().lower()
-            continue
-        if section != "temperature":
-            continue
-        match = S600_SECTION_VALUE_RE.match(line)
-        if match is None or "bpu" not in match.group("label").lower():
-            continue
-        value = float(match.group("value"))
-        if match.group("unit").lower() == "mc":
-            value /= 1000.0
-        temperatures.append(value)
-    return bpu, max(temperatures) if temperatures else None
 
 
 def prepare_image(image_path: Path) -> tuple[np.ndarray, dict[str, object]]:
@@ -925,11 +892,7 @@ def main() -> int:
     runtime: RuntimeConfig = args.runtime
     require_runtime_paths(runtime)
     tokenizer_dir = runtime.tokenizer_dir
-    vision_runner = runtime.vision_runner
-    vision_model = runtime.vision_model
-
     env = build_runtime_environment(runtime)
-
     task_prompt, annotate = unwrap_box_command(args.prompt)
     normalized_prompt, task = normalize_prompt(task_prompt)
     started = time.monotonic()
@@ -941,87 +904,96 @@ def main() -> int:
     )
     output_path = compatibility_output or paths.prediction
     runtime_log = paths.runtime_log
+    monitor = ResourceMonitor(interval_seconds=runtime.telemetry_interval_seconds)
+    monitor.start()
+    monitor.begin_request()
+    try:
+        monitor.set_stage(1, 3, "Vision")
+        vision_stage_started = time.monotonic()
+        vision_input, transform = prepare_image(args.image)
+        with tempfile.TemporaryDirectory(prefix="locateanything-") as temporary:
+            work_dir = Path(temporary)
+            vision_input_path = work_dir / "vision_input.f16.bin"
+            visual_features_path = work_dir / "visual_features.f16.bin"
+            prompt_tokens_path = work_dir / "prompt_tokens.i32.bin"
+            generation_path = work_dir / "generation.txt"
+            vision_input.tofile(vision_input_path)
 
-    print_stage(1, "Vision")
-    vision_stage_started = time.monotonic()
-    vision_input, transform = prepare_image(args.image)
-    with tempfile.TemporaryDirectory(prefix="locateanything-") as temporary:
-        work_dir = Path(temporary)
-        vision_input_path = work_dir / "vision_input.f16.bin"
-        visual_features_path = work_dir / "visual_features.f16.bin"
-        prompt_tokens_path = work_dir / "prompt_tokens.i32.bin"
-        generation_path = work_dir / "generation.txt"
-        vision_input.tofile(vision_input_path)
+            _, vision_elapsed = run_command(
+                [
+                    str(runtime.vision_runner),
+                    "--model",
+                    str(runtime.vision_model),
+                    "--input",
+                    str(vision_input_path),
+                    "--output",
+                    str(visual_features_path),
+                ],
+                runtime_log,
+                env,
+            )
+            vision_log = runtime_log.read_text(encoding="utf-8")
+            vision_stage_seconds = time.monotonic() - vision_stage_started
 
-        vision_output, vision_elapsed = run_command(
-            [
-                str(vision_runner),
-                "--model",
-                str(vision_model),
-                "--input",
-                str(vision_input_path),
-                "--output",
-                str(visual_features_path),
-            ],
-            runtime_log,
-            env,
+            monitor.set_stage(2, 3, "Language")
+            language_stage_started = time.monotonic()
+            prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
+            prompt_tokens.tofile(prompt_tokens_path)
+            _, language_elapsed = run_command(
+                language_runner_command(runtime) + [
+                    "--mode",
+                    "all",
+                    "--tokens",
+                    str(prompt_tokens_path),
+                    "--visual",
+                    str(visual_features_path),
+                    "--generation-mode",
+                    args.generation_mode,
+                    "--max-new-tokens",
+                    str(args.max_new_tokens),
+                    "--output",
+                    str(generation_path),
+                ],
+                runtime_log,
+                env,
+            )
+            language_log = runtime_log.read_text(encoding="utf-8")
+            language_stage_seconds = time.monotonic() - language_stage_started
+            runtime_log.write_text(
+                "VISION\n"
+                + vision_log
+                + "\nLANGUAGE\n"
+                + language_log,
+                encoding="utf-8",
+            )
+            stop_reason, token_ids = read_generation(generation_path)
+
+        monitor.set_stage(3, 3, "Postprocess")
+        postprocess_started = time.monotonic()
+        text = decode_tokens(tokenizer_dir, token_ids)
+        raw_detections = parse_detections(text, transform)
+        detections, suppressed_detections = postprocess_detections(
+            raw_detections,
+            task,
+            iou_threshold=args.nms_iou,
+            enabled=not args.no_nms,
         )
-        vision_log = runtime_log.read_text(encoding="utf-8")
-        vision_stage_seconds = time.monotonic() - vision_stage_started
-        print_stage(1, "Vision", vision_stage_seconds)
+        points = parse_points(text, transform)
+        annotated_image = None
+        if annotate or detections or points:
+            annotated_image = paths.annotated_image
+            save_annotated_image(args.image, detections, points, annotated_image)
+        postprocess_seconds = time.monotonic() - postprocess_started
+        total_seconds = time.monotonic() - started
+        monitor.end_request()
+        resource_summary = monitor.summary()
+    finally:
+        monitor.end_request()
+        monitor.stop()
 
-        print_stage(2, "Language")
-        language_stage_started = time.monotonic()
-        prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
-        prompt_tokens.tofile(prompt_tokens_path)
-        language_output, language_elapsed = run_command(
-            language_runner_command(runtime) + [
-                "--mode",
-                "all",
-                "--tokens",
-                str(prompt_tokens_path),
-                "--visual",
-                str(visual_features_path),
-                "--generation-mode",
-                args.generation_mode,
-                "--max-new-tokens",
-                str(args.max_new_tokens),
-                "--output",
-                str(generation_path),
-            ],
-            runtime_log,
-            env,
-        )
-        language_log = runtime_log.read_text(encoding="utf-8")
-        language_stage_seconds = time.monotonic() - language_stage_started
-        print_stage(2, "Language", language_stage_seconds)
-        runtime_log.write_text(
-            "================== VISION ==================\n"
-            + vision_log
-            + "\n================== LANGUAGE ==================\n"
-            + language_log,
-            encoding="utf-8",
-        )
-        stop_reason, token_ids = read_generation(generation_path)
-
-    print_stage(3, "Postprocess")
-    postprocess_started = time.monotonic()
-    text = decode_tokens(tokenizer_dir, token_ids)
-    raw_detections = parse_detections(text, transform)
-    detections, suppressed_detections = postprocess_detections(
-        raw_detections,
-        task,
-        iou_threshold=args.nms_iou,
-        enabled=not args.no_nms,
+    language_tokens_per_second = (
+        len(token_ids) / language_stage_seconds if language_stage_seconds > 0 else 0.0
     )
-    points = parse_points(text, transform)
-    annotated_image = None
-    if annotate or detections or points:
-        annotated_image = paths.annotated_image
-        save_annotated_image(args.image, detections, points, annotated_image)
-    postprocess_seconds = time.monotonic() - postprocess_started
-    total_seconds = time.monotonic() - started
-    print_stage(3, "Postprocess", postprocess_seconds)
 
     timing_data = {
         "schema_version": 1,
@@ -1035,6 +1007,7 @@ def main() -> int:
             "language_hbm": round(language_elapsed, 6),
         },
         "total_seconds": round(total_seconds, 6),
+        "resources": resource_summary.as_dict(),
     }
     paths.timings.write_text(
         json.dumps(timing_data, indent=2, ensure_ascii=False) + "\n",
@@ -1076,59 +1049,52 @@ def main() -> int:
             "suppressed_detection_count": len(suppressed_detections),
         },
         "timings": timing_data,
+        "resources": resource_summary.as_dict(),
         "elapsed_seconds": round(total_seconds, 3),
         "runtime_log": str(runtime_log),
     }
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    labels = list(dict.fromkeys(
-        str(detection["label"]) for detection in detections if detection["label"]
-    ))
-    display_text = ", ".join(labels) if labels else text
-    total_elapsed = total_seconds
-    print("================== LOCATEANYTHING S600 ==================")
-    print("模型类别：图像、文本定位")
-    print(f"加载图像：{args.image}")
-    print(f"[User] <<< {args.prompt}")
-    if normalized_prompt != args.prompt:
-        print(f"[LocateAnything] task={task}")
-        print(f"[LocateAnything] prompt={normalized_prompt}")
-    print(f"[Assistant] >>> {text}")
+    print(f"\n{BOLD}{CYAN}LocateAnything result{RESET}")
+    print(f"  Status       {'complete' if stop_reason == 'im_end' else 'truncated'}")
+    print(f"  Image        {args.image}")
+    print(f"  Task         {task}")
+    print(f"  Response     {text}")
+    print(f"{BOLD}{CYAN}Performance{RESET}")
+    print(f"  Vision       {vision_stage_seconds * 1000.0:.3f} ms")
     print(
-        f"[perf] vision={vision_elapsed * 1000.0:.3f}ms "
-        f"language={language_elapsed * 1000.0:.3f}ms "
-        f"e2e={total_elapsed * 1000.0:.3f}ms"
+        f"  Language     {language_stage_seconds * 1000.0:.3f} ms  "
+        f"{len(token_ids)} tokens  {language_tokens_per_second:.3f} tokens/s"
     )
-    print("================== PARSED GROUNDING ==================")
-    print(f"TEXT: {display_text}")
-    print(f"BBOX_COUNT: {len(detections)}")
+    print(f"  Postprocess  {postprocess_seconds * 1000.0:.3f} ms")
+    print(f"  End-to-end   {total_seconds * 1000.0:.3f} ms")
+    print(f"{BOLD}{CYAN}Resources{RESET}")
+    for line in resource_summary_lines(resource_summary):
+        print(line)
+    print(f"{BOLD}{CYAN}Predictions{RESET}")
+    print(f"  Boxes        {len(detections)}")
     if suppressed_detections:
         print(
-            f"NMS: suppressed={len(suppressed_detections)} "
-            f"same-label boxes at IoU>={args.nms_iou:.2f}"
+            f"  NMS removed  {len(suppressed_detections)} same-label boxes "
+            f"at IoU >= {args.nms_iou:.2f}"
         )
     for index, detection in enumerate(detections[:20], 1):
         print(
-            f"BBOX[{index}]: label={detection['label']!r} "
-            f"xyxy={detection['bbox_xyxy']}"
+            f"    {index}. {detection['label']!r}  pixels={detection['bbox_xyxy']}"
         )
     if len(detections) > 20:
-        print(f"BBOX_MORE: {len(detections) - 20}")
-    print(f"POINT_COUNT: {len(points)}")
+        print(f"    ... {len(detections) - 20} more")
+    print(f"  Points       {len(points)}")
     for index, point in enumerate(points[:20], 1):
-        print(
-            f"POINT[{index}]: label={point['label']!r} "
-            f"xy={point['point_xy']}"
-        )
+        print(f"    {index}. {point['label']!r}  pixels={point['point_xy']}")
     if len(points) > 20:
-        print(f"POINT_MORE: {len(points) - 20}")
+        print(f"    ... {len(points) - 20} more")
+    print(f"{BOLD}{CYAN}Saved{RESET}")
     if annotated_image:
-        print(f"ANNOTATED_IMAGE: {annotated_image}")
-    print(f"STATUS: {'COMPLETE' if stop_reason == 'im_end' else 'TRUNCATED'}")
-    print(f"STOP_REASON: {stop_reason}")
-    print(f"OUTPUT: {output_path}")
-    print(f"TIMINGS: {paths.timings}")
-    print(f"RUN_DIR: {paths.root}")
+        print(f"  Annotated image  {annotated_image}")
+    print(f"  Prediction       {output_path}")
+    print(f"  Timings          {paths.timings}")
+    print(f"  Run directory    {paths.root}")
     return 0
 
 
