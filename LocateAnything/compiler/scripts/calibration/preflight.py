@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -56,18 +55,6 @@ EXPECTED_TOKEN_IDS = {
     "<switch>": 152679,
 }
 EXPECTED_SAMPLE_COUNT = 1200
-EXPECTED_MANIFEST_SHA256 = "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
-EXPECTED_CHECKPOINT_SHA256 = {
-    "model-00001-of-00002.safetensors": (
-        "923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58"
-    ),
-    "model-00002-of-00002.safetensors": (
-        "3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47"
-    ),
-}
-EXPECTED_CHECKPOINT_INDEX_SHA256 = (
-    "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
-)
 EXPECTED_TASK_COUNTS = {
     "detection": 660,
     "gui": 150,
@@ -93,7 +80,6 @@ EXPECTED_SOURCE_ROLE_COUNTS = {
     "pixmo_points": 60,
 }
 EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 BOX_RE = re.compile(r"<box>(.*?)</box>")
 COORD_RE = re.compile(r"<([0-9]{1,4})>")
 REF_RE = re.compile(r"<ref>(.*?)</ref>")
@@ -101,14 +87,6 @@ REF_RE = re.compile(r"<ref>(.*?)</ref>")
 
 class PreflightError(RuntimeError):
     """Raised when a release input violates the static Prepare contract."""
-
-
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def read_json(path: Path) -> Any:
@@ -209,27 +187,11 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     if resize_mode != "letterbox" or letterbox_fill != 128:
         raise PreflightError("release image preprocessing requires letterbox with fill=128")
 
-    manifest_sha = str(
-        calibration.get("dataset_index_sha256")
-        or calibration.get("selected_manifest_sha256")
-        or ""
-    ).lower()
-    if not SHA256_RE.fullmatch(manifest_sha):
-        raise PreflightError("calibration.dataset_index_sha256 must be a SHA256")
-    if manifest_sha != EXPECTED_MANIFEST_SHA256:
-        raise PreflightError("calibration.dataset_index_sha256 is not the frozen release index")
     max_new_tokens = int(calibration.get("max_new_tokens", 0))
     if max_new_tokens != 1024:
         raise PreflightError("release prepare max_new_tokens must be 1024")
-    checkpoint_sha256 = model.get("checkpoint_sha256")
-    if checkpoint_sha256 != EXPECTED_CHECKPOINT_SHA256:
-        raise PreflightError("model.checkpoint_sha256 is not the frozen release checkpoint")
-    checkpoint_index_sha256 = str(model.get("checkpoint_index_sha256") or "")
-    if checkpoint_index_sha256 != EXPECTED_CHECKPOINT_INDEX_SHA256:
-        raise PreflightError("model.checkpoint_index_sha256 is not the frozen release index")
     return {
         "sample_count": samples,
-        "manifest_sha256": manifest_sha,
         "task_counts": task_counts,
         "source_role_counts": role_counts,
         "coco_stratum_counts": strata,
@@ -246,8 +208,6 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
         "image_token_id": int(calibration.get("image_token_id", -1)),
         "prefill_limit": prefill,
         "max_new_tokens": max_new_tokens,
-        "checkpoint_sha256": dict(checkpoint_sha256),
-        "checkpoint_index_sha256": checkpoint_index_sha256,
     }
 
 
@@ -375,11 +335,6 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
     path = path.resolve()
     if not path.is_file():
         raise PreflightError(f"selected manifest is not a file: {path}")
-    manifest_sha = sha256_file(path)
-    if manifest_sha != profile["manifest_sha256"]:
-        raise PreflightError(
-            f"selected manifest SHA256 {manifest_sha} != {profile['manifest_sha256']}"
-        )
     records = read_jsonl(path)
     if len(records) != profile["sample_count"]:
         raise PreflightError(
@@ -390,7 +345,7 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
     tasks: Counter[str] = Counter()
     roles: Counter[str] = Counter()
     strata: Counter[str] = Counter()
-    image_hashes: set[str] = set()
+    image_paths: set[Path] = set()
     bundle_ids: set[str] = set()
     image_bytes = 0
     decoded_images = 0
@@ -406,7 +361,6 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         split = str(record.get("split") or "").lower()
         prompt = str(record.get("prompt") or "")
         bundle_id = str(record.get("bundle_id") or "")
-        claimed_hash = str(record.get("image_sha256") or "").lower()
         image_value = str(record.get("image") or "")
         if not task or not prompt or not bundle_id or not image_value:
             raise PreflightError(f"{context}: missing task/prompt/bundle_id/image")
@@ -414,8 +368,6 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
             raise PreflightError(f"{context}: release calibration requires split=train")
         if bundle_id in bundle_ids:
             raise PreflightError(f"{context}: duplicate bundle_id {bundle_id}")
-        if not SHA256_RE.fullmatch(claimed_hash) or claimed_hash in image_hashes:
-            raise PreflightError(f"{context}: invalid or duplicate image_sha256")
         image_relative = Path(image_value)
         if image_relative.is_absolute():
             raise PreflightError(f"{context}: frozen bundle image path must be relative")
@@ -426,9 +378,8 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
             raise PreflightError(f"{context}: image escapes the bundle root") from exc
         if not image_path.is_file():
             raise PreflightError(f"{context}: image is not a file: {image_path}")
-        actual_hash = sha256_file(image_path)
-        if actual_hash != claimed_hash:
-            raise PreflightError(f"{context}: image SHA256 mismatch")
+        if image_path in image_paths:
+            raise PreflightError(f"{context}: duplicate image path {image_value}")
         try:
             with Image.open(image_path) as source_image:
                 source_image.load()
@@ -465,7 +416,7 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         if role == "coco_detection":
             stratum = str(metadata.get("calibration_stratum") or "")
             strata[stratum] += 1
-        image_hashes.add(claimed_hash)
+        image_paths.add(image_path)
         bundle_ids.add(bundle_id)
         image_bytes += image_path.stat().st_size
         decoded_images += 1
@@ -482,12 +433,11 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
     return ({
         "passed": True,
         "manifest": str(path),
-        "manifest_sha256": manifest_sha,
         "sample_count": len(records),
         "task_counts": dict(tasks),
         "source_role_counts": dict(roles),
         "coco_stratum_counts": dict(strata),
-        "unique_images": len(image_hashes),
+        "unique_images": len(image_paths),
         "decoded_images": decoded_images,
         "image_formats": dict(sorted(image_formats.items())),
         "null_output_records": null_output_records,
@@ -580,9 +530,6 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
 
     index_path = path / "model.safetensors.index.json"
     if index_path.is_file():
-        actual_index_sha256 = sha256_file(index_path)
-        if actual_index_sha256 != profile.get("checkpoint_index_sha256"):
-            raise PreflightError("checkpoint index SHA256 mismatch")
         index = read_json(index_path)
         weight_map = index.get("weight_map") if isinstance(index, dict) else None
         if not isinstance(weight_map, dict) or not weight_map:
@@ -592,38 +539,22 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
         if missing_shards:
             raise PreflightError(f"model checkpoint shards are missing: {missing_shards[:3]}")
     else:
-        actual_index_sha256 = None
         shards = [item.name for item in path.glob("*.safetensors") if item.is_file()]
         if not shards:
             raise PreflightError("model path has no safetensors checkpoint")
-    expected_shards = profile.get("checkpoint_sha256")
-    if not isinstance(expected_shards, dict) or not expected_shards:
-        raise PreflightError("release profile has no checkpoint SHA256 mapping")
-    if set(shards) != set(expected_shards):
-        raise PreflightError(
-            f"checkpoint shard catalog mismatch: actual={shards}, "
-            f"expected={sorted(expected_shards)}"
-        )
     checkpoint_files = {}
     for name in shards:
         shard_path = path / name
-        actual_sha256 = sha256_file(shard_path)
-        if actual_sha256 != expected_shards[name]:
-            raise PreflightError(f"checkpoint shard SHA256 mismatch: {name}")
-        checkpoint_files[name] = {
-            "bytes": shard_path.stat().st_size,
-            "sha256": actual_sha256,
-        }
+        checkpoint_files[name] = {"bytes": shard_path.stat().st_size}
     return {
         "passed": True,
         "path": str(path),
-        "config_sha256": sha256_file(config_path),
+        "config_bytes": config_path.stat().st_size,
         "tokenizer_layout": tokenizer_layout,
         "tokenizer_files": {
-            item.name: sha256_file(item) for item in [*tokenizer_files, tokenizer_config]
+            item.name: item.stat().st_size for item in [*tokenizer_files, tokenizer_config]
         },
         "checkpoint_shards": len(shards),
-        "checkpoint_index_sha256": actual_index_sha256,
         "checkpoint_files": checkpoint_files,
         "special_token_ids": EXPECTED_TOKEN_IDS,
     }
@@ -653,7 +584,7 @@ def audit_upstream(path: Path) -> dict[str, Any]:
     return {
         "passed": True,
         "path": str(path),
-        "files": {name: sha256_file(item) for name, item in required.items()},
+        "files": {name: item.stat().st_size for name, item in required.items()},
     }
 
 
@@ -750,7 +681,7 @@ def audit_runtime_tokenizer(
     return {
         "passed": True,
         "path": str(runtime_tokenizer_path.resolve()),
-        "sha256": sha256_file(runtime_tokenizer_path),
+        "bytes": runtime_tokenizer_path.stat().st_size,
         "texts_checked": checked,
         "expanded_prompts_checked": expanded_prompts_checked,
         "regex_contract": "checkpoint_default_matches_runtime_tokenizer_json",

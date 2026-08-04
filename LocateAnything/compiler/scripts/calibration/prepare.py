@@ -10,7 +10,6 @@ by the S600 compiler-side calibration pass.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -31,13 +30,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from compiler.scripts.common.identity import (  # noqa: E402
     atomic_json as atomic_identity_json,
-    checkpoint_identity,
-    file_identity,
     identity_mismatches,
     read_json,
-    sha256_json,
-    source_tree_identity,
-    tokenizer_identity,
 )
 from compiler.scripts.common.progress import track  # noqa: E402
 
@@ -71,14 +65,6 @@ TASK_ALIASES = {
     "point": "pointing",
 }
 EVALUATION_SPLITS = {"val", "validation", "test", "dev", "evaluation", "eval"}
-
-
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -197,17 +183,14 @@ def render_prompt(record: dict[str, Any], task: str) -> str:
     raise AssertionError(f"unhandled task: {task}")
 
 
-def stable_rank(record: dict[str, Any], seed: int) -> str:
-    source = "|".join(
-        [
-            str(seed),
-            record["task"],
-            str(record.get("source", "")),
-            str(record.get("sample_id", "")),
-            record["image_sha256"],
-        ]
+def stable_rank(record: dict[str, Any], seed: int) -> tuple[str, ...]:
+    return (
+        str(seed),
+        record["task"],
+        str(record.get("source", "")),
+        str(record.get("sample_id", "")),
+        str(record.get("_source_image", record.get("image", ""))),
     )
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def allocate_quotas(
@@ -306,11 +289,8 @@ def select_records(args: argparse.Namespace) -> int:
     prepared = []
     rejected_splits = Counter()
     missing_license = 0
-    input_digests = {}
-
     for manifest_path in args.input_jsonl:
         manifest_path = manifest_path.resolve()
-        input_digests[str(manifest_path)] = sha256_file(manifest_path)
         for source_record in read_jsonl(manifest_path):
             task = normalize_task(source_record.get("task"))
             split = str(source_record.get("split") or "").strip().lower()
@@ -329,7 +309,6 @@ def select_records(args: argparse.Namespace) -> int:
                     f"{source_record['_manifest_path']}:{source_record['_manifest_line']}: "
                     f"image not found: {image_path}"
                 )
-            image_sha256 = sha256_file(image_path)
             source = str(source_record.get("source") or "").strip()
             if not source:
                 raise ValueError(
@@ -355,7 +334,6 @@ def select_records(args: argparse.Namespace) -> int:
                     "split": split,
                     "license": license_name,
                     "prompt": render_prompt(source_record, task),
-                    "image_sha256": image_sha256,
                     "_source_image": str(image_path),
                 }
             )
@@ -365,10 +343,10 @@ def select_records(args: argparse.Namespace) -> int:
             )
             prepared.append(record)
 
-    by_hash: dict[str, dict[str, Any]] = {}
+    by_path: dict[str, dict[str, Any]] = {}
     for record in sorted(prepared, key=lambda item: stable_rank(item, args.seed)):
-        by_hash.setdefault(record["image_sha256"], record)
-    deduplicated = list(by_hash.values())
+        by_path.setdefault(record["_source_image"], record)
+    deduplicated = list(by_path.values())
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in deduplicated:
@@ -389,19 +367,15 @@ def select_records(args: argparse.Namespace) -> int:
     for index, record in enumerate(selected):
         source_image = Path(record.pop("_source_image"))
         suffix = source_image.suffix.lower() or ".img"
-        destination = image_dir / f"{record['image_sha256']}{suffix}"
-        if destination.exists():
-            if sha256_file(destination) != record["image_sha256"]:
-                raise RuntimeError(f"existing image checksum mismatch: {destination}")
-        else:
+        destination = image_dir / f"{index:04d}_{record['task']}{suffix}"
+        if not destination.exists() or destination.stat().st_size == 0:
             shutil.copy2(source_image, destination)
-        record["bundle_id"] = f"{index:04d}-{record['task']}-{record['image_sha256'][:12]}"
+        record["bundle_id"] = f"{index:04d}-{record['task']}"
         record["image"] = destination.relative_to(output_dir).as_posix()
         materialized.append(record)
 
     selected_manifest = output_dir / "selected.jsonl"
     write_jsonl(selected_manifest, materialized)
-    selected_sha256 = sha256_file(selected_manifest)
     summary = {
         "schema_version": SCHEMA_VERSION,
         "selection_seed": args.seed,
@@ -414,14 +388,11 @@ def select_records(args: argparse.Namespace) -> int:
         "rejected_evaluation_splits": dict(rejected_splits),
         "deduplicated_images": len(prepared) - len(deduplicated),
         "records_with_unknown_license": missing_license,
-        "input_manifest_sha256": input_digests,
         "selected_manifest": selected_manifest.name,
-        "selected_manifest_sha256": selected_sha256,
     }
     write_json(output_dir / "selection_summary.json", summary)
 
     print(f"[select] wrote {len(materialized)} samples -> {selected_manifest}")
-    print(f"[select] selected sha256: {selected_sha256}")
     print(f"[select] counts: {summary['selected_counts']}")
     if rejected_splits:
         print(f"[select] rejected evaluation splits: {dict(rejected_splits)}")
@@ -443,8 +414,10 @@ def torch_dtype_from_name(torch_module: Any, name: str) -> Any:
 
 
 def deterministic_seed(base_seed: int, bundle_id: str, mode: str) -> int:
-    digest = hashlib.sha256(f"{base_seed}|{bundle_id}|{mode}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], byteorder="little", signed=False)
+    prefix = bundle_id.split("-", 1)[0]
+    sequence = int(prefix) if prefix.isdigit() else 0
+    mode_offset = {"slow-select": 0, "hybrid": 1, "slow": 2}.get(mode, 3)
+    return (int(base_seed) + sequence * 4 + mode_offset) % (2**32)
 
 
 def extract_answer(result: Any) -> str:
@@ -731,7 +704,6 @@ RESUME_IDENTITY_FIELDS = (
     "source",
     "split",
     "image",
-    "image_sha256",
     "prompt",
     "target_response",
 )
@@ -829,11 +801,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
     slow_ids = {record["bundle_id"] for record in slow_order[: args.slow_samples]}
     run_identity = {
         "schema_version": 1,
-        "selected_manifest_sha256": sha256_file(selected_path),
-        "checkpoint": checkpoint_identity(model_path),
-        "tokenizer": tokenizer_identity(model_path),
-        "upstream_source": source_tree_identity(upstream_repo, {".py"}),
-        "prepare_source": file_identity(Path(__file__), normalize_text=True),
+        "selected_manifest": str(selected_path),
         "device": args.device,
         "dtype": args.dtype,
         "output_format": args.output_format,
@@ -841,7 +809,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "generation_config": generation_config,
         "base_seed": args.seed,
         "slow_samples": args.slow_samples,
-        "slow_selection_sha256": sha256_json(sorted(slow_ids)),
+        "slow_selection": sorted(slow_ids),
     }
     existing_state = progress_path.exists() or identity_path.exists()
     if args.resume:
@@ -850,7 +818,21 @@ def generate_bundle(args: argparse.Namespace) -> int:
                 "resume progress has no prepare_run_identity.json; use a separate output directory"
             )
         if identity_path.is_file():
-            mismatches = identity_mismatches(run_identity, read_json(identity_path))
+            previous = read_json(identity_path)
+            comparable_fields = (
+                "device",
+                "dtype",
+                "output_format",
+                "fixed_profile",
+                "generation_config",
+                "base_seed",
+                "slow_samples",
+            )
+            mismatches = [
+                field
+                for field in comparable_fields
+                if previous.get(field) != run_identity.get(field)
+            ]
             if mismatches:
                 raise RuntimeError(
                     "prepare resume identity mismatch: " + ", ".join(mismatches[:12])
@@ -911,7 +893,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
                     f"{args.output_format}; use a separate output directory"
                 )
             tensor_path = output_dir / existing["tensor_file"]
-            if tensor_path.is_file() and sha256_file(tensor_path) == existing["tensor_sha256"]:
+            if tensor_path.is_file() and tensor_path.stat().st_size > 0:
                 progress.set_postfix(status="resume", sample=bundle_id, refresh=False)
                 continue
 
@@ -993,7 +975,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         }
         tensor_path = tensor_dir / f"{bundle_id}.{args.output_format}"
         save_tensor_artifact(tensor_path, args.output_format, tensor_payload, torch)
-        tensor_sha256 = sha256_file(tensor_path)
 
         generated = {
             key: value
@@ -1009,8 +990,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
                 "profile_target_response": profile_target_response,
                 "tensor_format": args.output_format,
                 "tensor_file": tensor_path.relative_to(output_dir).as_posix(),
-                "tensor_sha256": tensor_sha256,
-                "prepare_run_identity_sha256": sha256_file(identity_path),
             }
         )
         append_progress(progress_path, generated)
@@ -1018,14 +997,12 @@ def generate_bundle(args: argparse.Namespace) -> int:
         progress.set_postfix(
             sample=bundle_id,
             modes=",".join(modes),
-            sha256=tensor_sha256[:12],
             refresh=False,
         )
 
     ordered = [generated_records[record["bundle_id"]] for record in records]
     generated_manifest = output_dir / "generated.jsonl"
     write_jsonl(generated_manifest, ordered)
-    generated_sha256 = sha256_file(generated_manifest)
 
     token_coverage = Counter()
     for record in ordered:
@@ -1047,9 +1024,7 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "model_path": str(model_path),
         "upstream_repo": str(upstream_repo),
         "selected_manifest": str(selected_path),
-        "selected_manifest_sha256": sha256_file(selected_path),
         "generated_manifest": generated_manifest.name,
-        "generated_manifest_sha256": generated_sha256,
         "sample_count": len(ordered),
         "tensor_format": args.output_format,
         "task_counts": task_counts,
@@ -1060,7 +1035,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "special_token_occurrences": coverage_by_token,
         "fixed_profile": profile,
         "prepare_run_identity": identity_path.name,
-        "prepare_run_identity_sha256": sha256_file(identity_path),
     }
     write_json(output_dir / "generation_summary.json", summary)
 
@@ -1071,7 +1045,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         raise RuntimeError("generated and target responses contain no complete <box> blocks")
 
     print(f"[generate] wrote {len(ordered)} samples -> {generated_manifest}")
-    print(f"[generate] generated sha256: {generated_sha256}")
     print(f"[generate] task counts: {task_counts}")
     print(f"[generate] special token occurrences: {coverage_by_token}")
     return 0

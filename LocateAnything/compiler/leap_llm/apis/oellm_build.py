@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=validate_device, default=["cpu"])
     parser.add_argument("--w_bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--lm_head_w_bits", type=int, choices=[4, 8], default=8)
+    parser.add_argument(
+        "--ar_wv_matmul_dtype",
+        choices=("int8", "float16"),
+        default="int8",
+        help="Operand and result dtype for the AR q1 WV MatMul.",
+    )
     parser.add_argument("--vit_core_num", type=parse_core_list, default=[1])
     parser.add_argument("--prefill_core_num", type=parse_core_list, default=[1])
     parser.add_argument("--decode_core_num", type=parse_core_list, default=[1])
@@ -180,6 +186,11 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
             parser.error(
                 "LocateAnything Language release requires "
                 "--w_bits 8 --lm_head_w_bits 8"
+            )
+        if args.ar_wv_matmul_dtype == "float16" and args.graph_set != "standard":
+            parser.error(
+                "--ar_wv_matmul_dtype float16 is currently validated only for "
+                "--graph-set standard"
             )
 def main() -> None:
     parser = build_parser()

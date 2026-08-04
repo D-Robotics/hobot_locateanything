@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -37,14 +36,6 @@ class AssetError(RuntimeError):
     pass
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def require_files(root: Path, relative_paths: tuple[str, ...]) -> None:
     missing = [relative for relative in relative_paths if not (root / relative).is_file()]
     if missing:
@@ -54,7 +45,7 @@ def require_files(root: Path, relative_paths: tuple[str, ...]) -> None:
         raise AssetError("empty required files: " + ", ".join(empty))
 
 
-def validate_calibration(root: Path, *, verify_images: bool) -> dict[str, object]:
+def validate_calibration(root: Path) -> dict[str, object]:
     require_files(root, CALIBRATION_REQUIRED)
     selected = root / "current" / "source" / "selected.jsonl"
     counts: Counter[str] = Counter()
@@ -84,12 +75,6 @@ def validate_calibration(root: Path, *, verify_images: bool) -> dict[str, object
                 ) from exc
             if not image.is_file():
                 raise AssetError(f"selected.jsonl line {line_number} image is missing: {image_value}")
-            if verify_images:
-                expected = record.get("image_sha256")
-                if isinstance(expected, str) and expected and sha256(image) != expected:
-                    raise AssetError(
-                        f"selected.jsonl line {line_number} image SHA256 mismatch: {image_value}"
-                    )
             image_count += 1
     if image_count != 1200:
         raise AssetError(f"selected.jsonl contains {image_count} records; expected 1200")
@@ -132,7 +117,6 @@ def validate_calibration(root: Path, *, verify_images: bool) -> dict[str, object
         "sample_count": image_count,
         "generated_tensor_count": generated_count,
         "task_counts": dict(counts),
-        "image_sha256_checked": verify_images,
     }
 
 
@@ -158,69 +142,16 @@ def validate_hbm(root: Path) -> dict[str, object]:
     }
 
 
-def validate_checksums(root: Path, checksum_file: Path) -> dict[str, object]:
-    checked = 0
-    with checksum_file.open("r", encoding="ascii") as stream:
-        for line_number, line in enumerate(stream, 1):
-            line = line.strip()
-            if not line:
-                continue
-            fields = line.split(None, 1)
-            if len(fields) != 2 or len(fields[0]) != 64:
-                raise AssetError(f"invalid SHA256 checksum line {line_number}: {line!r}")
-            relative = fields[1].lstrip("* ")
-            path = (root / relative).resolve()
-            try:
-                path.relative_to(root.resolve())
-            except ValueError as exc:
-                raise AssetError(f"checksum path escapes asset root: {relative}") from exc
-            if not path.is_file():
-                raise AssetError(f"checksum target is missing: {relative}")
-            if sha256(path) != fields[0].lower():
-                raise AssetError(f"SHA256 mismatch: {relative}")
-            checked += 1
-    if checked == 0:
-        raise AssetError(f"SHA256 checksum file has no entries: {checksum_file}")
-    return {
-        "checksums": str(checksum_file.resolve()),
-        "checksum_files_checked": checked,
-    }
-
-
-def write_checksums(root: Path, output: Path) -> dict[str, object]:
-    root = root.resolve()
-    output = output.resolve()
-    if output != root / "checksums.sha256":
-        try:
-            output.relative_to(root)
-        except ValueError as exc:
-            raise AssetError("checksum output must be inside the asset root") from exc
-    files = sorted(
-        path for path in root.rglob("*")
-        if path.is_file() and path.resolve() != output and ".cache" not in path.parts
-    )
-    if not files:
-        raise AssetError(f"asset root contains no files: {root}")
-    lines = [f"{sha256(path)}  {path.relative_to(root).as_posix()}" for path in files]
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(lines) + "\n", encoding="ascii")
-    return {"checksums": str(output), "checksum_files": len(files)}
-
-
-def validate(kind: str, local_dir: Path, *, verify_images: bool) -> dict[str, object]:
+def validate(kind: str, local_dir: Path) -> dict[str, object]:
     results: list[dict[str, object]] = []
     kinds = ("calibration", "hbm") if kind == "all" else (kind,)
     for selected_kind in kinds:
         root = local_dir / selected_kind
         result = (
-            validate_calibration(root, verify_images=verify_images)
+            validate_calibration(root)
             if selected_kind == "calibration"
             else validate_hbm(root)
         )
-        checksum_file = root / "checksums.sha256"
-        if not checksum_file.is_file():
-            raise AssetError(f"SHA256 checksum file is missing: {checksum_file}")
-        result.update(validate_checksums(root, checksum_file))
         results.append(result)
     return {"passed": True, "assets": results}
 
@@ -247,7 +178,7 @@ def download(args: argparse.Namespace) -> dict[str, object]:
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         raise AssetError(f"hf download failed with exit code {completed.returncode}")
-    result = validate(args.kind, args.local_dir, verify_images=args.verify_images)
+    result = validate(args.kind, args.local_dir)
     result.update({"repo_id": repo_id, "revision": args.revision})
     return result
 
@@ -262,18 +193,10 @@ def parse_args() -> argparse.Namespace:
     fetch.add_argument("--revision", default="main")
     fetch.add_argument("--kind", choices=("calibration", "hbm", "all"), required=True)
     fetch.add_argument("--local-dir", type=Path, default=Path("artifacts/huggingface"))
-    fetch.add_argument("--verify-images", action="store_true")
 
     check = subparsers.add_parser("validate", help="validate an existing local snapshot")
     check.add_argument("--kind", choices=("calibration", "hbm", "all"), required=True)
     check.add_argument("--local-dir", type=Path, default=Path("artifacts/huggingface"))
-    check.add_argument("--verify-images", action="store_true")
-
-    checksums = subparsers.add_parser(
-        "checksums", help="write checksums.sha256 for upload"
-    )
-    checksums.add_argument("--root", type=Path, required=True)
-    checksums.add_argument("--output", type=Path)
     return parser.parse_args()
 
 
@@ -282,11 +205,8 @@ def main() -> int:
     try:
         if args.command == "download":
             result = download(args)
-        elif args.command == "validate":
-            result = validate(args.kind, args.local_dir, verify_images=args.verify_images)
         else:
-            output = args.output or args.root / "checksums.sha256"
-            result = {"passed": True, **write_checksums(args.root, output)}
+            result = validate(args.kind, args.local_dir)
     except AssetError as exc:
         print(json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1

@@ -1,0 +1,8 @@
+extends: standard.yaml
+
+paths:
+  build_root: artifacts/builds/locateanything-3b/standard-mixed-precision
+  log_root: artifacts/logs/locateanything-3b/standard-mixed-precision
+
+language:
+  ar_wv_matmul_dtype: float16

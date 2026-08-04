@@ -69,6 +69,7 @@ def create_language_model(
     model_path: Path,
     output_dir: Path,
     device: str,
+    ar_wv_matmul_dtype: str = "int8",
 ) -> tuple[Any, Any, Any]:
     import torch
     from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
@@ -86,6 +87,7 @@ def create_language_model(
         lm_head_w_bits=LM_HEAD_WEIGHT_BITS,
         apply_hidden_rotation=True,
         export_only=True,
+        ar_wv_matmul_dtype=ar_wv_matmul_dtype,
     )
     model = api.text_model.to(device=device, dtype=torch.float16).eval()
     model.compile_mode(False)

@@ -8,6 +8,7 @@ from leap_llm.nn.modules import (
     ConstFakeQuant,
     DynamicQuantLinear,
     FakeQuantMatmul,
+    Float16Matmul,
 )
 from leap_llm.nn.utils import Module
 
@@ -104,6 +105,12 @@ class LocateAnythingTextAttention(Module):
         self.attention_dropout = config.attention_dropout
         self.rope_scaling = config.rope_scaling
         self.q_mul_value = 1.0 / math.sqrt(self.head_dim)
+        self.ar_wv_matmul_dtype = getattr(config, "ar_wv_matmul_dtype", "int8")
+        if self.ar_wv_matmul_dtype not in {"int8", "float16"}:
+            raise ValueError(
+                "ar_wv_matmul_dtype must be int8 or float16, got "
+                f"{self.ar_wv_matmul_dtype!r}"
+            )
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
                 f"hidden_size must be divisible by num_heads"
@@ -113,6 +120,11 @@ class LocateAnythingTextAttention(Module):
         if not self.use_plugin:
             self.qk_matmul = FakeQuantMatmul(8, 8, None)
             self.wv_matmul = FakeQuantMatmul(8, 8, None)
+            self.ar_wv_float16_matmul = (
+                Float16Matmul()
+                if self.ar_wv_matmul_dtype == "float16"
+                else None
+            )
             self.cache_k_fq = ConstFakeQuant(8)
             self.cache_v_fq = ConstFakeQuant(8)
             self.q_proj = DynamicQuantLinear(
@@ -275,7 +287,10 @@ class LocateAnythingTextAttention(Module):
                 attn_weights,
                 [bsz, self.num_key_value_heads, self.num_key_value_groups * q_len, -1],
             )
-        attn_output = self.wv_matmul(attn_weights, value_states)
+        if q_len == 1 and self.ar_wv_float16_matmul is not None:
+            attn_output = self.ar_wv_float16_matmul(attn_weights, value_states)
+        else:
+            attn_output = self.wv_matmul(attn_weights, value_states)
         attn_output = leap.cast_type(
             attn_output, output_type=hidden_states.type.element_type
         )
@@ -345,6 +360,8 @@ class LocateAnythingTextAttention(Module):
         )
         if self.use_plugin:
             attn_output = torch.matmul(attn_weights, value_states)
+        elif q_len == 1 and self.ar_wv_float16_matmul is not None:
+            attn_output = self.ar_wv_float16_matmul(attn_weights, value_states)
         else:
             attn_output = self.wv_matmul(attn_weights, value_states)
 

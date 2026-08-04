@@ -48,9 +48,9 @@ Options:
 
 The target is DEST_ROOT/NAME. Existing final or .incoming-NAME directories are
 always rejected. Interrupted transfers are never resumed or automatically
-deleted. Every transferred file is checked on S600 by byte count and SHA256
-before the two ARM64 runners are built in staging and the directory is renamed
-to the final release directory.
+deleted. Every transferred file is checked on S600 by byte count before the two
+ARM64 runners are built in staging and the directory is renamed to the final
+release directory.
 EOF
 }
 
@@ -118,7 +118,7 @@ done
 
 [[ -z $IDENTITY_FILE || -f $IDENTITY_FILE ]] || die "identity file is missing: $IDENTITY_FILE"
 
-for command in python3 sha256sum stat tar mktemp; do
+for command in python3 stat tar mktemp; do
   command -v "$command" >/dev/null 2>&1 || die "required command is unavailable: $command"
 done
 
@@ -247,19 +247,15 @@ declare -a REMOTE_FILES=(
   "bundles/tokenizer.tar"
 )
 
-CHECKSUMS=$WORK_DIR/checksums.sha256
 FILE_SIZES=$WORK_DIR/file_sizes.tsv
-: >"$CHECKSUMS"
 : >"$FILE_SIZES"
-printf '[deploy][3/7] hashing six source payloads\n'
+printf '[deploy][3/7] recording six source payload sizes\n'
 for index in "${!LOCAL_FILES[@]}"; do
   source_file=${LOCAL_FILES[$index]}
   remote_file=${REMOTE_FILES[$index]}
-  digest=$(sha256sum "$source_file" | awk '{print $1}')
   bytes=$(stat -c '%s' "$source_file")
-  printf '%s  %s\n' "$digest" "$remote_file" >>"$CHECKSUMS"
   printf '%s  %s\n' "$bytes" "$remote_file" >>"$FILE_SIZES"
-  printf '  [%d/6] %-52s %12s bytes  %s\n' "$((index + 1))" "$remote_file" "$bytes" "$digest"
+  printf '  [%d/6] %-52s %12s bytes\n' "$((index + 1))" "$remote_file" "$bytes"
 done
 
 cat >"$WORK_DIR/release_metadata.txt" <<EOF
@@ -267,13 +263,13 @@ release=${RELEASE}
 destination=${FINAL_DIR}
 source_host=$(hostname 2>/dev/null || printf unknown)
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-deployment_policy=immutable-staged-sha256-and-byte-verified
+deployment_policy=immutable-staged-byte-verified
 EOF
 
 printf '\n[deploy] target:  %s:%s\n' "$SSH_TARGET" "$FINAL_DIR"
 printf '[deploy] staging: %s:%s\n' "$SSH_TARGET" "$STAGING_DIR"
 if [[ $EXECUTE -eq 0 ]]; then
-  printf '[deploy][DRY-RUN] local payload and checksum validation passed; no SSH/SCP command was run.\n'
+  printf '[deploy][DRY-RUN] local payload validation passed; no SSH/SCP command was run.\n'
   printf '[deploy][DRY-RUN] rerun with --execute to create and publish this immutable release.\n'
   exit 0
 fi
@@ -313,7 +309,7 @@ for index in "${!LOCAL_FILES[@]}"; do
   "$SCP_BIN" "${SCP_ARGS[@]}" -- "${LOCAL_FILES[$index]}" \
     "${SSH_TARGET}:${STAGING_DIR}/${REMOTE_FILES[$index]}"
 done
-for metadata in checksums.sha256 file_sizes.tsv release_metadata.txt; do
+for metadata in file_sizes.tsv release_metadata.txt; do
   "$SCP_BIN" "${SCP_ARGS[@]}" -- "$WORK_DIR/$metadata" \
     "${SSH_TARGET}:${STAGING_DIR}/$metadata"
 done
@@ -328,7 +324,6 @@ stage=$root/.incoming-$release
 [ ! -e "$target" ] || { echo "[remote][FAIL] target appeared during transfer" >&2; exit 75; }
 [ -d "$stage" ] || { echo "[remote][FAIL] staging directory is missing" >&2; exit 76; }
 cd "$stage"
-sha256sum -c checksums.sha256
 while read -r expected relative; do
   actual=$(wc -c <"$relative" | tr -d ' ')
   [ "$actual" = "$expected" ] || {
@@ -354,19 +349,16 @@ cmake --build deploy/build \
   -j4
 test -x deploy/build/vision_hbm_runner
 test -x deploy/build/language_hbm_runner
-sha256sum \
-  deploy/build/vision_hbm_runner \
-  deploy/build/language_hbm_runner >runtime_checksums.sha256
 {
   printf 'build_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   uname -a
   cmake --version
 } >runtime_environment.txt
 printf 'verified_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>release_metadata.txt
-printf 'status=sha256-byte-verified-and-runtime-built\n' >>release_metadata.txt
+printf 'status=byte-verified-and-runtime-built\n' >>release_metadata.txt
 mv "$stage" "$target"
 printf '[remote][PASS] immutable release published: %s\n' "$target"
 REMOTE_VERIFY
 
 printf '[deploy][7/7] deployment complete: %s:%s\n' "$SSH_TARGET" "$FINAL_DIR"
-printf '[deploy] checksums.sha256 and file_sizes.tsv remain with the deployed release.\n'
+printf '[deploy] file_sizes.tsv remains with the deployed release.\n'

@@ -92,12 +92,18 @@ class LocateAnythingLanguageApi:
         apply_hidden_rotation: bool = True,
         export_only: bool = False,
         calibration_scale_manifest: Optional[str] = None,
+        ar_wv_matmul_dtype: str = "int8",
     ) -> None:
         if w_bits not in {4, 8}:
             raise ValueError(f"decoder w_bits must be 4 or 8, got {w_bits}")
         if lm_head_w_bits not in {4, 8}:
             raise ValueError(
                 f"lm_head_w_bits must be 4 or 8, got {lm_head_w_bits}"
+            )
+        if ar_wv_matmul_dtype not in {"int8", "float16"}:
+            raise ValueError(
+                "ar_wv_matmul_dtype must be int8 or float16, got "
+                f"{ar_wv_matmul_dtype!r}"
             )
 
         self.input_model_path = input_model_path
@@ -119,6 +125,7 @@ class LocateAnythingLanguageApi:
         self.apply_hidden_rotation = apply_hidden_rotation
         self.export_only = export_only
         self.calibration_scale_manifest = calibration_scale_manifest
+        self.ar_wv_matmul_dtype = ar_wv_matmul_dtype
 
         os.makedirs(output_model_path, exist_ok=True)
         self.output_lm_model_path = standard_lm_name(
@@ -137,6 +144,11 @@ class LocateAnythingLanguageApi:
             self.output_lm_model_path = str(
                 output.with_name(f"{output.stem}_fused_decode{output.suffix}")
             )
+        if self.ar_wv_matmul_dtype == "float16":
+            output = Path(self.output_lm_model_path)
+            self.output_lm_model_path = str(
+                output.with_name(f"{output.stem}_ar_wv_float16{output.suffix}")
+            )
         self.token_embeddings_file_name = standard_token_embeddings_name(
             input_model_path, output_model_path,
         )
@@ -151,6 +163,7 @@ class LocateAnythingLanguageApi:
         tc.batch_size = batch_size
         tc.w_bits = w_bits
         tc.lm_head_w_bits = lm_head_w_bits
+        tc.ar_wv_matmul_dtype = ar_wv_matmul_dtype
         tc.has_scale = False
 
         print("[LocateAnythingLanguageApi] adapted text_config:")
@@ -163,6 +176,7 @@ class LocateAnythingLanguageApi:
         print(f"  decode_seq_len      = {decode_seq_len}  (PBD block_size)")
         print(f"  decoder weights     = W{w_bits}")
         print(f"  lm_head weights     = W{lm_head_w_bits}")
+        print(f"  AR WV MatMul dtype  = {ar_wv_matmul_dtype}")
         print(
             "  BPU cores           = "
             f"prefill:{self.prefill_core_num[0]} "

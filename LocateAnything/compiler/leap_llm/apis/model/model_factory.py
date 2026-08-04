@@ -69,6 +69,7 @@ def _build_locateanything_lm_3b(args):
         apply_hidden_rotation=not args.disable_hidden_rotation,
         export_only=args.export_only,
         calibration_scale_manifest=args.calibration_scale_manifest,
+        ar_wv_matmul_dtype=args.ar_wv_matmul_dtype,
     )
 
 

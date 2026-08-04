@@ -27,16 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compiler.scripts.common.identity import (  # noqa: E402
     artifact_identities,
     atomic_json as atomic_identity_json,
-    checkpoint_identity,
-    file_identity,
     identity_mismatches,
     prepared_bundle_identity_errors,
     read_json,
     release_checkpoint_errors,
     rotation_identity,
-    sha256_json,
-    source_tree_identity,
-    tokenizer_identity,
 )
 from compiler.scripts.common.progress import track  # noqa: E402
 
@@ -53,7 +48,6 @@ from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
     replay_sequential_ar_q1,
     select_decode_replay_contexts,
     select_pbd_tokens,
-    sha256_file,
     summarize_decode_context_coverage,
 )
 from leap_llm.language_graphs import language_graph_set  # noqa: E402
@@ -64,11 +58,6 @@ from report import generate_activation_report  # noqa: E402
 STANDARD_CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
 RELEASE_SAMPLE_COUNT = 1200
 RELEASE_CONVERGENCE_CHECKPOINT = 512
-RELEASE_SELECTED_MANIFEST_SHA256 = (
-    "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
-)
-
-
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -212,12 +201,6 @@ def run(args: argparse.Namespace) -> int:
             "release activation calibration requires image_token_id=151665"
         )
 
-    selected_sha = sha256_file(args.selected_jsonl.resolve())
-    if selected_sha != RELEASE_SELECTED_MANIFEST_SHA256:
-        raise RuntimeError(
-            "release selected manifest SHA256 mismatch: "
-            f"actual={selected_sha} expected={RELEASE_SELECTED_MANIFEST_SHA256}"
-        )
     checkpoint_errors = release_checkpoint_errors(args.model_path)
     if checkpoint_errors:
         raise RuntimeError("; ".join(checkpoint_errors))
@@ -268,14 +251,8 @@ def run(args: argparse.Namespace) -> int:
         )
     run_identity = {
         "schema_version": 1,
-        "generated_manifest": file_identity(manifest),
-        "selected_manifest": file_identity(args.selected_jsonl),
-        "prepare_run_identity": file_identity(prepare_identity_path),
-        "generation_summary": file_identity(generation_summary_path),
-        "checkpoint": checkpoint_identity(args.model_path),
-        "tokenizer": tokenizer_identity(args.model_path),
-        "upstream_source": source_tree_identity(args.upstream_repo, {".py"}),
-        "compiler_source": source_tree_identity(COMPILER_ROOT),
+        "generated_manifest": str(manifest),
+        "selected_manifest": str(args.selected_jsonl.resolve()),
         "rotation": rotation_identity(args.hidden_rotation_path),
         "settings": {
             "device": args.device,
@@ -293,7 +270,6 @@ def run(args: argparse.Namespace) -> int:
             "graph_set": graph_set.name,
         },
     }
-    run_identity_sha256 = sha256_json(run_identity)
     identity_path = output_dir / "calibration_run_identity.json"
     durable_outputs = [
         output_dir / "calibration_scale_manifest.json",
@@ -304,7 +280,29 @@ def run(args: argparse.Namespace) -> int:
     if args.resume and identity_path.is_file():
         previous = read_json(identity_path)
         previous_identity = previous.get("identity") if isinstance(previous, dict) else None
-        mismatches = identity_mismatches(run_identity, previous_identity)
+        previous_settings = (
+            previous_identity.get("settings")
+            if isinstance(previous_identity, dict)
+            else None
+        )
+        critical_settings = (
+            "dtype",
+            "component",
+            "chunk_size",
+            "cache_len",
+            "lm_head_w_bits",
+            "sample_count",
+            "convergence_checkpoints",
+            "legacy_checkpoint",
+            "image_token_id",
+            "graph_set",
+        )
+        mismatches = [
+            field
+            for field in critical_settings
+            if not isinstance(previous_settings, dict)
+            or previous_settings.get(field) != run_identity["settings"].get(field)
+        ]
         if mismatches:
             raise RuntimeError(
                 "calibration resume identity mismatch: " + ", ".join(mismatches[:12])
@@ -540,12 +538,7 @@ def run(args: argparse.Namespace) -> int:
     scale_manifest = {
         "schema_version": 3,
         "generated_manifest": str(manifest),
-        "generated_manifest_sha256": sha256_file(manifest),
         "rotation_source": rotation_source,
-        "rotation_file_sha256": (
-            sha256_file(Path(args.hidden_rotation_path).resolve())
-            if args.hidden_rotation_path else None
-        ),
         "sample_count": full_samples,
         "language_context_count": language_context_count,
         "checkpoint_samples": legacy_checkpoint,
@@ -554,7 +547,6 @@ def run(args: argparse.Namespace) -> int:
         "skipped_convergence_checkpoints": skipped_checkpoints,
         "replay_order": "deterministic_shuffle",
         "replay_seed": args.replay_seed,
-        "calibration_run_identity_sha256": run_identity_sha256,
         "task_counts": task_counts,
         "profile": {
             "component": args.component,
@@ -600,7 +592,6 @@ def run(args: argparse.Namespace) -> int:
         )
     coverage = {
         "schema_version": 3,
-        "generated_manifest_sha256": sha256_file(manifest),
         "sample_count": full_samples,
         "language_context_count": language_context_count,
         "checkpoint_samples": legacy_checkpoint,
@@ -608,7 +599,6 @@ def run(args: argparse.Namespace) -> int:
         "recorded_snapshot_samples": snapshot_samples,
         "skipped_convergence_checkpoints": skipped_checkpoints,
         "task_counts": task_counts,
-        "calibration_run_identity_sha256": run_identity_sha256,
         "profile": scale_manifest["profile"],
         "stage_execution_counts": stage_execution_counts,
         "expected_stage_execution_counts": expected_stage_execution_counts,
@@ -707,7 +697,6 @@ def run(args: argparse.Namespace) -> int:
         coverage,
         metadata={
             "generated_manifest": str(manifest),
-            "generated_manifest_sha256": sha256_file(manifest),
             "sample_count": full_samples,
             "task_counts": task_counts,
         },

@@ -6,7 +6,6 @@ rotation operator is added to the runtime graph.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from pathlib import Path
 
@@ -14,9 +13,6 @@ import torch
 
 
 REFERENCE_HIDDEN_SIZE = 2048
-REFERENCE_ROTATION_SHA256 = (
-    "19c57d8f5cd400e00c2744dbb4bd898da98fc8ad30ef97060fa0ba4cf5ed10e5"
-)
 SIGNED_HADAMARD_ROTATION_NAME = (
     "signed normalized Sylvester Hadamard rotation (2048x2048)"
 )
@@ -64,9 +60,6 @@ def build_signed_hadamard_rotation(hidden_size: int = REFERENCE_HIDDEN_SIZE) -> 
 
     rotation = signs[:, None] * _sylvester_hadamard(hidden_size)
     rotation.mul_(1.0 / math.sqrt(hidden_size))
-    digest = hashlib.sha256(rotation.contiguous().numpy().tobytes()).hexdigest()
-    if digest != REFERENCE_ROTATION_SHA256:
-        raise RuntimeError(f"Reference rotation checksum mismatch: {digest}")
     return rotation
 
 

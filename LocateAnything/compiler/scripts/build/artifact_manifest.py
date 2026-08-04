@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Write and validate provenance for reusable exported BC artifacts."""
+"""Write and validate metadata for reusable exported BC artifacts."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 import os
@@ -14,14 +13,6 @@ from typing import Any
 
 
 SOURCE_SUFFIXES = {".py", ".sh", ".toml", ".yaml", ".yml"}
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def parse_pairs(values: list[str], option: str) -> dict[str, str]:
@@ -53,21 +44,13 @@ def source_tree_identity(root: Path) -> dict[str, Any]:
         and path.suffix.lower() in SOURCE_SUFFIXES
         and not {"__pycache__", ".pytest_cache"} & set(path.parts)
     )
-    digest = hashlib.sha256()
     total_bytes = 0
     for path in files:
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-        total_bytes += len(content)
+        total_bytes += path.stat().st_size
     return {
         "path": str(root),
         "file_count": len(files),
         "bytes": total_bytes,
-        "sha256": digest.hexdigest(),
     }
 
 
@@ -99,9 +82,7 @@ def checkpoint_identity(model_path: Path) -> dict[str, Any]:
     for name in ("config.json", "model.safetensors.index.json"):
         path = model_path / name
         if path.is_file():
-            metadata.append(
-                {"name": name, "bytes": path.stat().st_size, "sha256": sha256_file(path)}
-            )
+            metadata.append({"name": name, "bytes": path.stat().st_size})
     weights = []
     for path in sorted(model_path.glob("*.safetensors")):
         stat = path.stat()
@@ -109,7 +90,6 @@ def checkpoint_identity(model_path: Path) -> dict[str, Any]:
             {
                 "name": path.name,
                 "bytes": stat.st_size,
-                "sha256": sha256_file(path),
             }
         )
     if not weights:
@@ -127,8 +107,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         artifact_identity[name] = {
             "path": str(path),
             "bytes": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
-            "sha256": sha256_file(path),
         }
     scale = required_file(args.scale_manifest, "calibration scale manifest")
     rotation: dict[str, Any]
@@ -136,11 +114,15 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         rotation = {"mode": "disabled"}
     elif args.hidden_rotation_path:
         path = required_file(args.hidden_rotation_path, "hidden rotation")
-        rotation = {"mode": "file", "path": str(path), "sha256": sha256_file(path)}
+        rotation = {
+            "mode": "file",
+            "path": str(path),
+            "bytes": path.stat().st_size,
+        }
     else:
         rotation = {"mode": "built-in"}
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "component": args.component,
         "contract": dict(sorted(fields.items())),
         "compiler_source": source_tree_identity(args.source_root),
@@ -148,7 +130,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         "model": checkpoint_identity(args.model_path),
         "calibration_scale_manifest": {
             "path": str(scale),
-            "sha256": sha256_file(scale),
+            "bytes": scale.stat().st_size,
         },
         "hidden_rotation": rotation,
         "artifacts": artifact_identity,
@@ -187,15 +169,15 @@ def main() -> int:
     payload = build_payload(args)
     if args.action == "write":
         atomic_json(args.manifest, payload)
-        print(f"[PASS] wrote reusable BC manifest: {args.manifest}", flush=True)
+        print(f"[PASS] wrote reusable BC metadata: {args.manifest}", flush=True)
         return 0
     if not args.manifest.is_file():
-        print(f"[MISS] reusable BC manifest is missing: {args.manifest}", flush=True)
+        print(f"[MISS] reusable BC metadata is missing: {args.manifest}", flush=True)
         return 1
     try:
         recorded = json.loads(args.manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"[MISS] reusable BC manifest is invalid: {exc}", flush=True)
+        print(f"[MISS] reusable BC metadata is invalid: {exc}", flush=True)
         return 1
     if recorded != payload:
         changed = sorted(
@@ -203,11 +185,11 @@ def main() -> int:
             if recorded.get(key) != payload.get(key)
         )
         print(
-            "[MISS] reusable BC provenance changed: " + ", ".join(changed),
+            "[MISS] reusable BC metadata changed: " + ", ".join(changed),
             flush=True,
         )
         return 1
-    print(f"[PASS] reusable BC provenance: {args.manifest}", flush=True)
+    print(f"[PASS] reusable BC metadata: {args.manifest}", flush=True)
     return 0
 
 

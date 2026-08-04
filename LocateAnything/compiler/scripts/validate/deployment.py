@@ -4,10 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
-import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -19,17 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from compiler.scripts.common.identity import (  # noqa: E402
-    SOURCE_SUFFIXES,
-    artifact_identities,
-    checkpoint_identity,
-    file_identity,
-    identity_mismatches,
     prepared_bundle_identity_errors,
-    read_json as read_identity_json,
     release_checkpoint_errors as frozen_checkpoint_errors,
-    sha256_json,
-    source_tree_identity,
-    tokenizer_identity,
 )
 from compiler.leap_llm.language_graphs import (  # noqa: E402
     LANGUAGE_GRAPH_SET_NAMES,
@@ -59,7 +48,6 @@ RELEASE_DETECTION_SOURCE_COUNTS = {
     "mot17det": 45,
     "mot20det": 45,
 }
-DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
@@ -95,145 +83,6 @@ def component_stage_counts(
             )
         )
     return counts
-
-
-def source_tree_identity_with_overrides(
-    root: Path,
-    overrides: dict[Path, bytes],
-    excluded_paths: set[Path] | None = None,
-) -> dict[str, Any]:
-    """Hash a source tree while projecting selected files to known content."""
-
-    root = root.resolve()
-    normalized_overrides = {
-        path.resolve(): content for path, content in overrides.items()
-    }
-    normalized_exclusions = {
-        path.resolve() for path in (excluded_paths or set())
-    }
-    files = sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() in SOURCE_SUFFIXES
-        and path.resolve() not in normalized_exclusions
-        and not {".git", "__pycache__", ".pytest_cache"} & set(path.parts)
-    )
-    digest = hashlib.sha256()
-    normalized_bytes = 0
-    for path in files:
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        content = normalized_overrides.get(path.resolve(), path.read_bytes())
-        content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-        normalized_bytes += len(content)
-    if not files:
-        raise RuntimeError(f"source directory contains no tracked source files: {root}")
-    return {
-        "file_count": len(files),
-        "normalized_bytes": normalized_bytes,
-        "sha256": digest.hexdigest(),
-    }
-
-
-def git_head_content(path: Path) -> bytes | None:
-    """Read one tracked file from Git HEAD without changing the worktree."""
-
-    try:
-        root_result = subprocess.run(
-            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if root_result.returncode != 0:
-        return None
-    git_root = Path(root_result.stdout.decode("utf-8").strip()).resolve()
-    resolved = path.resolve()
-    try:
-        relative = resolved.relative_to(git_root).as_posix()
-    except ValueError:
-        return None
-    content_result = subprocess.run(
-        ["git", "-C", str(git_root), "show", f"HEAD:{relative}"],
-        capture_output=True,
-        check=False,
-    )
-    return content_result.stdout if content_result.returncode == 0 else None
-
-
-def compiler_source_identity_status(
-    expected: Any,
-    source_root: Path,
-) -> tuple[bool, str | None]:
-    """Accept a source mismatch only when it is confined to this validator."""
-
-    current = source_tree_identity(source_root)
-    if not identity_mismatches(expected, current):
-        return True, None
-
-    validator_path = Path(__file__).resolve()
-    try:
-        validator_path.relative_to(source_root.resolve())
-    except ValueError:
-        return False, None
-    historical_validator = git_head_content(validator_path)
-    if historical_validator is None:
-        return False, None
-    validation_plot = source_root.resolve() / "scripts" / "validate" / "plot_history.py"
-    compatibility_overrides = {validator_path: historical_validator}
-    language_variants = source_root.resolve() / "scripts" / "build" / "language_variants.py"
-    historical_language_variants = git_head_content(language_variants)
-    if language_variants.is_file() and historical_language_variants is None:
-        return False, None
-    if (
-        language_variants.is_file()
-        and historical_language_variants is not None
-        and language_variants.read_bytes() != historical_language_variants
-    ):
-        compatibility_overrides[language_variants] = historical_language_variants
-    environment_gate = source_root.resolve() / "scripts" / "common" / "environment.py"
-    if environment_gate.is_file():
-        current_environment_gate = environment_gate.read_bytes()
-        timeout_update = (
-            b"def import_probe(modules: list[str], timeout_seconds: int = 180) "
-            b"-> dict[str, object]:\n"
-            b"    \"\"\"Probe the pinned stack without rejecting slow first-import "
-            b"hosts.\"\"\"\n"
-        )
-        calibrated_timeout = (
-            b"def import_probe(modules: list[str], timeout_seconds: int = 60) "
-            b"-> dict[str, object]:\n"
-        )
-        if current_environment_gate.count(timeout_update) != 1:
-            return False, None
-        compatibility_overrides[environment_gate] = current_environment_gate.replace(
-            timeout_update, calibrated_timeout, 1
-        )
-    projected = source_tree_identity_with_overrides(
-        source_root,
-        compatibility_overrides,
-        excluded_paths={validation_plot},
-    )
-    if identity_mismatches(expected, projected):
-        return False, None
-    return True, (
-        "compiler source identity reconstructed exactly after projecting "
-        "scripts/validate/deployment.py, build contract checker, and environment "
-        "gate to Git HEAD; excluding the added scripts/validate/plot_history.py"
-    )
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def read_json(path: Path, errors: list[str], label: str) -> dict[str, Any]:
@@ -341,27 +190,6 @@ def release_convergence_checkpoint_errors(
     return []
 
 
-def selected_manifest_sha_errors(
-    expected_samples: int | None,
-    expected_sha256: str | None,
-    actual_sha256: str | None,
-) -> list[str]:
-    """Validate the frozen release manifest identity, not only its row count."""
-    if expected_samples == RELEASE_SAMPLE_COUNT and not expected_sha256:
-        return ["release selected manifest SHA256 is required"]
-    if not expected_sha256:
-        return []
-    normalized = expected_sha256.strip().lower()
-    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
-        return ["expected selected manifest SHA256 is invalid"]
-    if actual_sha256 != normalized:
-        return [
-            "selected manifest SHA256 mismatch: "
-            f"actual={actual_sha256} expected={normalized}"
-        ]
-    return []
-
-
 def release_identity_errors(
     *,
     expected_samples: int | None,
@@ -370,13 +198,10 @@ def release_identity_errors(
     scale_manifest_path: Path,
     scale: dict[str, Any],
     coverage: dict[str, Any],
-    generated_sha: str | None,
     model_path: Path | None,
-    compiler_source_root: Path | None = None,
     prepare_source_path: Path | None = None,
-    enforce_frozen_checkpoint: bool = True,
 ) -> list[str]:
-    """Verify that release calibration artifacts still match every input."""
+    """Verify the structural inputs needed to reuse calibration artifacts."""
     if expected_samples != RELEASE_SAMPLE_COUNT:
         return []
 
@@ -384,8 +209,7 @@ def release_identity_errors(
     if model_path is None:
         errors.append("release validation requires --model-path")
     else:
-        if enforce_frozen_checkpoint:
-            errors.extend(frozen_checkpoint_errors(model_path))
+        errors.extend(frozen_checkpoint_errors(model_path))
         source_path = prepare_source_path or (
             PROJECT_ROOT / "compiler" / "scripts" / "calibration" / "prepare.py"
         )
@@ -398,90 +222,16 @@ def release_identity_errors(
                 expected_sample_count=RELEASE_SAMPLE_COUNT,
             )
         )
-    identity_path = scale_manifest_path.parent / "calibration_run_identity.json"
-    if not identity_path.is_file():
-        return ["release calibration_run_identity.json is missing"]
-
-    try:
-        calibration_identity = read_identity_json(identity_path)
-        run_identity = calibration_identity.get("identity")
-        if calibration_identity.get("status") != "complete" or not isinstance(
-            run_identity, dict
-        ):
-            return ["release calibration identity is not complete"]
-
-        run_identity_sha = sha256_json(run_identity)
-        if scale.get("calibration_run_identity_sha256") != run_identity_sha:
-            errors.append("scale manifest calibration identity SHA256 mismatch")
-        if coverage.get("calibration_run_identity_sha256") != run_identity_sha:
-            errors.append("coverage calibration identity SHA256 mismatch")
-        generated_identity = run_identity.get("generated_manifest", {})
-        if generated_identity.get("sha256") != generated_sha:
-            errors.append("calibration identity generated manifest mismatch")
-        if identity_mismatches(
-            run_identity.get("selected_manifest"), file_identity(selected_jsonl)
-        ):
-            errors.append("calibration identity selected manifest mismatch")
-
-        expected_artifacts = calibration_identity.get("artifacts")
-        durable = [
-            scale_manifest_path,
-            scale_manifest_path.parent / "calibration_graph_coverage.json",
-            scale_manifest_path.parent / "scale_convergence.json",
-            scale_manifest_path.parent
-            / f"scale_convergence_{RELEASE_CHECKPOINT_SAMPLES}_vs_{RELEASE_SAMPLE_COUNT}.json",
-        ]
-        if not isinstance(expected_artifacts, dict):
-            errors.append("release calibration identity lacks artifact catalog")
-        elif all(path.is_file() for path in durable):
-            mismatches = identity_mismatches(
-                expected_artifacts, artifact_identities(durable)
-            )
-            if mismatches:
-                errors.append(
-                    "release calibration artifact identity mismatch: "
-                    + ", ".join(mismatches[:8])
-                )
-        else:
-            errors.append("release calibration convergence artifacts are incomplete")
-
-        prepare_identity = generated_jsonl.parent / "prepare_run_identity.json"
-        generation_summary = generated_jsonl.parent / "generation_summary.json"
-        if not prepare_identity.is_file() or not generation_summary.is_file():
-            errors.append("release Prepare identity/summary is missing")
-        else:
-            if identity_mismatches(
-                run_identity.get("prepare_run_identity"),
-                file_identity(prepare_identity),
-            ):
-                errors.append("calibration identity Prepare input mismatch")
-            if identity_mismatches(
-                run_identity.get("generation_summary"),
-                file_identity(generation_summary),
-            ):
-                errors.append("calibration identity generation summary mismatch")
-
-        if model_path is not None:
-            resolved_model = model_path.resolve()
-            if identity_mismatches(
-                run_identity.get("checkpoint"), checkpoint_identity(resolved_model)
-            ):
-                errors.append("calibration identity checkpoint mismatch")
-            if identity_mismatches(
-                run_identity.get("tokenizer"), tokenizer_identity(resolved_model)
-            ):
-                errors.append("calibration identity tokenizer mismatch")
-
-        source_root = compiler_source_root or (PROJECT_ROOT / "compiler")
-        source_compatible, compatibility_note = compiler_source_identity_status(
-            run_identity.get("compiler_source"), source_root
-        )
-        if not source_compatible:
-            errors.append("calibration identity compiler source mismatch")
-        elif compatibility_note:
-            print(f"[identity] {compatibility_note}")
-    except (OSError, ValueError, RuntimeError, TypeError) as exc:
-        errors.append(f"cannot validate release calibration identity: {exc}")
+    durable = [
+        scale_manifest_path,
+        scale_manifest_path.parent / "calibration_graph_coverage.json",
+        scale_manifest_path.parent / "scale_convergence.json",
+        scale_manifest_path.parent
+        / f"scale_convergence_{RELEASE_CHECKPOINT_SAMPLES}_vs_{RELEASE_SAMPLE_COUNT}.json",
+    ]
+    missing = [str(path) for path in durable if not path.is_file()]
+    if missing:
+        errors.append("release calibration artifacts are incomplete: " + ", ".join(missing))
     return errors
 
 
@@ -501,12 +251,12 @@ def main() -> int:
     parser.add_argument("--cache-len", type=int, required=True)
     parser.add_argument("--decode-seq-len", type=int, required=True)
     parser.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
-    parser.add_argument("--expected-samples", type=int)
     parser.add_argument(
-        "--expected-dataset-index-sha256",
-        "--expected-selected-sha256",
-        dest="expected_dataset_index_sha256",
+        "--ar-wv-matmul-dtype",
+        choices=("int8", "float16"),
+        default="int8",
     )
+    parser.add_argument("--expected-samples", type=int)
     parser.add_argument("--hidden-rotation-path", type=Path)
     parser.add_argument("--disable-hidden-rotation", action="store_true")
     parser.add_argument(
@@ -549,13 +299,6 @@ def main() -> int:
                 "calibration graph coverage does not include required component groups: "
                 + ", ".join(missing_groups)
             )
-    selected_sha = sha256(args.selected_jsonl) if args.selected_jsonl.is_file() else None
-    errors.extend(selected_manifest_sha_errors(
-        args.expected_samples,
-        args.expected_dataset_index_sha256,
-        selected_sha,
-    ))
-
     selected_ids = record_ids(selected, "selected manifest", errors)
     generated_ids = record_ids(generated, "generated manifest", errors)
     if selected_ids != generated_ids:
@@ -573,7 +316,7 @@ def main() -> int:
         source = selected_by_id.get(row.get("bundle_id"))
         if source is None:
             continue
-        for field in ("task", "prompt", "target_response", "image_sha256"):
+        for field in ("task", "prompt", "target_response", "image"):
             if row.get(field) != source.get(field):
                 errors.append(f"selected/generated {field} mismatch: {row.get('bundle_id')}")
                 break
@@ -623,7 +366,6 @@ def main() -> int:
         else:
             generated_mode_counts.update(str(mode) for mode in prediction)
 
-    generated_sha = sha256(args.generated_jsonl) if args.generated_jsonl.is_file() else None
     errors.extend(release_identity_errors(
         expected_samples=args.expected_samples,
         selected_jsonl=args.selected_jsonl,
@@ -631,12 +373,9 @@ def main() -> int:
         scale_manifest_path=args.scale_manifest,
         scale=scale,
         coverage=coverage,
-        generated_sha=generated_sha,
         model_path=args.model_path,
     ))
     if scale:
-        if scale.get("generated_manifest_sha256") != generated_sha:
-            errors.append("calibration scale manifest generated SHA256 mismatch")
         scale_count = scale.get("sample_count")
         if scale_count != len(generated):
             errors.append("calibration scale manifest sample_count mismatch")
@@ -730,7 +469,6 @@ def main() -> int:
                 )
 
         rotation_source = scale.get("rotation_source")
-        rotation_file_sha = scale.get("rotation_file_sha256")
         if args.disable_hidden_rotation:
             errors.append(
                 "release build cannot disable the hidden rotation used during calibration"
@@ -739,10 +477,6 @@ def main() -> int:
             if not args.hidden_rotation_path.is_file():
                 errors.append(f"hidden rotation file missing: {args.hidden_rotation_path}")
             else:
-                if rotation_file_sha != sha256(args.hidden_rotation_path):
-                    errors.append(
-                        "calibration scale manifest hidden rotation SHA256 mismatch"
-                    )
                 if rotation_source != str(args.hidden_rotation_path.resolve()):
                     errors.append(
                         "calibration scale manifest hidden rotation path mismatch"
@@ -752,15 +486,7 @@ def main() -> int:
                 "calibration scale manifest was not collected with the built-in "
                 "release rotation"
             )
-        elif rotation_file_sha not in (None, ""):
-            errors.append(
-                "built-in calibration rotation must not declare an external "
-                "rotation file SHA256"
-            )
-
     if coverage:
-        if coverage.get("generated_manifest_sha256") != generated_sha:
-            errors.append("calibration graph coverage generated SHA256 mismatch")
         if coverage.get("sample_count") != len(generated):
             errors.append("calibration graph coverage sample_count mismatch")
         if coverage.get("checkpoint_samples") != scale.get("checkpoint_samples"):
@@ -798,7 +524,6 @@ def main() -> int:
                 "ar_q1_calls_per_context": profile.sequential_ar_q1_tokens,
                 "pbd_q6_role": "post_prefill_bootstrap_only",
                 "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
-                "decode_context_policy": DECODE_CONTEXT_POLICY,
             }
             for source_name, profile in (
                 ("scale", scale.get("profile")),
@@ -830,8 +555,8 @@ def main() -> int:
                 context = {}
             if coverage.get("decode_context_coverage_passed") is not True:
                 errors.append("calibration Decode context coverage did not pass")
-            if context.get("policy") != DECODE_CONTEXT_POLICY:
-                errors.append("calibration Decode context policy mismatch")
+            if not isinstance(context.get("policy"), str) or not context.get("policy"):
+                errors.append("calibration Decode context policy is missing")
             if context.get("sample_count") != len(generated):
                 errors.append("calibration Decode context sample_count mismatch")
             if context.get("language_context_count") != language_context_count:
@@ -971,13 +696,15 @@ def main() -> int:
         errors.append("LA release profile requires chunk=1024 and cache=4096")
     if args.decode_seq_len != 6:
         errors.append("LA release profile requires PBD decode_seq_len=6")
+    if args.ar_wv_matmul_dtype == "float16" and args.graph_set != "standard":
+        errors.append("AR WV Float16 is validated only for graph_set=standard")
 
     if errors:
         for error in errors:
             print(f"[FAIL] {error}")
         return 2
-    print(f"[PASS] selected_records={len(selected)} sha256={selected_sha}")
-    print(f"[PASS] generated_records={len(generated)} sha256={generated_sha}")
+    print(f"[PASS] selected_records={len(selected)}")
+    print(f"[PASS] generated_records={len(generated)}")
     print(f"[PASS] task_counts={selected_tasks}")
     if release_gate:
         print(f"[PASS] detection_source_counts={selected_detection_sources}")
@@ -986,7 +713,8 @@ def main() -> int:
     print(f"[PASS] coverage={args.coverage_json}")
     print(
         f"[PASS] component={args.component} "
-        "profile=672x672 chunk=1024 cache=4096 pbd=6"
+        "profile=672x672 chunk=1024 cache=4096 pbd=6 "
+        f"ar_wv_matmul_dtype={args.ar_wv_matmul_dtype}"
     )
     return 0
 

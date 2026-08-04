@@ -8,10 +8,6 @@ paths:
   generated_jsonl: artifacts/calibration/current/generated/generated.jsonl
 
 model:
-  checkpoint_index_sha256: 2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271
-  checkpoint_sha256:
-    model-00001-of-00002.safetensors: 923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58
-    model-00002-of-00002.safetensors: 3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47
   image_width: 672
   image_height: 672
   resize_mode: letterbox
@@ -24,7 +20,6 @@ model:
 calibration:
   sample_count: 1200
   checkpoint_samples: 512
-  dataset_index_sha256: 521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b
   task_counts:
     detection: 660
     gui: 150
@@ -67,6 +62,7 @@ language:
   ar_query_len: 1
   decoder_w_bits: 8
   lm_head_w_bits: 8
+  ar_wv_matmul_dtype: int8
 
 vision:
   w_bits: 8

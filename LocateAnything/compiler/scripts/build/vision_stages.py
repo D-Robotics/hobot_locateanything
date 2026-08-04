@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,44 +22,6 @@ IO_DTYPE = "float16"
 
 def heading(value: str) -> None:
     print(f"\n================== {value} ==================", flush=True)
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(16 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def digest_path(path: Path) -> Path:
-    return path.with_name(path.name + ".sha256")
-
-
-def write_digest(path: Path) -> None:
-    sidecar = digest_path(path)
-    temporary = sidecar.with_name(sidecar.name + ".tmp")
-    temporary.write_text(sha256_file(path) + "\n", encoding="ascii")
-    os.replace(temporary, sidecar)
-
-
-def digest_matches(path: Path) -> bool:
-    sidecar = digest_path(path)
-    if not sidecar.is_file():
-        return False
-    try:
-        return sidecar.read_text(encoding="ascii").strip() == sha256_file(path)
-    except OSError:
-        return False
-
-
-def invalidate_stage_digests(root: Path, artifact_prefix: str) -> int:
-    removed = 0
-    for sidecar in root.glob(f"{artifact_prefix}*.sha256"):
-        if sidecar.is_file():
-            sidecar.unlink()
-            removed += 1
-    return removed
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -125,7 +86,7 @@ def validate_visual_bc(path: Path) -> None:
 
 
 def valid_function(path: Path, expected_name: str) -> bool:
-    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
+    if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
         module = load(str(path))
@@ -139,7 +100,7 @@ def valid_function(path: Path, expected_name: str) -> bool:
 
 
 def valid_hbo(path: Path) -> bool:
-    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
+    if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
         Hbo(str(path))
@@ -166,33 +127,22 @@ def hbm_contract_matches(path: Path) -> bool:
 
 
 def valid_hbm(path: Path) -> bool:
-    return digest_matches(path) and hbm_contract_matches(path)
+    return hbm_contract_matches(path)
 
 
-def validate_manifest(path: Path, source: Path, args: argparse.Namespace) -> bool:
+def write_compile_manifest(path: Path, source: Path, args: argparse.Namespace) -> None:
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_bc": {
             "path": str(source),
             "bytes": source.stat().st_size,
-            "sha256": sha256_file(source),
         },
         "march": args.march,
         "core_num": args.core_num,
         "jobs": args.jobs,
         "hbm_path": str(args.hbm_path),
     }
-    if path.is_file():
-        try:
-            previous = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            previous = None
-        if previous == payload:
-            return True
-        atomic_json(path, payload)
-        return False
     atomic_json(path, payload)
-    return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -220,18 +170,7 @@ def main() -> int:
         return 0
 
     manifest = args.hbm_path.with_suffix(".compile_manifest.json")
-    manifest_compatible = validate_manifest(manifest, args.bc_path, args)
-    if args.resume and not manifest_compatible:
-        removed = invalidate_stage_digests(
-            args.hbm_path.parent,
-            args.hbm_path.stem,
-        )
-        print(
-            "[RESUME] source or compile contract changed; rebuilding Converted BC, "
-            f"HBO, and HBM from the reusable source BC (invalidated={removed})",
-            flush=True,
-        )
-        args.resume = False
+    write_compile_manifest(manifest, args.bc_path, args)
 
     converted_path = args.hbm_path.with_suffix(".visual_convert.bc")
     if args.resume and valid_function(converted_path, "visual"):
@@ -254,7 +193,6 @@ def main() -> int:
         save(converted, str(temporary))
         os.replace(temporary, converted_path)
         validate_visual_bc(converted_path)
-        write_digest(converted_path)
         print(f"[PASS] converted visual: {converted_path}", flush=True)
 
     hbo_path = args.hbm_path.with_suffix(".visual.hbo")
@@ -282,7 +220,6 @@ def main() -> int:
         Model.compile_hbo(module, save_path=str(temporary), **kwargs)
         os.replace(temporary, hbo_path)
         Hbo(str(hbo_path))
-        write_digest(hbo_path)
         print(f"[PASS] HBO visual core={args.core_num}: {hbo_path}", flush=True)
 
     if args.resume and valid_hbm(args.hbm_path):
@@ -295,7 +232,6 @@ def main() -> int:
     os.replace(temporary, args.hbm_path)
     if not hbm_contract_matches(args.hbm_path):
         raise RuntimeError(f"linked HBM graph contract mismatch: {args.hbm_path}")
-    write_digest(args.hbm_path)
     print(f"[PASS] HBM: {args.hbm_path}", flush=True)
     return 0
 

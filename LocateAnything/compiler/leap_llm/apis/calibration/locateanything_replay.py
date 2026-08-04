@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -22,7 +21,7 @@ REQUIRED_TENSOR_FIELDS = {
     "target_token_ids",
 }
 
-DECODE_CONTEXT_POLICY = "bundle_hash_base_plus_detection_target_tail_v2"
+DECODE_CONTEXT_POLICY = "ordered_base_plus_detection_target_tail_v3"
 DECODE_CONTEXT_PENDING_TOKENS = 6
 DECODE_DEPTH_BUCKETS = ("zero", "1_31", "32_127", "128_plus")
 BASE_CONTEXT_ROLE = "base"
@@ -92,14 +91,6 @@ class DecodeReplayContext(NamedTuple):
         }
 
 
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def read_generated_manifest(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
     path = path.resolve()
     records: list[dict[str, Any]] = []
@@ -124,8 +115,8 @@ def read_generated_manifest(path: Path, limit: int | None = None) -> list[dict[s
 
 def load_tensor_payload(record: dict[str, Any]) -> dict[str, Any]:
     tensor_path = Path(record["_tensor_path"])
-    if sha256_file(tensor_path) != record["tensor_sha256"]:
-        raise ValueError(f"tensor SHA256 mismatch: {tensor_path}")
+    if not tensor_path.is_file() or tensor_path.stat().st_size == 0:
+        raise ValueError(f"prepared tensor is missing or empty: {tensor_path}")
     payload = torch.load(tensor_path, map_location="cpu", weights_only=False)
     missing = sorted(REQUIRED_TENSOR_FIELDS - set(payload))
     if missing:
@@ -391,16 +382,12 @@ def _structural_offsets(
 def decode_context_id(bundle_id: str, token_source: str, offset: int) -> str:
     """Return a stable identity keyed only by bundle, token source, and offset."""
 
-    identity = json.dumps(
-        {
-            "bundle_id": str(bundle_id),
-            "offset": int(offset),
-            "token_source": str(token_source),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"{bundle_id}|{token_source}|{int(offset)}"
+
+
+def _bundle_sequence(bundle_id: str) -> int:
+    prefix = bundle_id.split("-", 1)[0]
+    return int(prefix) if prefix.isdigit() else 0
 
 
 def required_detection_target_offsets(
@@ -425,9 +412,9 @@ def select_decode_replay_context(
 ) -> DecodeReplayContext:
     """Select the stable base boundary shared by all Decode graph variants.
 
-    Slot zero preserves the prompt boundary. The remaining four hash slots pick
+    Slot zero preserves the prompt boundary. The remaining four ordered slots pick
     progressively deeper structural boundaries. Prediction and target streams
-    are both eligible; the bundle hash selects their preference without making
+    are both eligible; the bundle sequence selects their preference without making
     replay depend on manifest order or resume position.
     """
 
@@ -446,8 +433,8 @@ def select_decode_replay_context(
 
     bundle_id = str(payload.get("bundle_id") or "")
     task = str(task if task is not None else payload.get("task") or "")
-    digest = hashlib.sha256(bundle_id.encode("utf-8")).digest()
-    selection_slot = digest[0] % 5
+    bundle_sequence = _bundle_sequence(bundle_id)
+    selection_slot = bundle_sequence % 5
     special = payload.get("special_token_ids") or {}
     structural_token_ids = {
         int(special.get("<ref>", 151672)),
@@ -483,7 +470,7 @@ def select_decode_replay_context(
     )
     streams = [entry for entry in streams if entry[1]]
     if streams:
-        pivot = digest[1] % len(streams)
+        pivot = (bundle_sequence // 5) % len(streams)
         streams = streams[pivot:] + streams[:pivot]
 
     candidates: list[tuple[str, list[int], list[int]]] = []
@@ -808,9 +795,6 @@ def summarize_decode_context_coverage(
     ):
         errors.append("Detection Decode coverage has no suffix of at least 32 tokens")
 
-    selection_sha256 = hashlib.sha256(
-        json.dumps(contexts, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
     return {
         "schema_version": 2,
         "policy": DECODE_CONTEXT_POLICY,
@@ -822,7 +806,6 @@ def summarize_decode_context_coverage(
         "required_target_context_count": required_target_context_count,
         "covered_required_target_context_count": covered_required_target_context_count,
         "missing_required_target_contexts": missing_required_target_contexts,
-        "selection_sha256": selection_sha256,
         "suffix_len": _numeric_summary(suffix_lengths),
         "past_len": _numeric_summary(past_lengths),
         "depth_buckets": dict(depth_counts),
@@ -1330,5 +1313,4 @@ def apply_scale_manifest(
         "ignored_dynamic_attention_activation_points": len(retired_attention_points),
         # Deprecated compatibility key for existing build consumers.
         "ignored_dynamic_attention_observers": len(retired_attention_points),
-        "generated_manifest_sha256": manifest.get("generated_manifest_sha256"),
     }

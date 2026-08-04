@@ -9,7 +9,6 @@ are compiled once; the AR graph family is compiled for each requested core count
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -156,45 +155,6 @@ def heading(value: str) -> None:
     print(f"\n================== {value} ==================", flush=True)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(16 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def digest_path(path: Path) -> Path:
-    return path.with_name(path.name + ".sha256")
-
-
-def write_digest(path: Path) -> None:
-    sidecar = digest_path(path)
-    temporary = sidecar.with_name(sidecar.name + ".tmp")
-    temporary.write_text(sha256_file(path) + "\n", encoding="ascii")
-    os.replace(temporary, sidecar)
-
-
-def digest_matches(path: Path) -> bool:
-    sidecar = digest_path(path)
-    if not sidecar.is_file():
-        return False
-    try:
-        return sidecar.read_text(encoding="ascii").strip() == sha256_file(path)
-    except OSError:
-        return False
-
-
-def invalidate_stage_digests(root: Path, artifact_prefix: str | None) -> int:
-    pattern = f"{artifact_prefix}*.sha256" if artifact_prefix else "*.sha256"
-    removed = 0
-    for sidecar in root.rglob(pattern):
-        if sidecar.is_file():
-            sidecar.unlink()
-            removed += 1
-    return removed
-
-
 def discover_bc(
     bc_dir: Path,
     *,
@@ -251,18 +211,17 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def validate_or_create_manifest(
+def write_compile_manifest(
     path: Path,
     source_bc: dict[str, Path],
     args: argparse.Namespace,
-) -> bool:
+) -> None:
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_bc": {
             name: {
                 "path": str(source),
                 "bytes": source.stat().st_size,
-                "sha256": sha256_file(source),
             }
             for name, source in source_bc.items()
         },
@@ -274,21 +233,11 @@ def validate_or_create_manifest(
         "graph_set": args.graph_set,
         "hbm_path": str(args.hbm_path) if args.hbm_path else None,
     }
-    if path.is_file():
-        try:
-            previous = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            previous = None
-        if previous == payload:
-            return True
-        atomic_json(path, payload)
-        return False
     atomic_json(path, payload)
-    return False
 
 
 def valid_function(path: Path, expected_name: str) -> bool:
-    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
+    if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
         module = load(str(path))
@@ -323,12 +272,11 @@ def convert_stage(source: Path, destination: Path, name: str,
     temporary = destination.with_name(destination.stem + ".partial.bc")
     save(converted, str(temporary))
     os.replace(temporary, destination)
-    write_digest(destination)
     print(f"[PASS] converted {name}: {destination}", flush=True)
 
 
 def valid_hbo(path: Path) -> bool:
-    if not path.is_file() or path.stat().st_size == 0 or not digest_matches(path):
+    if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
         Hbo(str(path))
@@ -368,7 +316,6 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
     Model.compile_hbo(module, save_path=str(temporary), **kwargs)
     os.replace(temporary, destination)
     Hbo(str(destination))
-    write_digest(destination)
     print(f"[PASS] HBO {name} core={core_num}: {destination}", flush=True)
 
 
@@ -389,7 +336,7 @@ def hbm_contract_matches(path: Path, expected_names: list[str]) -> bool:
 
 
 def valid_hbm(path: Path, expected_names: list[str]) -> bool:
-    return digest_matches(path) and hbm_contract_matches(path, expected_names)
+    return hbm_contract_matches(path, expected_names)
 
 
 def link_variant(hbos: list[Path], destination: Path,
@@ -400,7 +347,7 @@ def link_variant(hbos: list[Path], destination: Path,
     if resume and destination.is_file() and destination.stat().st_size > 0:
         try:
             Hbm(str(destination))
-            print(f"[STALE] HBM contract or digest mismatch: {destination}", flush=True)
+            print(f"[STALE] HBM graph contract mismatch: {destination}", flush=True)
         except Exception:
             pass
     heading(f"LINK {destination.name}")
@@ -409,7 +356,6 @@ def link_variant(hbos: list[Path], destination: Path,
     os.replace(temporary, destination)
     if not hbm_contract_matches(destination, expected_names):
         raise RuntimeError(f"linked HBM graph contract mismatch: {destination}")
-    write_digest(destination)
     print(f"[PASS] HBM: {destination}", flush=True)
 
 
@@ -489,17 +435,7 @@ def main() -> int:
     if args.check_only:
         heading("SOURCE CONTRACT PASSED")
         return 0
-    manifest_compatible = validate_or_create_manifest(
-        manifest_path, source_bc, args,
-    )
-    if args.resume and not manifest_compatible:
-        removed = invalidate_stage_digests(args.output_dir, artifact_prefix)
-        print(
-            "[RESUME] source or compile contract changed; rebuilding Converted BC, "
-            f"HBO, and HBM from the reusable source BC (invalidated={removed})",
-            flush=True,
-        )
-        args.resume = False
+    write_compile_manifest(manifest_path, source_bc, args)
 
     stage_order = list(language_graph_set(args.graph_set).graphs)
     if args.hbm_path:

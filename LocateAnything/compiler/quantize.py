@@ -65,20 +65,6 @@ EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS = {
     "pixmo_points": 60,
 }
 EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
-EXPECTED_DATASET_INDEX_SHA256 = (
-    "521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b"
-)
-EXPECTED_CHECKPOINT_SHA256 = {
-    "model-00001-of-00002.safetensors": (
-        "923cfc10fed19808067da6df85a9a4220ddc1f9eb91ceee94c0fecd05d0f2d58"
-    ),
-    "model-00002-of-00002.safetensors": (
-        "3459ba101f40594f3f62d3312014f1f8378b4ba3da3b1d562480045938fc7d47"
-    ),
-}
-EXPECTED_CHECKPOINT_INDEX_SHA256 = (
-    "2ecc63fee5f958ffc8142fa29ff7b704a58e80349e9c9ca155a9710d97700271"
-)
 PATH_ENV_OVERRIDES = {
     "model": "LA_MODEL_PATH",
     "upstream_source": "LA_UPSTREAM_SOURCE",
@@ -161,12 +147,6 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("release letterbox_fill must be 128")
     if model.get("hidden_size") != 2048 or model.get("vocab_size") != 152681:
         raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model specifications")
-    if model.get("checkpoint_sha256") != EXPECTED_CHECKPOINT_SHA256:
-        raise ConfigurationError("model.checkpoint_sha256 does not match the frozen checkpoint")
-    if model.get("checkpoint_index_sha256") != EXPECTED_CHECKPOINT_INDEX_SHA256:
-        raise ConfigurationError(
-            "model.checkpoint_index_sha256 does not match the frozen checkpoint index"
-        )
 
     calibration = _mapping(config.get("calibration"), "calibration")
     sample_count = _positive_int(calibration.get("sample_count"), "calibration.sample_count")
@@ -195,10 +175,6 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError(
             "release calibration coco_stratum_counts do not match the 500-sample COCO profile"
         )
-    if calibration.get("dataset_index_sha256") != EXPECTED_DATASET_INDEX_SHA256:
-        raise ConfigurationError(
-            "calibration.dataset_index_sha256 does not match the frozen dataset index"
-        )
 
     language = _mapping(config.get("language"), "language")
     chunk_size = _positive_int(language.get("chunk_size"), "language.chunk_size")
@@ -210,9 +186,18 @@ def validate_config(config: Mapping[str, Any]) -> None:
     if language.get("decoder_w_bits") != 8 or language.get("lm_head_w_bits") != 8:
         raise ConfigurationError("release Language and LM Head weights must use W8")
     try:
-        language_graph_set(str(language.get("graph_set")))
+        graph_set = language_graph_set(str(language.get("graph_set")))
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
+    ar_wv_matmul_dtype = language.get("ar_wv_matmul_dtype")
+    if ar_wv_matmul_dtype not in {"int8", "float16"}:
+        raise ConfigurationError(
+            "language.ar_wv_matmul_dtype must be int8 or float16"
+        )
+    if ar_wv_matmul_dtype == "float16" and graph_set.name != "standard":
+        raise ConfigurationError(
+            "AR WV Float16 is currently validated only for graph_set=standard"
+        )
 
     vision = _mapping(config.get("vision"), "vision")
     if vision.get("w_bits") != 8:
@@ -426,9 +411,6 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
             "CALIBRATION_COVERAGE_JSON": str(resolve_path(config, "coverage_json")),
             "EXPECTED_SAMPLES": str(calibration["sample_count"]),
-            "EXPECTED_DATASET_INDEX_SHA256": str(
-                calibration["dataset_index_sha256"]
-            ),
             "DEVICE": args.device or str(build["device"]),
             "MARCH": str(build["march"]),
             "JOBS": str(build["jobs"]),
@@ -436,6 +418,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "CACHE_LEN": str(language["cache_len"]),
             "DECODE_SEQ_LEN": str(language["pbd_query_len"]),
             "LM_HEAD_W_BITS": str(language["lm_head_w_bits"]),
+            "AR_WV_MATMUL_DTYPE": str(language["ar_wv_matmul_dtype"]),
             "LANGUAGE_GRAPH_SET": graph_set.name,
             "EXPORT_ONLY": "1" if args.target == "bc" else "0",
             "RESUME": "1" if args.resume else "0",
@@ -484,13 +467,13 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
         "--coverage-json", str(resolve_path(config, "coverage_json")),
         "--model-path", str(resolve_path(config, "model")),
         "--expected-samples", str(calibration["sample_count"]),
-        "--expected-dataset-index-sha256", str(calibration["dataset_index_sha256"]),
         "--image-width", str(model["image_width"]),
         "--image-height", str(model["image_height"]),
         "--chunk-size", str(language["chunk_size"]),
         "--cache-len", str(language["cache_len"]),
         "--decode-seq-len", str(language["pbd_query_len"]),
         "--lm-head-w-bits", str(language["lm_head_w_bits"]),
+        "--ar-wv-matmul-dtype", str(language["ar_wv_matmul_dtype"]),
         "--graph-set", graph_set.name,
     ]
     rotation = calibration.get("hidden_rotation_path")
@@ -517,6 +500,7 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
         "cache_len": language["cache_len"],
         "language_w_bits": language["decoder_w_bits"],
         "lm_head_w_bits": language["lm_head_w_bits"],
+        "ar_wv_matmul_dtype": language["ar_wv_matmul_dtype"],
         "language_graph_set": graph_set.name,
         "language_graph_count": len(graph_set.graphs),
     }

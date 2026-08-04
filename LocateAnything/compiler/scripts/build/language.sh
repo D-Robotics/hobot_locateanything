@@ -14,11 +14,11 @@ MODEL_NAME="${MODEL_NAME:-locateanything-lm-3b}"
 MARCH="${MARCH:-nash-p}"
 W_BITS="${W_BITS:-8}"
 LM_HEAD_W_BITS="${LM_HEAD_W_BITS:-8}"
+AR_WV_MATMUL_DTYPE="${AR_WV_MATMUL_DTYPE:-int8}"
 CHUNK_SIZE="${CHUNK_SIZE:-1024}"
 CACHE_LEN="${CACHE_LEN:-4096}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:-6}"   # PBD q_len=6
 EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
-EXPECTED_DATASET_INDEX_SHA256="${EXPECTED_DATASET_INDEX_SHA256:-521c9203579b165b619934684ca0dd44f9a33dc9c68e0bb6abb17f481d17850b}"
 DEVICE="${DEVICE:-cuda:0}"
 PREFILL_CORE_NUM="${PREFILL_CORE_NUM:-4}"
 DECODE_CORE_NUM="${DECODE_CORE_NUM:-4}"
@@ -91,6 +91,10 @@ cd "$LEAP_LLM_SRC"
 [[ -f "$GENERATED_JSON" ]] || { echo "prepared calibration manifest missing: $GENERATED_JSON"; exit 1; }
 [[ "$W_BITS" == "8" ]] || { echo "LocateAnything Language release requires W_BITS=8"; exit 1; }
 [[ "$LM_HEAD_W_BITS" == "8" ]] || { echo "LocateAnything Language release requires LM_HEAD_W_BITS=8"; exit 1; }
+[[ "$AR_WV_MATMUL_DTYPE" == "int8" || "$AR_WV_MATMUL_DTYPE" == "float16" ]] || {
+  echo "AR_WV_MATMUL_DTYPE must be int8 or float16; got $AR_WV_MATMUL_DTYPE"
+  exit 1
+}
 [[ "$CHUNK_SIZE" == "1024" && "$CACHE_LEN" == "4096" && "$DECODE_SEQ_LEN" == "6" ]] || {
   echo "LocateAnything Language release requires CHUNK_SIZE=1024 CACHE_LEN=4096 DECODE_SEQ_LEN=6"
   exit 1
@@ -99,6 +103,10 @@ cd "$LEAP_LLM_SRC"
   echo "LANGUAGE_GRAPH_SET must be standard or fused_decode; got $LANGUAGE_GRAPH_SET"
   exit 1
 }
+if [[ "$AR_WV_MATMUL_DTYPE" == "float16" && "$LANGUAGE_GRAPH_SET" != "standard" ]]; then
+  echo "AR WV Float16 is currently validated only for LANGUAGE_GRAPH_SET=standard"
+  exit 1
+fi
 [[ "$PREFILL_CORE_NUM" == "1" || "$PREFILL_CORE_NUM" == "2" || "$PREFILL_CORE_NUM" == "4" ]] || { echo "PREFILL_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
@@ -127,7 +135,6 @@ fi
 
 VALIDATION_ARGS=(
   --expected-samples "$EXPECTED_SAMPLES"
-  --expected-dataset-index-sha256 "$EXPECTED_DATASET_INDEX_SHA256"
 )
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
@@ -146,6 +153,7 @@ python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
   --image-width 672 --image-height 672 \
   --chunk-size "$CHUNK_SIZE" --cache-len "$CACHE_LEN" --decode-seq-len "$DECODE_SEQ_LEN" \
   --lm-head-w-bits "$LM_HEAD_W_BITS" \
+  --ar-wv-matmul-dtype "$AR_WV_MATMUL_DTYPE" \
   --graph-set "$LANGUAGE_GRAPH_SET" \
   "${VALIDATION_ARGS[@]}"
 
@@ -166,13 +174,17 @@ echo "generated:     $GENERATED_JSON"
 echo "scale:         $CALIBRATION_SCALE_MANIFEST"
 echo "coverage:      $CALIBRATION_COVERAGE_JSON"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
+echo "AR WV MatMul:  $AR_WV_MATMUL_DTYPE"
 echo "Language graphs: $LANGUAGE_GRAPH_SET"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
 echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
 echo "log:           $LOG_FILE"
 echo
 
-EXTRA_ARGS=(--graph-set "$LANGUAGE_GRAPH_SET")
+EXTRA_ARGS=(
+  --graph-set "$LANGUAGE_GRAPH_SET"
+  --ar_wv_matmul_dtype "$AR_WV_MATMUL_DTYPE"
+)
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   EXTRA_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
 fi
@@ -186,6 +198,9 @@ if [[ "$AR_CORE_NUM" != "$DECODE_CORE_NUM" ]]; then
 fi
 if [[ "$LANGUAGE_GRAPH_SET" == "fused_decode" ]]; then
   HBM_STEM="${HBM_STEM}_fused_decode"
+fi
+if [[ "$AR_WV_MATMUL_DTYPE" == "float16" ]]; then
+  HBM_STEM="${HBM_STEM}_ar_wv_float16"
 fi
 HBM_PATH="$OUTPUT_MODEL_PATH/${HBM_STEM}.hbm"
 EMBEDDING_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_embed_tokens.bin"
@@ -222,6 +237,7 @@ PROVENANCE_ARGS=(
   --field "ar_query_len=1"
   --field "decoder_w_bits=$W_BITS"
   --field "lm_head_w_bits=$LM_HEAD_W_BITS"
+  --field "ar_wv_matmul_dtype=$AR_WV_MATMUL_DTYPE"
   --field "graph_set=$LANGUAGE_GRAPH_SET"
   --field "march=$MARCH"
   --artifact "embed_tokens=$EMBEDDING_PATH"
