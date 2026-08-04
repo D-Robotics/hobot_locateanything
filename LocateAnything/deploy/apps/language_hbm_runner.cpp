@@ -322,7 +322,8 @@ bool BuildPrefillEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed
     if (payload->prompt_ids[index] != kImageToken) continue;
     std::memcpy(destination +
                     static_cast<size_t>(row_offset + index) * kHidden,
-                visual + visual_index * static_cast<size_t>(kHidden),
+                visual + visual_index * static_cast<size_t>(kHidden) *
+                             sizeof(uint16_t),
                 static_cast<size_t>(kHidden) * sizeof(uint16_t));
     ++visual_index;
   }
