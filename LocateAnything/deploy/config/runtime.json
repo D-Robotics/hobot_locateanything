@@ -26,7 +26,7 @@
   "ar_query_len": 1,
   "language_graph_set": "standard",
   "default_generation_mode": "hybrid",
-  "default_max_new_tokens": 2048,
+  "default_max_new_tokens": 4096,
   "default_nms_iou": 0.9,
   "l2m_sizes": "6:6:6:6",
   "telemetry_interval_ms": 250,
