@@ -321,8 +321,7 @@ class ResourceMonitor:
             self._stage_total = total
             self._stage_name = name
             self._stage_started = time.monotonic()
-            if name.lower().startswith("language"):
-                self._token_count = 0
+            self._token_count = 0
         self._wake.set()
 
     def observe_token(self) -> None:
@@ -399,7 +398,11 @@ class ResourceMonitor:
                 f"{BOLD}{CYAN}{bar}{RESET} "
                 f"{self._stage_index}/{self._stage_total} {self._stage_name}"
             )
-            if active and self._token_count:
+            if (
+                active
+                and self._stage_name.lower().startswith("language")
+                and self._token_count
+            ):
                 stage += f"  {self._token_count} tokens  {rate:.1f} tokens/s"
             stage += f"  {DIM}{format_duration(elapsed)}{RESET}"
 
