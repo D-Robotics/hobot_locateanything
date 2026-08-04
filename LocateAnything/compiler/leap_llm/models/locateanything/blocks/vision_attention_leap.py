@@ -1,18 +1,13 @@
 """MoonViT attention implemented with the Leap DSL.
 
-Vendored & adapted from qwen2_5_vl/blocks/attention.py::Qwen2_5_VLVisionAttention
-with these MoonViT-specific simplifications:
+Implementation details:
 
-  1. Full global attention only — no window/full alternation, no lengths
-     splitting, no per-window qk_matmul / wv_matmul lists (Qwen2.5-VL has 16
-     of each; we need just one).
+  1. Full global attention only, with one QK/WV MatMul path.
   2. Packed wqkv name (not qkv/proj) to match LocateAnything checkpoint keys:
      `vision_model.encoder.blocks.i.wqkv.{weight,bias}`,
      `vision_model.encoder.blocks.i.wo.{weight,bias}`.
-  3. head_dim = 1152 / 16 = 72 (Qwen2.5-VL vision is 80).
-  4. 2D rope apply — leap DSL version using rotate_half_leap pattern from
-     qwen2_5_vl. The (cos, sin) tables are pre-computed 2D-aware
-     (interleaves x/y channels) — see utils/rope_2d.py::precompute_freqs_cos_sin.
+  3. head_dim = 1152 / 16 = 72.
+  4. The (cos, sin) tables use 2D-aware x/y channel interleaving.
 """
 
 from __future__ import annotations
@@ -40,9 +35,6 @@ except ImportError:
     QuantStub = None
 
 
-# ---------------------------------------------------------------------------
-# rotate_half — used by rope apply. Same as qwen2_5_vl/blocks/attention.py.
-# ---------------------------------------------------------------------------
 def rotate_half_leap(x):
     """Rotate adjacent real/imag pairs: ``(a, b) -> (-b, a)``."""
     shape = x.type.shape
@@ -75,7 +67,7 @@ def rotate_half_torch(x):
 
 
 def apply_rope_leap_2d(q, k, cos, sin):
-    """Same shape convention as qwen2_5_vl's apply_multimodal_rotary_pos_emb_leap.
+    """Apply the precomputed MoonViT 2D rotary embeddings.
 
     cos/sin are pre-computed 2D-aware tables (interleaved x/y channels in the
     head_dim/2 axis; see utils/rope_2d.py::precompute_freqs_cos_sin).

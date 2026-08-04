@@ -15,7 +15,6 @@ from .ops import (
 )
 from .pooling import AvgPool1d
 from .rms_norm import FakeQuantRMSNorm, Qwen2RMSNorm, RMSNorm
-from .vision_embedding import Qwen2_5_VisionPatchEmbed, VisionEmbeddings
 
 __all__ = [
     "FakeQuantEmbedding",
@@ -35,7 +34,6 @@ __all__ = [
     "Embedding",
     "DynamicQuantLinear",
     "RMSNorm",
-    "VisionEmbeddings",
     "LayerNorm",
     "DynamicQuantMatmul",
     "AvgPool1d",
@@ -45,5 +43,4 @@ __all__ = [
     "Qwen2RMSNorm",
     "LayerNormSplit",
     "Clip",
-    "Qwen2_5_VisionPatchEmbed",
 ]

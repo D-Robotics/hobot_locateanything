@@ -6,10 +6,6 @@ paths:
   coverage_json: artifacts/calibration/current/statistics/standard/calibration_graph_coverage.json
   build_root: artifacts/builds/locateanything-3b/standard
   log_root: artifacts/logs/locateanything-3b/standard
-  verification_root: artifacts/evaluation/locateanything-3b/standard
 
 language:
   graph_set: standard
-
-verification:
-  predictions_jsonl: artifacts/evaluation/locateanything-3b/standard/predictions.jsonl

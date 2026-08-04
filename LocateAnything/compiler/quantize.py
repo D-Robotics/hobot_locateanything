@@ -31,7 +31,7 @@ DEFAULT_CONFIG = COMPILER_ROOT / "config.yaml"
 COMPONENTS = ("vision", "language", "all")
 BUILD_TARGETS = ("bc", "hbm")
 PROGRESS_MODES = ("auto", "bar", "log", "off")
-VERIFY_STAGES = ("specification", "pipeline", "task", "all")
+VERIFY_STAGES = ("specification",)
 if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
@@ -93,7 +93,6 @@ PATH_ROOT_OVERRIDES = {
     "coverage_json": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
     "build_root": ("LA_BUILD_ROOT", Path("artifacts/builds")),
     "log_root": ("LA_LOG_ROOT", Path("artifacts/logs")),
-    "verification_root": ("LA_EVALUATION_ROOT", Path("artifacts/evaluation")),
 }
 
 
@@ -139,7 +138,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
     required_paths = {
         "model", "upstream_source", "selected_jsonl", "generated_dir",
         "generated_jsonl", "calibration_dir", "scale_manifest", "coverage_json",
-        "build_root", "log_root", "verification_root",
+        "build_root", "log_root",
     }
     missing_paths = sorted(required_paths - paths.keys())
     if missing_paths:
@@ -227,15 +226,6 @@ def validate_config(config: Mapping[str, Any]) -> None:
     for name in ("vision", "prefill", "pbd", "ar"):
         if cores.get(name) not in {1, 2, 4}:
             raise ConfigurationError(f"build.cores.{name} must be 1, 2, or 4")
-
-    verification = _mapping(config.get("verification"), "verification")
-    iou_threshold = verification.get("iou_threshold")
-    if not isinstance(iou_threshold, (int, float)) or not 0.0 < iou_threshold <= 1.0:
-        raise ConfigurationError("verification.iou_threshold must be in (0, 1]")
-    for key in ("reference_jsonl", "predictions_jsonl"):
-        if not verification.get(key):
-            raise ConfigurationError(f"verification.{key} must be configured")
-
 
 def _resolve_config_path(
     raw: Any,
@@ -413,13 +403,6 @@ def resolve_path_value(value: Any) -> Path:
     return _resolve_config_path(value)
 
 
-def resolve_evaluation_path(value: Any) -> Path:
-    return _resolve_config_path(
-        value,
-        root_override=("LA_EVALUATION_ROOT", Path("artifacts/evaluation")),
-    )
-
-
 def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
     calibration = _mapping(config["calibration"], "calibration")
     model = _mapping(config["model"], "model")
@@ -514,49 +497,10 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
     if rotation:
         specification_command.extend(("--hidden-rotation-path", str(resolve_path_value(rotation))))
 
-    verification = _mapping(config["verification"], "verification")
-    verification_root = resolve_path(config, "verification_root")
-    pipeline_command = (
-        python_command(config),
-        str(VALIDATE_SCRIPTS / "compare_pipeline.py"),
-        "--mode", "analysis",
-        "--output_dir", str(verification_root / "pipeline"),
-        "--scale_manifest", str(resolve_path(config, "scale_manifest")),
-        "--graph-set", graph_set.name,
-    )
-    predictions = (
-        resolve_path_value(args.predictions_jsonl)
-        if args.predictions_jsonl
-        else resolve_evaluation_path(verification["predictions_jsonl"])
-    )
-    reference = (
-        resolve_path_value(args.reference_jsonl)
-        if args.reference_jsonl
-        else resolve_evaluation_path(verification["reference_jsonl"])
-    )
-    task_command = (
-        python_command(config),
-        str(VALIDATE_SCRIPTS / "evaluate_grounding.py"),
-        "--predictions-jsonl", str(predictions),
-        "--reference-jsonl", str(reference),
-        "--output-json", str(verification_root / "task_metrics.json"),
-        "--details-jsonl", str(verification_root / "task_details.jsonl"),
-        "--iou-threshold", str(verification["iou_threshold"]),
-    )
-    available = {
-        "specification": PlanStep(
-            "verify calibration and build specification",
-            tuple(specification_command),
-        ),
-        "pipeline": PlanStep("summarize Float/BC/HBM comparisons", pipeline_command),
-        "task": PlanStep("evaluate held-out grounding predictions", task_command),
-    }
-    stages = (
-        ("specification", "pipeline", "task")
-        if args.stage == "all"
-        else (args.stage,)
-    )
-    return [available[stage] for stage in stages]
+    return [PlanStep(
+        "verify calibration and build specification",
+        tuple(specification_command),
+    )]
 
 
 def quote_command(command: Iterable[str]) -> str:
@@ -703,15 +647,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="specification",
         help="verification stage",
     )
-    verify.add_argument(
-        "--level",
-        dest="stage",
-        choices=VERIFY_STAGES,
-        default=argparse.SUPPRESS,
-        help=argparse.SUPPRESS,
-    )
-    verify.add_argument("--predictions-jsonl")
-    verify.add_argument("--reference-jsonl")
     return parser
 
 

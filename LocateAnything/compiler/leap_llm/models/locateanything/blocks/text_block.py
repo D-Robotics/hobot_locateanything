@@ -1,9 +1,4 @@
-"""Qwen2 DecoderLayer — pre-norm + GQA attention + pre-norm + SwiGLU MLP.
-
-Ground truth (upstream):
-  /home/kangjie.xu/.cache/huggingface/modules/transformers_modules/
-    LocateAnything_hyphen_3B/modeling_qwen2.py:99  (Qwen2RMSNorm)
-    LocateAnything_hyphen_3B/modeling_qwen2.py:927 (Qwen2DecoderLayer)
+"""Qwen2 decoder layer used by the LocateAnything PyTorch reference path.
 
 State-dict layout matches upstream exactly:
   input_layernorm.weight
@@ -47,8 +42,7 @@ class Qwen2RMSNormStatic(nn.Module):
 class Qwen2DecoderLayerStatic(nn.Module):
     """Single Qwen2 decoder layer for the compile pipeline.
 
-    Interface aligned with the leap decode-HBM convention used by
-    Qwen2_5_VLDecoderLayer (see qwen2_5_vl/blocks/transformer_block.py:62):
+    Interface aligned with the Leap decode-HBM convention:
 
       forward(hidden_states, attention_mask, position_ids, cos, sin,
               cache_keys, cache_values)

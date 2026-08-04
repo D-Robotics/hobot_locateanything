@@ -1,7 +1,6 @@
-"""LocateAnything MoonViT vision model implemented with the Leap DSL.
+"""LocateAnything MoonViT Vision model implemented with the Leap DSL.
 
-Vendored & simplified from qwen2_5_vl/model.py::Qwen2_5_VLVisionModel with
-these MoonViT-specific changes:
+MoonViT-specific behavior:
 
   1. No window attention, no window_index, no fullatt_block_indexes,
      no lengths splitting. All 27 layers run global attention.
@@ -143,8 +142,7 @@ class LocateAnythingVisionModel(Model):
             hidden_states = blk(hidden_states, rope_cos, rope_sin)
 
         hidden_states = self.final_layernorm(hidden_states)
-        # Clip to fp16 safe range before merger (mirrors qwen2_5_vl pattern
-        # at model.py:419: leap.clip before self.merger).
+        # Clip to the FP16-safe range before the merger.
         hidden_states = leap.clip(hidden_states, -65504.0, 65504.0)
         visual_embeds = self.merger(hidden_states)                           # (1, N/4, 2048)
         visual_embeds = self.dequant(visual_embeds)
@@ -161,7 +159,7 @@ class LocateAnythingVisionModel(Model):
         return self.merger(hidden_states)
 
     # ------------------------------------------------------------------
-    # leap input types — matches Qwen2_5_VLVisionModel signature
+    # Leap input types for the Vision graph.
     # ------------------------------------------------------------------
     def get_leap_input_types(self) -> List[leap.TensorType]:
         flat_dim = self.patch_size * self.patch_size * 3

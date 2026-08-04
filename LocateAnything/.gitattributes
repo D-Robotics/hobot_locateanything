@@ -1,7 +1,7 @@
 # Keep files consumed on Linux byte-stable when checked out on Windows.
 .gitattributes text eol=lf
 *.sh text eol=lf
-deploy/LocateAnything text eol=lf
+deploy/bin/LocateAnything text eol=lf
 *.py text eol=lf
 *.cpp text eol=lf
 *.hpp text eol=lf

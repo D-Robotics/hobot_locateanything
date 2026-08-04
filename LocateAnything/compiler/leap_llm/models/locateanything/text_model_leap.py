@@ -1,17 +1,11 @@
-"""LocateAnything language model — leap DSL version.
+"""LocateAnything Language model implemented with the Leap DSL.
 
-Source: heavily inspired by (i.e. copy-and-adapt from)
-    compiler/leap_llm/models/qwen2_5_vl/model.py::Qwen2_5_VLTextModel
-Copyright of the original file: The Qwen Team, HuggingFace, D-Robotics.
-This file is our LocateAnything-specific adaptation and lives entirely
-in leap_llm/models/locateanything/.
-
-Key differences from Qwen2_5_VLTextModel:
+Model-specific behavior:
   1. Vanilla 1D rope only (no mrope 3-way split). position_ids shape is
      always (bs, 1, seq); the mrope branch is deleted rather than gated.
   2. tie_word_embeddings=True is respected — lm_head is computed as
      matmul against embed_tokens.weight, no independent lm_head allocation
-     (avoids the 92MB duplicate weight; see design_notes.md pit #1).
+     to avoid a duplicate output projection.
   3. attention_mask is the PBD-style additive mask constructed by the
      host (see blocks/pbd_mask.py). We do not build a causal mask here.
   4. decode_seq_len defaults to 6 (PBD block_size).

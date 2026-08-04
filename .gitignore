@@ -1,9 +1,6 @@
 # Product-local checkpoints and generated artifacts
 /LocateAnything/artifacts/**
-/Qwen-2.5-VL-3B/artifacts/**
-# Ignore pre-migration outputs without using them as new defaults.
 /LocateAnything/workspace/**
-/Qwen-2.5-VL-3B/workspace/**
 
 # Model weights and generated artifacts
 *.safetensors
@@ -26,9 +23,13 @@
 # Python / editor
 __pycache__/
 *.pyc
+.venv/
+venv/
 .ipynb_checkpoints/
 .vscode/
 .idea/
+.claude/
+.worktrees/
 .DS_Store
 /.pytest_cache/
 *.egg-info/

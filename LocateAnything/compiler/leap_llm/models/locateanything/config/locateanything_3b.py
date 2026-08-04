@@ -1,22 +1,15 @@
 """Dataclass-based config for LocateAnything-3B.
 
 Loaded from the checkpoint `config.json` via `dataclass_from_dict`.
-Kept intentionally flat and explicit — no nested-schema hacks like the
-Qwen2.5-VL branch does. Fields mirror the on-disk config exactly so that
+Fields mirror the on-disk config exactly so that
 `json.load(config.json)` → `dataclass_from_dict(LocateAnythingConfig, ...)`
 round-trips without loss.
-
-Reference: /home/kangjie.xu/oe_locateanything/eagle/Embodied/LocateAnything-3B/config.json
 """
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, List, Optional
 
 
-# ---------------------------------------------------------------------------
-# Helper — same shape as `qwen2_5_vl/model.py:dataclass_from_dict` but broken
-# out so all locateanything files can import it.
-# ---------------------------------------------------------------------------
 def dataclass_from_dict(cls, dikt):
     """Recursively instantiate a @dataclass `cls` from a plain dict `dikt`.
 
@@ -60,7 +53,7 @@ class MoonViTConfig:
     image_height: int = 672
     image_width: int = 672
 
-    # Attention mask sentinel used inside compiled ViT (matches Qwen2.5-VL branch)
+    # Attention mask sentinel used inside compiled Vision graphs.
     mask_min_value: float = -32768.0
 
     # Optional (present in some HF exports); we do not need them for compile.
@@ -86,7 +79,7 @@ class Qwen2PBDTextConfig:
     tie_word_embeddings: bool = True
     torch_dtype: str = "bfloat16"
 
-    # PBD-specific — the reason we cannot reuse qwen2_5-vl-3b builder
+    # PBD-specific generation settings.
     block_size: int = 6              # PBD unit = 6 tokens (box block)
     causal_attn: bool = False        # False -> diagonal block bidirectional mask
 
@@ -152,10 +145,8 @@ class LocateAnythingConfig:
 def load_config_from_json(config_json_path: str) -> LocateAnythingConfig:
     """Read `config.json` at the given path and hydrate LocateAnythingConfig.
 
-    Unlike the qwen2_5_vl branch which flattens vision/text into a single
-    dataclass with `config.get("vision_config", config)` fallback trickery,
-    LocateAnything's config.json has a clean nested schema so we consume it
-    literally.
+    The checkpoint uses a nested Vision/Text schema, which is consumed
+    directly without flattening.
     """
     import json
     with open(config_json_path, encoding="utf-8") as f:

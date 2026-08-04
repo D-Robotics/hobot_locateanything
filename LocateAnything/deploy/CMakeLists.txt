@@ -1,11 +1,4 @@
-# LocateAnything S600 host runtime.
-#
-# Build (on S600):
-#   cd deploy
-#   mkdir build && cd build
-#   cmake ..
-#   make -j4
-#   ./embed_lookup_test <embed_tokens.bin>
+# LocateAnything S600 runtime and HBM executables.
 
 cmake_minimum_required(VERSION 3.10)
 project(locateanything_runtime CXX)
@@ -69,35 +62,9 @@ if(HBDSP_PLUGIN_LIB)
 endif()
 target_link_libraries(locateanything_runtime PUBLIC ${LA_RT_LIBS})
 
-# Real-input Vision HBM runner used by Float/BC/HBM numerical validation.
-add_executable(vision_hbm_runner example/vision_hbm_runner.cpp)
+# Executables used by the Python CLI.
+add_executable(vision_hbm_runner apps/vision_hbm_runner.cpp)
 target_link_libraries(vision_hbm_runner PRIVATE locateanything_runtime)
 
-# --- Phase 2 embed_lookup unit test -------------------------------------------
-add_executable(embed_lookup_test example/embed_lookup_test.cpp)
-target_link_libraries(embed_lookup_test PRIVATE locateanything_runtime)
-
-# --- Phase 2 attention_mask unit test ----------------------------------------
-add_executable(attention_mask_test example/attention_mask_test.cpp)
-target_link_libraries(attention_mask_test PRIVATE locateanything_runtime)
-
-# --- Phase 2 position_ids unit test ------------------------------------------
-add_executable(position_ids_test example/position_ids_test.cpp)
-target_link_libraries(position_ids_test PRIVATE locateanything_runtime)
-
-# Right-aligned mirrored KV cache regression against the previous memmove path.
-add_executable(kv_cache_ring_test example/kv_cache_ring_test.cpp)
-target_link_libraries(kv_cache_ring_test PRIVATE locateanything_runtime)
-
-# Official q=6 probability processing and PBD threshold regression.
-add_executable(hybrid_decoder_test example/hybrid_decoder_test.cpp)
-target_link_libraries(hybrid_decoder_test PRIVATE locateanything_runtime)
-
-# Exact Language HBM validation for both supported graph sets.
-add_executable(language_graph_set_test example/language_graph_set_test.cpp)
-target_include_directories(language_graph_set_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-# Current Language HBM deployment smoke: validates the 1024/4096 W8/W8 graph
-# set and exercises prefill -> PBD q=6 -> AR q=1 with artifact-declared KV.
-add_executable(language_hbm_runner example/language_hbm_runner.cpp)
+add_executable(language_hbm_runner apps/language_hbm_runner.cpp)
 target_link_libraries(language_hbm_runner PRIVATE locateanything_runtime)

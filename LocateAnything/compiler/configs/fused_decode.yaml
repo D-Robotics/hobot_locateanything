@@ -6,10 +6,6 @@ paths:
   coverage_json: artifacts/calibration/current/statistics/fused_decode/calibration_graph_coverage.json
   build_root: artifacts/builds/locateanything-3b/fused_decode
   log_root: artifacts/logs/locateanything-3b/fused_decode
-  verification_root: artifacts/evaluation/locateanything-3b/fused_decode
 
 language:
   graph_set: fused_decode
-
-verification:
-  predictions_jsonl: artifacts/evaluation/locateanything-3b/fused_decode/predictions.jsonl

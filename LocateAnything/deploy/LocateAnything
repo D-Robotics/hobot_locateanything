@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-
-SELF=$(readlink -f "$0")
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
-exec python3 "$SCRIPT_DIR/run_locateanything_interactive.py" "$@"

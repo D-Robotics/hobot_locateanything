@@ -1,12 +1,6 @@
-"""Qwen2 Attention (GQA + SDPA) — PyTorch reference for calibration and sanity.
+"""Qwen2 GQA/SDPA reference used by LocateAnything calibration.
 
-Ground truth (upstream):
-  /home/kangjie.xu/.cache/huggingface/modules/transformers_modules/
-    LocateAnything_hyphen_3B/modeling_qwen2.py:219 (Qwen2Attention base)
-    LocateAnything_hyphen_3B/modeling_qwen2.py:647 (Qwen2SdpaAttention)
-    LocateAnything_hyphen_3B/modeling_qwen2.py:733 (Qwen2SdpaAttentionGqa)
-
-Design decisions (report pits #3, #4):
+Implementation constraints:
 
   - SDPA-only for the compile path. flash_attn / magi_attention are never
     touched here because hbdk4 cannot lower those custom kernels.
@@ -15,7 +9,7 @@ Design decisions (report pits #3, #4):
     decode branch). We never build the mask inside the module.
   - KV cache is passed in as separate `cache_keys` / `cache_values`
     tensors and returned as `new_keys` / `new_values`, matching the
-    Qwen2_5_VLDecoderLayer contract used by leap decode HBMs.
+    Language graph interface used by the Leap decode HBMs.
 
 State-dict keys mirror upstream:
   q_proj.{weight,bias}       (bias=True — Qwen2 convention)
@@ -73,7 +67,7 @@ class Qwen2GQAAttentionStatic(nn.Module):
       new_values     : (bs, kv_len, num_kv_heads, head_dim)
 
     Convention: cache is stored in (bs, seq, num_kv_heads, head_dim) layout
-    to match the leap decode HBM signature used by qwen2_5_vl. Internally we
+    to match the Leap decode HBM signature. Internally we
     transpose to (bs, num_kv_heads, seq, head_dim) for SDPA.
     """
 

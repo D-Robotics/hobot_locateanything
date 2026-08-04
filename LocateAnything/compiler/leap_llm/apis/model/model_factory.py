@@ -1,4 +1,4 @@
-"""Model registry for the two compiler targets maintained in this repository."""
+"""Model registry for LocateAnything Vision and Language compilation."""
 
 _model_builders = {}
 
@@ -46,35 +46,6 @@ def _primary_device(args):
     return args.device[0] if isinstance(args.device, list) else args.device
 
 
-@register_model("qwen2_5-vl-3b", ["nash-p"])
-def _build_qwen2_5_vl_3b(args):
-    from leap_llm.apis.model.qwen2_5_vl import Qwen2_5VlApi
-
-    devices = args.device if isinstance(args.device, list) else [args.device]
-    return Qwen2_5VlApi(
-        input_model_path=args.input_model_path,
-        output_model_path=args.output_model_path,
-        calib_tsv_path=args.calib_tsv_path,
-        calib_message_path=args.calib_json_path,
-        chunk_size=args.chunk_size,
-        batch_size=args.batch_size,
-        cache_len=args.cache_len,
-        image_width=args.image_width,
-        image_height=args.image_height,
-        devices=devices,
-        model_type="qwen2_5-vl-3b",
-        dtype="float32",
-        w_bits=args.w_bits,
-        mask_value=-32768,
-        vit_core_num=args.vit_core_num,
-        prefill_core_num=args.prefill_core_num,
-        decode_core_num=args.decode_core_num,
-        decode_seq_len=args.decode_seq_len,
-        input_model_format=args.input_model_format,
-        march=args.march,
-    )
-
-
 @register_model("locateanything-lm-3b", ["nash-p"])
 def _build_locateanything_lm_3b(args):
     from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
@@ -83,7 +54,7 @@ def _build_locateanything_lm_3b(args):
         input_model_path=args.input_model_path,
         output_model_path=args.output_model_path,
         chunk_size=args.chunk_size,
-        batch_size=args.batch_size,
+        batch_size=1,
         cache_len=args.cache_len,
         decode_seq_len=args.decode_seq_len,
         device=_primary_device(args),

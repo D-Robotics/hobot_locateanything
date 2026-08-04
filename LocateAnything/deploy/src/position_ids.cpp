@@ -1,6 +1,6 @@
 // Copyright (c) 2026 LiuAnclouds / Kangjie Xu / D-Robotics
 
-#include "locateanything_runtime/position_ids.hpp"
+#include "position_ids.hpp"
 
 namespace locateanything_runtime {
 

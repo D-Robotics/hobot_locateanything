@@ -83,7 +83,3 @@ build:
     prefill: 4
     pbd: 4
     ar: 4
-
-verification:
-  iou_threshold: 0.9
-  reference_jsonl: artifacts/evaluation/current/selected.jsonl

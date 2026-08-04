@@ -1,10 +1,4 @@
-"""LocateAnything language-only compile Api — self-contained, no
-Qwen2_5_VLTextModel dependency at runtime.
-
-Uses `leap_llm.models.locateanything.text_model_leap.LocateAnythingTextModel`,
-whose classes were copied from qwen2_5_vl at authoring time and now live
-entirely in the locateanything/ tree (rename + minor adaptations: 1D rope,
-tied lm_head, PBD-aware attention_mask input).
+"""Compile the LocateAnything Language model with the Leap DSL.
 
 Produces:
   LocateAnything-3B_language_chunk_{chunk}_cache_{cache}_
