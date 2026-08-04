@@ -114,11 +114,26 @@ for required in \
   "$TOKENIZER_DIR/tokenizer.json"; do
   [[ -f $required && -r $required ]] || die "runtime payload file is missing: $required"
 done
+
 [[ -z $IDENTITY_FILE || -f $IDENTITY_FILE ]] || die "identity file is missing: $IDENTITY_FILE"
 
 for command in python3 sha256sum stat tar mktemp; do
   command -v "$command" >/dev/null 2>&1 || die "required command is unavailable: $command"
 done
+
+CRLF_SCRIPT=$(python3 - "$DEPLOY_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for path in sorted(root.rglob("*")):
+    if path.is_file() and (path.suffix == ".sh" or path.name == "LocateAnything"):
+        if b"\r" in path.read_bytes():
+            print(path)
+            break
+PY
+)
+[[ -z $CRLF_SCRIPT ]] || die "deployment shell script contains CRLF line endings: $CRLF_SCRIPT"
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/la-s600-deploy.XXXXXXXX")
 trap 'rm -rf -- "$WORK_DIR"' EXIT

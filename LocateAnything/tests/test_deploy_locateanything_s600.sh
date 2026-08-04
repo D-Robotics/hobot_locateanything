@@ -34,6 +34,23 @@ grep -q '\[deploy\]\[DRY-RUN\].*no SSH/SCP command was run' <<<"$OUTPUT"
 grep -q '/home/test/releases/la-test-001' <<<"$OUTPUT"
 grep -q 'artifacts/LocateAnything-3B_vision.hbm' <<<"$OUTPUT"
 
+printf '#!/bin/sh\r\nexit 0\r\n' >"$WORK_DIR/deploy/LocateAnything"
+if bash "$DEPLOY_SCRIPT" \
+  --release la-test-crlf \
+  --vision-hbm "$WORK_DIR/vision.hbm" \
+  --language-hbm "$WORK_DIR/language.hbm" \
+  --embed-bin "$WORK_DIR/embed.bin" \
+  --runtime-config "$WORK_DIR/config.json" \
+  --deploy-dir "$WORK_DIR/deploy" \
+  --tokenizer-dir "$WORK_DIR/tokenizer" \
+  --ssh-target test@s600 \
+  --dest-root /home/test/releases >"$WORK_DIR/crlf.log" 2>&1; then
+  echo "deployment with CRLF shell entrypoint unexpectedly passed" >&2
+  exit 1
+fi
+grep -q 'deployment shell script contains CRLF line endings' "$WORK_DIR/crlf.log"
+cp "$SCRIPT_DIR/../deploy/LocateAnything" "$WORK_DIR/deploy/LocateAnything"
+
 python3 - "$WORK_DIR/config.json" <<'PY'
 import json
 import sys
