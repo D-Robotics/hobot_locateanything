@@ -40,31 +40,7 @@ from leap_llm.language_graphs import (  # noqa: E402
     LANGUAGE_GRAPH_SET_NAMES,
     language_graph_set,
 )
-EXPECTED_CALIBRATION_TASK_COUNTS = {
-    "detection": 660,
-    "gui": 150,
-    "referring": 120,
-    "ocr": 120,
-    "layout": 90,
-    "pointing": 60,
-}
-EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS = {
-    "coco_detection": 240,
-    "openimages_v6": 90,
-    "v3det": 60,
-    "paco": 50,
-    "bdd100k": 50,
-    "egoobjects": 40,
-    "humanparts": 40,
-    "mot17det": 45,
-    "mot20det": 45,
-    "groundcua": 150,
-    "refcocog": 120,
-    "hiertext": 120,
-    "doclaynet": 90,
-    "pixmo_points": 60,
-}
-EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
+CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
 PATH_ENV_OVERRIDES = {
     "model": "LA_MODEL_PATH",
     "upstream_source": "LA_UPSTREAM_SOURCE",
@@ -116,6 +92,12 @@ def _positive_int(value: Any, name: str) -> int:
     return value
 
 
+def _positive_int_or_auto(value: Any, name: str) -> int | None:
+    if value == "auto":
+        return None
+    return _positive_int(value, name)
+
+
 def validate_config(config: Mapping[str, Any]) -> None:
     if config.get("schema_version") != 1:
         raise ConfigurationError("schema_version must be 1")
@@ -149,13 +131,15 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("hidden_size=2048 and vocab_size=152681 are fixed model specifications")
 
     calibration = _mapping(config.get("calibration"), "calibration")
-    sample_count = _positive_int(calibration.get("sample_count"), "calibration.sample_count")
-    checkpoint = _positive_int(
+    sample_count = _positive_int_or_auto(
+        calibration.get("sample_count"), "calibration.sample_count"
+    )
+    checkpoint = _positive_int_or_auto(
         calibration.get("checkpoint_samples"), "calibration.checkpoint_samples"
     )
-    if sample_count != 1200 or checkpoint != 512:
+    if sample_count is not None and checkpoint is not None and checkpoint >= sample_count:
         raise ConfigurationError(
-            "release calibration requires sample_count=1200 and checkpoint_samples=512"
+            "calibration.checkpoint_samples must be smaller than calibration.sample_count"
         )
     if calibration.get("max_new_tokens") != 1024:
         raise ConfigurationError("release calibration requires max_new_tokens=1024")
@@ -165,16 +149,6 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("release Prepare tensors require bfloat16")
     if calibration.get("calibrate_dtype") != "float16":
         raise ConfigurationError("release activation calibration requires float16")
-    if calibration.get("task_counts") != EXPECTED_CALIBRATION_TASK_COUNTS:
-        raise ConfigurationError("release calibration task_counts do not match the 1200-sample profile")
-    if calibration.get("source_role_counts") != EXPECTED_CALIBRATION_SOURCE_ROLE_COUNTS:
-        raise ConfigurationError(
-            "release calibration source_role_counts do not match the 1200-sample profile"
-        )
-    if calibration.get("coco_stratum_counts") != EXPECTED_COCO_STRATUM_COUNTS:
-        raise ConfigurationError(
-            "release calibration coco_stratum_counts do not match the 500-sample COCO profile"
-        )
 
     language = _mapping(config.get("language"), "language")
     chunk_size = _positive_int(language.get("chunk_size"), "language.chunk_size")
@@ -253,6 +227,52 @@ def resolve_path(config: Mapping[str, Any], key: str, override: str | None = Non
         raw = _mapping(config["paths"], "paths")[key]
         return _resolve_config_path(raw, root_override=PATH_ROOT_OVERRIDES.get(key))
     return _resolve_config_path(raw)
+
+
+def jsonl_record_count(path: Path) -> int:
+    try:
+        count = sum(
+            bool(line.strip())
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
+    except OSError as exc:
+        raise ConfigurationError(f"cannot read calibration data {path}: {exc}") from exc
+    if count == 0:
+        raise ConfigurationError(f"calibration data is empty: {path}")
+    return count
+
+
+def calibration_sample_count(
+    config: Mapping[str, Any], manifest: Path, override: int | None = None
+) -> int:
+    if override is not None:
+        return _positive_int(override, "--max-samples")
+    configured = _positive_int_or_auto(
+        _mapping(config["calibration"], "calibration").get("sample_count"),
+        "calibration.sample_count",
+    )
+    return configured if configured is not None else jsonl_record_count(manifest)
+
+
+def calibration_checkpoint(
+    config: Mapping[str, Any], sample_count: int, override: int | None = None
+) -> int:
+    configured = (
+        _positive_int(override, "--checkpoint-samples")
+        if override is not None
+        else _positive_int_or_auto(
+            _mapping(config["calibration"], "calibration").get("checkpoint_samples"),
+            "calibration.checkpoint_samples",
+        )
+    )
+    if sample_count < 2:
+        raise ConfigurationError("activation calibration requires at least two samples")
+    if configured is None:
+        eligible = [value for value in CONVERGENCE_CHECKPOINTS if value < sample_count]
+        configured = max(eligible, default=max(1, sample_count // 2))
+    if configured >= sample_count:
+        raise ConfigurationError("checkpoint samples must be smaller than sample count")
+    return configured
 
 
 def select_components(value: str) -> tuple[str, ...]:
@@ -345,16 +365,14 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
     language = _mapping(config["language"], "language")
     build = _mapping(config["build"], "build")
     graph_set = selected_graph_set(args, config)
-    requested_samples = args.max_samples or calibration["sample_count"]
-    requested_checkpoint = args.checkpoint_samples or calibration["checkpoint_samples"]
-    if requested_samples != 1200 or requested_checkpoint != 512:
-        raise ConfigurationError(
-            "release calibration fixes --max-samples=1200 and "
-            "--checkpoint-samples=512"
-        )
+    generated_jsonl = resolve_path(config, "generated_jsonl", args.generated_jsonl)
+    requested_samples = calibration_sample_count(config, generated_jsonl, args.max_samples)
+    requested_checkpoint = calibration_checkpoint(
+        config, requested_samples, args.checkpoint_samples
+    )
     env = common_env(config, args.progress)
     env.update({
-        "GENERATED_JSONL": str(resolve_path(config, "generated_jsonl", args.generated_jsonl)),
+        "GENERATED_JSONL": str(generated_jsonl),
         "SELECTED_JSONL": str(resolve_path(config, "selected_jsonl", args.selected_jsonl)),
         "UPSTREAM_REPO": str(
             resolve_path(config, "upstream_source", args.upstream_source)
@@ -396,6 +414,8 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
     build = _mapping(config["build"], "build")
     cores = _mapping(build["cores"], "build.cores")
     graph_set = selected_graph_set(args, config)
+    generated_jsonl = resolve_path(config, "generated_jsonl")
+    expected_samples = calibration_sample_count(config, generated_jsonl)
     build_root = resolve_path(config, "build_root", args.output_dir)
     log_root = resolve_path(config, "log_root")
     bash = str(build.get("bash", "bash"))
@@ -407,10 +427,10 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "INPUT_MODEL_PATH": str(resolve_path(config, "model", args.model_path)),
             "OUTPUT_MODEL_PATH": str(output),
             "CALIB_JSON": str(resolve_path(config, "selected_jsonl")),
-            "GENERATED_JSON": str(resolve_path(config, "generated_jsonl")),
+            "GENERATED_JSON": str(generated_jsonl),
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
             "CALIBRATION_COVERAGE_JSON": str(resolve_path(config, "coverage_json")),
-            "EXPECTED_SAMPLES": str(calibration["sample_count"]),
+            "EXPECTED_SAMPLES": str(expected_samples),
             "DEVICE": args.device or str(build["device"]),
             "MARCH": str(build["march"]),
             "JOBS": str(build["jobs"]),
@@ -457,16 +477,18 @@ def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pla
     model = _mapping(config["model"], "model")
     component = "full" if args.component == "all" else args.component
     graph_set = selected_graph_set(args, config)
+    selected_jsonl = resolve_path(config, "selected_jsonl")
+    expected_samples = calibration_sample_count(config, selected_jsonl)
     specification_command = [
         python_command(config),
         str(VALIDATE_SCRIPTS / "deployment.py"),
         "--component", component,
-        "--selected-jsonl", str(resolve_path(config, "selected_jsonl")),
+        "--selected-jsonl", str(selected_jsonl),
         "--generated-jsonl", str(resolve_path(config, "generated_jsonl")),
         "--scale-manifest", str(resolve_path(config, "scale_manifest")),
         "--coverage-json", str(resolve_path(config, "coverage_json")),
         "--model-path", str(resolve_path(config, "model")),
-        "--expected-samples", str(calibration["sample_count"]),
+        "--expected-samples", str(expected_samples),
         "--image-width", str(model["image_width"]),
         "--image-height", str(model["image_height"]),
         "--chunk-size", str(language["chunk_size"]),

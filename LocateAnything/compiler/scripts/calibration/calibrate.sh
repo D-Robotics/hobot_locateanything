@@ -8,15 +8,15 @@ Run LocateAnything activation calibration.
 
 Required variables:
   GENERATED_JSONL  prepared calibration index
-  SELECTED_JSONL   frozen 1200-sample dataset index
+  SELECTED_JSONL   calibration dataset index
   UPSTREAM_REPO    frozen LocateAnything Float source tree
   OUTPUT_DIR       activation statistics output directory
+  MAX_SAMPLES      number of records in the prepared dataset
+  CHECKPOINT_SAMPLES  convergence checkpoint smaller than MAX_SAMPLES
 
-Release defaults:
+Model defaults:
   MODEL_PATH          artifacts/models/LocateAnything-3B
   CALIBRATION_COMPONENT  all
-  MAX_SAMPLES         1200
-  CHECKPOINT_SAMPLES  512
   CHUNK_SIZE          1024
   CACHE_LEN           4096
   LANGUAGE_GRAPH_SET   standard (Prefill + PBD q6 + repeated AR q1)
@@ -46,8 +46,8 @@ CALIBRATION_COMPONENT=${CALIBRATION_COMPONENT:-all}
 LM_HEAD_W_BITS=${LM_HEAD_W_BITS:-8}
 REPLAY_SEED=${REPLAY_SEED:-20260729}
 LANGUAGE_GRAPH_SET=${LANGUAGE_GRAPH_SET:-standard}
-MAX_SAMPLES=${MAX_SAMPLES:-1200}
-CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:-512}
+MAX_SAMPLES=${MAX_SAMPLES:?set MAX_SAMPLES to the prepared dataset size}
+CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:?set CHECKPOINT_SAMPLES below MAX_SAMPLES}
 IMAGE_TOKEN_ID=${IMAGE_TOKEN_ID:-151665}
 HIDDEN_ROTATION_PATH=${HIDDEN_ROTATION_PATH:-}
 PREFLIGHT_ONLY=${PREFLIGHT_ONLY:-0}
@@ -281,8 +281,6 @@ if max_samples <= 0:
     errors.append("MAX_SAMPLES must be positive")
 if checkpoint <= 0 or checkpoint >= max_samples:
     errors.append("CHECKPOINT_SAMPLES must be positive and smaller than MAX_SAMPLES")
-if max_samples != 1200 or checkpoint != 512:
-    errors.append("release calibration requires MAX_SAMPLES=1200 and CHECKPOINT_SAMPLES=512")
 if component not in {"all", "vision", "language"}:
     errors.append(
         "CALIBRATION_COMPONENT must be all, vision, or language; "

@@ -12,14 +12,6 @@ from collections import Counter
 from pathlib import Path
 
 
-TASK_COUNTS = {
-    "detection": 660,
-    "gui": 150,
-    "referring": 120,
-    "ocr": 120,
-    "layout": 90,
-    "pointing": 60,
-}
 CALIBRATION_REQUIRED = ("current/source/selected.jsonl",)
 HBM_REQUIRED = (
     "LocateAnything-3B_vision.hbm",
@@ -73,10 +65,8 @@ def validate_calibration(root: Path) -> dict[str, object]:
             if not image.is_file() or image.stat().st_size == 0:
                 raise AssetError(f"selected.jsonl line {line_number} image is missing: {image_value}")
             image_count += 1
-    if image_count != 1200:
-        raise AssetError(f"selected.jsonl contains {image_count} records; expected 1200")
-    if dict(counts) != TASK_COUNTS:
-        raise AssetError(f"task counts are {dict(counts)}; expected {TASK_COUNTS}")
+    if image_count == 0:
+        raise AssetError("selected.jsonl contains no records")
 
     generated = root / "current" / "generated" / "generated.jsonl"
     generated_count = 0
@@ -107,8 +97,11 @@ def validate_calibration(root: Path) -> dict[str, object]:
                         f"generated.jsonl line {line_number} tensor is missing: {tensor_value}"
                     )
                 generated_count += 1
-        if generated_count != 1200:
-            raise AssetError(f"generated.jsonl contains {generated_count} records; expected 1200")
+        if generated_count != image_count:
+            raise AssetError(
+                f"generated.jsonl contains {generated_count} records; "
+                f"selected.jsonl contains {image_count}"
+            )
     return {
         "kind": "calibration",
         "root": str(root.resolve()),

@@ -56,8 +56,8 @@ from report import generate_activation_report  # noqa: E402
 
 
 STANDARD_CONVERGENCE_CHECKPOINTS = (64, 128, 256, 512)
-RELEASE_SAMPLE_COUNT = 1200
-RELEASE_CONVERGENCE_CHECKPOINT = 512
+
+
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -188,10 +188,8 @@ def run(args: argparse.Namespace) -> int:
         raise RuntimeError("release activation calibration requires lm_head W8")
     if args.dtype != "float16":
         raise RuntimeError("release activation calibration requires float16")
-    if args.max_samples != RELEASE_SAMPLE_COUNT:
-        raise RuntimeError(
-            f"release activation calibration requires {RELEASE_SAMPLE_COUNT} samples"
-        )
+    if args.max_samples <= 0:
+        raise RuntimeError("activation calibration requires a positive sample count")
     if args.chunk_size != 1024 or args.cache_len != 4096:
         raise RuntimeError(
             "release activation calibration requires chunk_size=1024 and cache_len=4096"
@@ -210,7 +208,7 @@ def run(args: argparse.Namespace) -> int:
         model_path=args.model_path,
         prepare_source_path=Path(__file__).with_name("prepare.py"),
         upstream_repo=args.upstream_repo,
-        expected_sample_count=RELEASE_SAMPLE_COUNT,
+        expected_sample_count=args.max_samples,
     )
     if prepare_errors:
         raise RuntimeError(
@@ -229,10 +227,9 @@ def run(args: argparse.Namespace) -> int:
         skipped_checkpoints,
         legacy_checkpoint,
     ) = resolve_convergence_checkpoints(args.checkpoint_samples, len(records))
-    if legacy_checkpoint != RELEASE_CONVERGENCE_CHECKPOINT:
+    if legacy_checkpoint >= len(records):
         raise RuntimeError(
-            "release activation calibration requires the 512-sample "
-            "convergence checkpoint"
+            "the convergence checkpoint must be smaller than the full sample count"
         )
     snapshot_samples = sorted(set([*evaluated_checkpoints, len(records)]))
     device = torch.device(args.device)
@@ -746,7 +743,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chunk-size", type=int, default=1024)
     result.add_argument("--cache-len", type=int, default=4096)
     result.add_argument("--lm-head-w-bits", type=int, choices=[8], default=8)
-    result.add_argument("--max-samples", type=int, default=RELEASE_SAMPLE_COUNT)
+    result.add_argument("--max-samples", type=int, required=True)
     result.add_argument(
         "--checkpoint-samples",
         default="64,128,256,512",

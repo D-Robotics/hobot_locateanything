@@ -54,35 +54,8 @@ EXPECTED_TOKEN_IDS = {
     "<null>": 152678,
     "<switch>": 152679,
 }
-EXPECTED_SAMPLE_COUNT = 1200
-EXPECTED_TASK_COUNTS = {
-    "detection": 660,
-    "gui": 150,
-    "referring": 120,
-    "ocr": 120,
-    "layout": 90,
-    "pointing": 60,
-}
-EXPECTED_SOURCE_ROLE_COUNTS = {
-    "coco_detection": 240,
-    "openimages_v6": 90,
-    "v3det": 60,
-    "paco": 50,
-    "bdd100k": 50,
-    "egoobjects": 40,
-    "humanparts": 40,
-    "mot17det": 45,
-    "mot20det": 45,
-    "groundcua": 150,
-    "refcocog": 120,
-    "hiertext": 120,
-    "doclaynet": 90,
-    "pixmo_points": 60,
-}
-EXPECTED_COCO_STRATUM_COUNTS = {"single": 80, "double": 100, "multi": 60}
 BOX_RE = re.compile(r"<box>(.*?)</box>")
 COORD_RE = re.compile(r"<([0-9]{1,4})>")
-REF_RE = re.compile(r"<ref>(.*?)</ref>")
 
 
 class PreflightError(RuntimeError):
@@ -130,8 +103,10 @@ def load_contract(path: Path) -> dict[str, Any]:
 
 
 def integer_counts(value: Any, name: str) -> dict[str, int]:
-    if not isinstance(value, dict) or not value:
-        raise PreflightError(f"{name} must be a non-empty mapping")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PreflightError(f"{name} must be a mapping")
     counts: dict[str, int] = {}
     for key, count in value.items():
         if type(count) is not int or count < 0:
@@ -140,7 +115,7 @@ def integer_counts(value: Any, name: str) -> dict[str, int]:
     return counts
 
 
-def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
+def calibration_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     calibration = config.get("calibration")
     model = config.get("model")
     language = config.get("language")
@@ -157,18 +132,15 @@ def release_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     strata = integer_counts(
         calibration.get("coco_stratum_counts"), "calibration.coco_stratum_counts"
     )
-    samples = int(calibration.get("sample_count", 0))
-    if samples != EXPECTED_SAMPLE_COUNT:
-        raise PreflightError(f"release calibration requires {EXPECTED_SAMPLE_COUNT} samples")
-    if task_counts != EXPECTED_TASK_COUNTS:
-        raise PreflightError("calibration.task_counts does not match the release profile")
-    if role_counts != EXPECTED_SOURCE_ROLE_COUNTS:
-        raise PreflightError("calibration.source_role_counts does not match the release profile")
-    if strata != EXPECTED_COCO_STRATUM_COUNTS:
-        raise PreflightError("calibration.coco_stratum_counts does not match the release profile")
-    if sum(task_counts.values()) != samples or sum(role_counts.values()) != samples:
-        raise PreflightError("task/source-role counts must each sum to sample_count")
-    if sum(strata.values()) != role_counts.get("coco_detection"):
+    sample_setting = calibration.get("sample_count", "auto")
+    samples = None if sample_setting == "auto" else int(sample_setting)
+    if samples is not None and samples <= 0:
+        raise PreflightError("calibration.sample_count must be positive or auto")
+    if task_counts and samples is not None and sum(task_counts.values()) != samples:
+        raise PreflightError("calibration.task_counts must sum to sample_count")
+    if role_counts and samples is not None and sum(role_counts.values()) != samples:
+        raise PreflightError("calibration.source_role_counts must sum to sample_count")
+    if strata and role_counts and sum(strata.values()) != role_counts.get("coco_detection"):
         raise PreflightError("COCO strata must sum to the COCO source-role count")
 
     width = int(model.get("image_width", 0))
@@ -269,63 +241,6 @@ def validate_target(response: str, context: str) -> None:
             raise PreflightError(f"{context}: coordinate outside [0, 1000]")
 
 
-def validate_prompt_target(record: Mapping[str, Any], context: str) -> None:
-    task = str(record.get("task") or "")
-    prompt = str(record.get("prompt") or "")
-    response = str(record.get("target_response") or "")
-    references = REF_RE.findall(response)
-
-    category_prefixes = {
-        "detection": "Locate all the instances that matches the following description: ",
-        "layout": "Locate all the instances that matches the following description: ",
-    }
-    if task in category_prefixes:
-        prefix = category_prefixes[task]
-        if not prompt.startswith(prefix) or not prompt.endswith("."):
-            raise PreflightError(f"{context}: non-canonical {task} prompt")
-        categories = prompt[len(prefix):-1].split("</c>")
-        if not categories or any(not category for category in categories):
-            raise PreflightError(f"{context}: empty category in {task} prompt")
-        if set(references) != set(categories):
-            raise PreflightError(
-                f"{context}: target references do not match requested {task} categories"
-            )
-        return
-
-    if task == "referring":
-        prefixes = (
-            "Locate a single instance that matches the following description: ",
-            "Locate all the instances that match the following description: ",
-        )
-        prefix = next((value for value in prefixes if prompt.startswith(value)), None)
-        expected = prompt[len(prefix):-1] if prefix and prompt.endswith(".") else None
-        if expected is None or references != [expected]:
-            raise PreflightError(f"{context}: referring prompt/target contract mismatch")
-        return
-
-    if task == "pointing":
-        prefix = "Point to: "
-        expected = prompt[len(prefix):-1] if prompt.startswith(prefix) and prompt.endswith(".") else None
-        if expected is None or references != [expected]:
-            raise PreflightError(f"{context}: pointing prompt/target contract mismatch")
-        return
-
-    if task == "ocr":
-        if prompt != "Detect all the text in box format." or not references:
-            raise PreflightError(f"{context}: OCR prompt/target contract mismatch")
-        return
-
-    if task == "gui":
-        valid_prefix = prompt.startswith("Point to: ") or prompt.startswith(
-            "Locate the region that matches the following description: "
-        )
-        if not valid_prefix or len(references) != 1:
-            raise PreflightError(f"{context}: GUI prompt/target contract mismatch")
-        return
-
-    raise PreflightError(f"{context}: unsupported task {task!r}")
-
-
 def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     try:
         from PIL import Image
@@ -336,7 +251,7 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
     if not path.is_file():
         raise PreflightError(f"selected manifest is not a file: {path}")
     records = read_jsonl(path)
-    if len(records) != profile["sample_count"]:
+    if profile["sample_count"] is not None and len(records) != profile["sample_count"]:
         raise PreflightError(
             f"selected manifest has {len(records)} records, expected {profile['sample_count']}"
         )
@@ -358,28 +273,19 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         line = record.pop("_line")
         context = f"{path}:{line}"
         task = str(record.get("task") or "")
-        split = str(record.get("split") or "").lower()
         prompt = str(record.get("prompt") or "")
         bundle_id = str(record.get("bundle_id") or "")
         image_value = str(record.get("image") or "")
         if not task or not prompt or not bundle_id or not image_value:
             raise PreflightError(f"{context}: missing task/prompt/bundle_id/image")
-        if split != "train":
-            raise PreflightError(f"{context}: release calibration requires split=train")
         if bundle_id in bundle_ids:
             raise PreflightError(f"{context}: duplicate bundle_id {bundle_id}")
-        image_relative = Path(image_value)
-        if image_relative.is_absolute():
-            raise PreflightError(f"{context}: frozen bundle image path must be relative")
-        image_path = (root / image_relative).resolve()
-        try:
-            image_path.relative_to(root)
-        except ValueError as exc:
-            raise PreflightError(f"{context}: image escapes the bundle root") from exc
+        image_path = Path(image_value).expanduser()
+        if not image_path.is_absolute():
+            image_path = root / image_path
+        image_path = image_path.resolve()
         if not image_path.is_file():
             raise PreflightError(f"{context}: image is not a file: {image_path}")
-        if image_path in image_paths:
-            raise PreflightError(f"{context}: duplicate image path {image_value}")
         try:
             with Image.open(image_path) as source_image:
                 source_image.load()
@@ -389,11 +295,11 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
             raise PreflightError(f"{context}: image cannot be decoded: {image_path}") from exc
         recorded_width = record.get("source_width")
         recorded_height = record.get("source_height")
-        if recorded_width is None or recorded_height is None:
-            raise PreflightError(f"{context}: source_width/source_height are required")
-        if (int(recorded_width), int(recorded_height)) != (
-            decoded_width,
-            decoded_height,
+        if (
+            recorded_width is not None
+            and recorded_height is not None
+            and (int(recorded_width), int(recorded_height))
+            != (decoded_width, decoded_height)
         ):
             raise PreflightError(
                 f"{context}: recorded image size "
@@ -403,12 +309,12 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         record["_preflight_image_path"] = str(image_path)
 
         target_response = str(record.get("target_response") or "")
-        validate_target(target_response, context)
+        if target_response:
+            validate_target(target_response, context)
         box_groups = target_response.count("<box>")
         null_output_records += int("<box>None</box>" in target_response)
         multi_box_records += int(box_groups > 1)
         max_box_groups = max(max_box_groups, box_groups)
-        validate_prompt_target(record, context)
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         role = str(metadata.get("calibration_source_role") or "unknown")
         tasks[task] += 1
@@ -428,7 +334,7 @@ def audit_manifest(path: Path, profile: Mapping[str, Any]) -> tuple[dict[str, An
         ("source-role counts", dict(roles), profile["source_role_counts"]),
         ("COCO strata", dict(strata), profile["coco_stratum_counts"]),
     ):
-        if actual != expected:
+        if expected and actual != expected:
             raise PreflightError(f"{label} {actual} != {expected}")
     return ({
         "passed": True,
@@ -629,7 +535,7 @@ def audit_runtime_tokenizer(
         bundle_id = str(record.get("bundle_id"))
         cases = [
             ("prompt", str(record["prompt"]), False),
-            ("target_response", str(record["target_response"]), False),
+            ("target_response", str(record.get("target_response") or ""), False),
         ]
         if processor is not None and visual_tokens is not None:
             messages = [{
@@ -874,7 +780,7 @@ def audit_processor(
             tokenizer(expanded, add_special_tokens=False, return_attention_mask=False)
         )
         target_ids = flatten_ids(tokenizer(
-            str(record["target_response"]),
+            str(record.get("target_response") or ""),
             add_special_tokens=False,
             return_attention_mask=False,
         ))
@@ -929,7 +835,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        profile = release_profile(load_contract(args.config.resolve()))
+        profile = calibration_profile(load_contract(args.config.resolve()))
         dependencies = audit_dependencies()
         manifest, records = audit_manifest(args.selected_jsonl, profile)
         model = audit_model(args.model_path, profile)
@@ -948,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                 "model_weights_loaded": False,
                 "gpu_inference": False,
             },
-            "release_profile": profile,
+            "calibration_profile": profile,
             "dependencies": dependencies,
             "manifest": manifest,
             "model": model,

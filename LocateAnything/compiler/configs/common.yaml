@@ -18,34 +18,8 @@ model:
   vocab_size: 152681
 
 calibration:
-  sample_count: 1200
-  checkpoint_samples: 512
-  task_counts:
-    detection: 660
-    gui: 150
-    referring: 120
-    ocr: 120
-    layout: 90
-    pointing: 60
-  source_role_counts:
-    coco_detection: 240
-    openimages_v6: 90
-    v3det: 60
-    paco: 50
-    bdd100k: 50
-    egoobjects: 40
-    humanparts: 40
-    mot17det: 45
-    mot20det: 45
-    groundcua: 150
-    refcocog: 120
-    hiertext: 120
-    doclaynet: 90
-    pixmo_points: 60
-  coco_stratum_counts:
-    single: 80
-    double: 100
-    multi: 60
+  sample_count: auto
+  checkpoint_samples: auto
   device: cuda:0
   prepare_dtype: bfloat16
   calibrate_dtype: float16

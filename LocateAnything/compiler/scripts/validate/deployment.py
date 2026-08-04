@@ -26,28 +26,6 @@ from compiler.leap_llm.language_graphs import (  # noqa: E402
     normalize_graph_set_metadata,
 )
 
-TASKS = ("detection", "gui", "referring", "ocr", "layout", "pointing")
-RELEASE_SAMPLE_COUNT = 1200
-RELEASE_CHECKPOINT_SAMPLES = 512
-RELEASE_TASK_COUNTS = {
-    "detection": 660,
-    "gui": 150,
-    "referring": 120,
-    "ocr": 120,
-    "layout": 90,
-    "pointing": 60,
-}
-RELEASE_DETECTION_SOURCE_COUNTS = {
-    "coco_detection": 240,
-    "openimages_v6": 90,
-    "v3det": 60,
-    "paco": 50,
-    "bdd100k": 50,
-    "egoobjects": 40,
-    "humanparts": 40,
-    "mot17det": 45,
-    "mot20det": 45,
-}
 COMPONENT_GROUPS = {
     "full": ("vision", "language"),
     "vision": ("vision",),
@@ -153,44 +131,7 @@ def nonnegative_count_mapping(
     return {str(key): count for key, count in value.items()}
 
 
-def release_distribution_errors(
-    expected_samples: int | None,
-    task_counts: dict[str, int],
-    detection_source_counts: dict[str, int],
-) -> list[str]:
-    if expected_samples != RELEASE_SAMPLE_COUNT:
-        return []
-    errors = []
-    if task_counts != RELEASE_TASK_COUNTS:
-        errors.append(
-            "release task counts mismatch: "
-            f"selected={task_counts} expected={RELEASE_TASK_COUNTS}"
-        )
-    if detection_source_counts != RELEASE_DETECTION_SOURCE_COUNTS:
-        errors.append(
-            "release Detection source counts mismatch: "
-            f"selected={detection_source_counts} "
-            f"expected={RELEASE_DETECTION_SOURCE_COUNTS}"
-        )
-    return errors
-
-
-def release_convergence_checkpoint_errors(
-    expected_samples: int | None,
-    checkpoint_samples: Any,
-) -> list[str]:
-    if (
-        expected_samples == RELEASE_SAMPLE_COUNT
-        and checkpoint_samples != RELEASE_CHECKPOINT_SAMPLES
-    ):
-        return [
-            "release checkpoint_samples mismatch: "
-            f"selected={checkpoint_samples} expected={RELEASE_CHECKPOINT_SAMPLES}"
-        ]
-    return []
-
-
-def release_identity_errors(
+def calibration_identity_errors(
     *,
     expected_samples: int | None,
     selected_jsonl: Path,
@@ -202,7 +143,7 @@ def release_identity_errors(
     prepare_source_path: Path | None = None,
 ) -> list[str]:
     """Verify the structural inputs needed to reuse calibration artifacts."""
-    if expected_samples != RELEASE_SAMPLE_COUNT:
+    if expected_samples is None:
         return []
 
     errors: list[str] = []
@@ -219,19 +160,23 @@ def release_identity_errors(
                 generated_jsonl=generated_jsonl,
                 model_path=model_path,
                 prepare_source_path=source_path,
-                expected_sample_count=RELEASE_SAMPLE_COUNT,
+                expected_sample_count=expected_samples,
             )
         )
+    checkpoint = scale.get("checkpoint_samples")
     durable = [
         scale_manifest_path,
         scale_manifest_path.parent / "calibration_graph_coverage.json",
         scale_manifest_path.parent / "scale_convergence.json",
-        scale_manifest_path.parent
-        / f"scale_convergence_{RELEASE_CHECKPOINT_SAMPLES}_vs_{RELEASE_SAMPLE_COUNT}.json",
     ]
+    if type(checkpoint) is int and 0 < checkpoint < expected_samples:
+        durable.append(
+            scale_manifest_path.parent
+            / f"scale_convergence_{checkpoint}_vs_{expected_samples}.json"
+        )
     missing = [str(path) for path in durable if not path.is_file()]
     if missing:
-        errors.append("release calibration artifacts are incomplete: " + ", ".join(missing))
+        errors.append("calibration artifacts are incomplete: " + ", ".join(missing))
     return errors
 
 
@@ -303,11 +248,11 @@ def main() -> int:
     generated_ids = record_ids(generated, "generated manifest", errors)
     if selected_ids != generated_ids:
         errors.append("selected/generated bundle_id order differs")
-    if len(selected) < 256 or len(generated) != len(selected):
+    if not selected or len(generated) != len(selected):
         errors.append(f"invalid record counts: selected={len(selected)} generated={len(generated)}")
     if args.expected_samples is not None and len(selected) != args.expected_samples:
         errors.append(
-            f"release sample count mismatch: selected={len(selected)} "
+            f"sample count mismatch: selected={len(selected)} "
             f"expected={args.expected_samples}"
         )
 
@@ -322,19 +267,6 @@ def main() -> int:
                 break
 
     selected_tasks = dict(Counter(str(row.get("task")) for row in selected))
-    if set(selected_tasks) != set(TASKS):
-        errors.append(f"selected manifest does not cover all six tasks: {selected_tasks}")
-    selected_detection_sources = dict(Counter(
-        str((row.get("metadata") or {}).get("calibration_source_role") or "missing")
-        for row in selected
-        if row.get("task") == "detection"
-    ))
-    release_gate = args.expected_samples == RELEASE_SAMPLE_COUNT
-    errors.extend(release_distribution_errors(
-        args.expected_samples,
-        selected_tasks,
-        selected_detection_sources,
-    ))
 
     expected_profile = {
         "image_width": args.image_width,
@@ -366,7 +298,7 @@ def main() -> int:
         else:
             generated_mode_counts.update(str(mode) for mode in prediction)
 
-    errors.extend(release_identity_errors(
+    errors.extend(calibration_identity_errors(
         expected_samples=args.expected_samples,
         selected_jsonl=args.selected_jsonl,
         generated_jsonl=args.generated_jsonl,
@@ -396,9 +328,6 @@ def main() -> int:
         checkpoint = scale.get("checkpoint_samples")
         if type(checkpoint) is not int or not 0 < checkpoint < len(generated):
             errors.append("calibration scale manifest checkpoint_samples is invalid")
-        errors.extend(
-            release_convergence_checkpoint_errors(args.expected_samples, checkpoint)
-        )
         activation_audits = coverage.get(
             "activation_statistics_audit",
             coverage.get("observer_audit", {}),
@@ -706,8 +635,6 @@ def main() -> int:
     print(f"[PASS] selected_records={len(selected)}")
     print(f"[PASS] generated_records={len(generated)}")
     print(f"[PASS] task_counts={selected_tasks}")
-    if release_gate:
-        print(f"[PASS] detection_source_counts={selected_detection_sources}")
     print(f"[PASS] generation_mode_counts={dict(generated_mode_counts)}")
     print(f"[PASS] scale_manifest={args.scale_manifest}")
     print(f"[PASS] coverage={args.coverage_json}")

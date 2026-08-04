@@ -17,7 +17,7 @@ W_BITS="${W_BITS:-8}"
 # Source images are letterboxed by the calibration/runtime preprocessor.
 IMAGE_WIDTH="${IMAGE_WIDTH:-672}"
 IMAGE_HEIGHT="${IMAGE_HEIGHT:-672}"
-EXPECTED_SAMPLES="${EXPECTED_SAMPLES:-1200}"
+EXPECTED_SAMPLES="${EXPECTED_SAMPLES:?set EXPECTED_SAMPLES to the calibrated dataset size}"
 LANGUAGE_GRAPH_SET="${LANGUAGE_GRAPH_SET:-standard}"
 DEVICE="${DEVICE:-cuda:0}"
 VIT_CORE_NUM="${VIT_CORE_NUM:-4}"

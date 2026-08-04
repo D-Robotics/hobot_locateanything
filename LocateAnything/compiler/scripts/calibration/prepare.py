@@ -1038,9 +1038,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
     }
     write_json(output_dir / "generation_summary.json", summary)
 
-    missing_domains = sorted(set(PAPER_TASK_WEIGHTS) - set(task_counts))
-    if missing_domains:
-        raise RuntimeError(f"generated bundle is missing task domains: {missing_domains}")
     if coverage_by_token["<box>"] == 0 or coverage_by_token["</box>"] == 0:
         raise RuntimeError("generated and target responses contain no complete <box> blocks")
 

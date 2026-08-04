@@ -135,7 +135,7 @@ CLI 会为会话中的每次请求创建 `request_0001`、`request_0002` 等独�
 ## 方式二：从零校准和编译
 
 该方式需要 x86_64 CUDA 主机、D-Robotics S600 OELLM 1.0.5 SDK、原始模型和
-1200 条校准数据。
+符合 LocateAnything 输入格式的校准数据。
 
 ### 1. 下载 SDK
 
@@ -161,12 +161,18 @@ python -m pip install -r compiler/requirements-host.txt
 python -m pip install -e compiler --no-deps
 ```
 
-### 3. 下载模型和校准数据
+### 3. 准备模型和校准数据
 
 ```bash
 hf download nvidia/LocateAnything-3B \
   --local-dir artifacts/models/LocateAnything-3B
 
+export LA_UPSTREAM_SOURCE="$PWD/artifacts/upstream/Eagle/Embodied"
+```
+
+校准数据可以使用项目提供的数据，也可以使用自己的数据。下载项目数据：
+
+```bash
 export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
 python deploy/python/huggingface_assets.py download \
   --repo-id "$LA_HF_REPO" \
@@ -174,7 +180,26 @@ python deploy/python/huggingface_assets.py download \
   --local-dir artifacts/huggingface
 
 export LA_CALIBRATION_ROOT="$PWD/artifacts/huggingface/calibration"
-export LA_UPSTREAM_SOURCE="$PWD/artifacts/upstream/Eagle/Embodied"
+```
+
+使用自己的数据时，将目录整理为以下结构，并把 `LA_CALIBRATION_ROOT` 指向
+`calibration` 目录：
+
+```text
+calibration/
+└── current/
+    └── source/
+        ├── selected.jsonl
+        └── images/
+```
+
+`selected.jsonl` 中每条记录只需包含 `bundle_id`、`task`、`image` 和 `prompt`。
+`image` 可以是绝对路径，也可以是相对 `selected.jsonl` 的路径；发布共享数据时建议使用
+相对路径。`source_width`、`source_height` 和 `target_response` 均可选。样本数量和
+收敛检查点由程序根据实际数据自动确定，不要求使用项目数据的任务配额或 Prompt 模板。
+
+```bash
+export LA_CALIBRATION_ROOT="/path/to/calibration"
 ```
 
 ### 4. 使用 `standard` 图集合校准和编译
@@ -255,14 +280,14 @@ Hugging Face 目录只保存校准数据和可部署 HBM：
 hf_assets/
 ├── calibration/
 │   └── current/
-│       └── source/       1200 张选定图片、selected.jsonl 和来源记录
+│       └── source/       选定图片、selected.jsonl 和来源记录
 └── hbm/
     ├── LocateAnything-3B_vision.hbm
     ├── LocateAnything-3B_language.hbm
     └── LocateAnything-3B_embed_tokens.bin
 ```
 
-上传前检查目录结构、样本配额、图片和 HBM 文件是否齐全。`generated/` 不上传，
+上传前检查目录结构、JSONL、图片和 HBM 文件是否齐全。`generated/` 不上传，
 用户执行 Prepare 后会在本地自动生成校准张量：
 
 ```bash
