@@ -3,9 +3,9 @@ schema_version: 1
 paths:
   model: artifacts/models/LocateAnything-3B
   upstream_source: artifacts/upstream/Eagle/Embodied
-  selected_jsonl: artifacts/calibration/current/source/selected.jsonl
-  generated_dir: artifacts/calibration/current/generated
-  generated_jsonl: artifacts/calibration/current/generated/generated.jsonl
+  selected_jsonl: artifacts/calibration/locateanything/source/selected.jsonl
+  generated_dir: artifacts/calibration/locateanything/generated
+  generated_jsonl: artifacts/calibration/locateanything/generated/generated.jsonl
 
 model:
   image_width: 672

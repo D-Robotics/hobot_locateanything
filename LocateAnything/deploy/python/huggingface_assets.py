@@ -12,7 +12,8 @@ from collections import Counter
 from pathlib import Path
 
 
-CALIBRATION_REQUIRED = ("current/source/selected.jsonl",)
+CALIBRATION_DATASET_DIR = "locateanything"
+CALIBRATION_REQUIRED = (f"{CALIBRATION_DATASET_DIR}/source/selected.jsonl",)
 HBM_REQUIRED = (
     "LocateAnything-3B_vision.hbm",
     "LocateAnything-3B_language.hbm",
@@ -36,7 +37,7 @@ def require_files(root: Path, relative_paths: tuple[str, ...]) -> None:
 
 def validate_calibration(root: Path) -> dict[str, object]:
     require_files(root, CALIBRATION_REQUIRED)
-    selected = root / "current" / "source" / "selected.jsonl"
+    selected = root / CALIBRATION_DATASET_DIR / "source" / "selected.jsonl"
     counts: Counter[str] = Counter()
     image_count = 0
     with selected.open("r", encoding="utf-8") as stream:
@@ -68,7 +69,7 @@ def validate_calibration(root: Path) -> dict[str, object]:
     if image_count == 0:
         raise AssetError("selected.jsonl contains no records")
 
-    generated = root / "current" / "generated" / "generated.jsonl"
+    generated = root / CALIBRATION_DATASET_DIR / "generated" / "generated.jsonl"
     generated_count = 0
     if generated.is_file():
         with generated.open("r", encoding="utf-8") as stream:
