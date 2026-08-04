@@ -135,6 +135,8 @@ grep -q 'cmake -S deploy -B deploy/build' "$DEPLOY_SCRIPT"
 grep -q 'runtime_checksums.sha256' "$DEPLOY_SCRIPT"
 grep -q 'test -f tokenizer/tokenizer.json' "$DEPLOY_SCRIPT"
 grep -q '/home/sunrise/oe_locateanything/LocateAnything/artifacts/releases' "$DEPLOY_SCRIPT"
+grep -q 'LA_REMOTE_RELEASE_DIR' "$DEPLOY_SCRIPT"
+grep -q 'generated runtime config contains an unexpected model directory' "$DEPLOY_SCRIPT"
 if grep -Eq 'rsync|scp[^#]*-[A-Za-z]*[a-zA-Z]*C|rm[[:space:]]+-rf.*(DEST_ROOT|STAGING_DIR|target|stage)' "$DEPLOY_SCRIPT"; then
   echo "resume or dangerous remote deletion primitive found" >&2
   exit 1

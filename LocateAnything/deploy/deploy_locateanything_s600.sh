@@ -143,13 +143,16 @@ FINAL_DIR=${DEST_ROOT}/${RELEASE}
 STAGING_DIR=${DEST_ROOT}/.incoming-${RELEASE}
 
 printf '[deploy][1/7] generating version-bound runtime config\n'
-python3 - "$RUNTIME_CONFIG" "$WORK_DIR/config/locateanything_3b_config.json" "$FINAL_DIR" <<'PY'
+MSYS2_ENV_CONV_EXCL=LA_REMOTE_RELEASE_DIR LA_REMOTE_RELEASE_DIR=$FINAL_DIR python3 - \
+  "$RUNTIME_CONFIG" "$WORK_DIR/config/locateanything_3b_config.json" <<'PY'
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
-source, output, release_dir = map(Path, sys.argv[1:])
+source, output = map(Path, sys.argv[1:])
+release_dir = os.environ["LA_REMOTE_RELEASE_DIR"]
 try:
     config = json.loads(source.read_text(encoding="utf-8"))
 except (OSError, json.JSONDecodeError) as exc:
@@ -199,7 +202,7 @@ try:
         raise ValueError
 except (TypeError, ValueError):
     raise SystemExit("runtime config has invalid generation, NMS, telemetry, or startup timeout values")
-base = str(release_dir).rstrip("/")
+base = release_dir.rstrip("/")
 config.update({
     "model_dir": f"{base}/artifacts/",
     "vit_model_file": "LocateAnything-3B_vision.hbm",
@@ -212,6 +215,13 @@ output.write_text(
     encoding="utf-8",
 )
 PY
+
+grep -Fq "\"model_dir\": \"$FINAL_DIR/artifacts/\"" \
+  "$WORK_DIR/config/locateanything_3b_config.json" || \
+  die "generated runtime config contains an unexpected model directory"
+grep -Fq "\"vocabulary_path\": \"$FINAL_DIR/tokenizer/\"" \
+  "$WORK_DIR/config/locateanything_3b_config.json" || \
+  die "generated runtime config contains an unexpected tokenizer directory"
 
 printf '[deploy][2/7] packaging reusable deployment source and tokenizer\n'
 tar --exclude='./build' --exclude='./demo_build' --exclude='./oellm_runtime' \
