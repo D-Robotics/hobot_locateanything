@@ -171,8 +171,7 @@ export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
 python deploy/python/huggingface_assets.py download \
   --repo-id "$LA_HF_REPO" \
   --kind calibration \
-  --local-dir artifacts/huggingface \
-  --verify-images
+  --local-dir artifacts/huggingface
 
 export LA_CALIBRATION_ROOT="$PWD/artifacts/huggingface/calibration"
 export LA_UPSTREAM_SOURCE="$PWD/artifacts/upstream/Eagle/Embodied"
@@ -217,7 +216,7 @@ python compiler/quantize.py --config "$CONFIG" verify --component language --sta
 
 ### 6. 部署编译产物
 
-部署脚本先在本地计算文件大小和 SHA256，再上传到 S600 的临时目录；S600 校验完成并
+部署脚本先在本地检查必需文件和文件大小，再上传到 S600 的临时目录；S600 校验完成并
 编译运行时后，才生成最终目录。同名目录不会被覆盖。
 
 ```bash
@@ -256,23 +255,23 @@ Hugging Face 目录只保存校准数据和可部署 HBM：
 hf_assets/
 ├── calibration/
 │   └── current/
-│       ├── source/
-│       └── generated/
+│       └── source/       1200 张选定图片、selected.jsonl 和来源记录
 └── hbm/
     ├── LocateAnything-3B_vision.hbm
     ├── LocateAnything-3B_language.hbm
     └── LocateAnything-3B_embed_tokens.bin
 ```
 
-上传前生成并校验 SHA256：
+上传前检查目录结构、样本配额、图片和 HBM 文件是否齐全。`generated/` 不上传，
+用户执行 Prepare 后会在本地自动生成校准张量：
 
 ```bash
-python deploy/python/huggingface_assets.py checksums --root hf_assets/calibration
-python deploy/python/huggingface_assets.py checksums --root hf_assets/hbm
-python deploy/python/huggingface_assets.py validate --kind all --local-dir hf_assets --verify-images
+python deploy/python/huggingface_assets.py validate \
+  --kind all \
+  --local-dir hf_assets
 
 hf auth login
-hf upload "$LA_HF_REPO" hf_assets . --repo-type model
+hf upload "$LA_HF_REPO" hf_assets . --type model
 ```
 
 ## 项目结构

@@ -20,10 +20,7 @@ TASK_COUNTS = {
     "layout": 90,
     "pointing": 60,
 }
-CALIBRATION_REQUIRED = (
-    "current/source/selected.jsonl",
-    "current/generated/generated.jsonl",
-)
+CALIBRATION_REQUIRED = ("current/source/selected.jsonl",)
 HBM_REQUIRED = (
     "LocateAnything-3B_vision.hbm",
     "LocateAnything-3B_language.hbm",
@@ -73,7 +70,7 @@ def validate_calibration(root: Path) -> dict[str, object]:
                     f"selected.jsonl line {line_number} image escapes calibration root: "
                     f"{image_value}"
                 ) from exc
-            if not image.is_file():
+            if not image.is_file() or image.stat().st_size == 0:
                 raise AssetError(f"selected.jsonl line {line_number} image is missing: {image_value}")
             image_count += 1
     if image_count != 1200:
@@ -83,39 +80,41 @@ def validate_calibration(root: Path) -> dict[str, object]:
 
     generated = root / "current" / "generated" / "generated.jsonl"
     generated_count = 0
-    with generated.open("r", encoding="utf-8") as stream:
-        for line_number, line in enumerate(stream, 1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise AssetError(f"invalid generated.jsonl line {line_number}: {exc}") from exc
-            if not isinstance(record, dict):
-                raise AssetError(f"generated.jsonl line {line_number} is not an object")
-            tensor_value = record.get("tensor_file")
-            if not isinstance(tensor_value, str) or not tensor_value:
-                raise AssetError(f"generated.jsonl line {line_number} has no tensor_file")
-            tensor = (generated.parent / tensor_value).resolve()
-            try:
-                tensor.relative_to(generated.parent.resolve())
-            except ValueError as exc:
-                raise AssetError(
-                    f"generated.jsonl line {line_number} tensor escapes generated root: "
-                    f"{tensor_value}"
-                ) from exc
-            if not tensor.is_file():
-                raise AssetError(
-                    f"generated.jsonl line {line_number} tensor is missing: {tensor_value}"
-                )
-            generated_count += 1
-    if generated_count != 1200:
-        raise AssetError(f"generated.jsonl contains {generated_count} records; expected 1200")
+    if generated.is_file():
+        with generated.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise AssetError(f"invalid generated.jsonl line {line_number}: {exc}") from exc
+                if not isinstance(record, dict):
+                    raise AssetError(f"generated.jsonl line {line_number} is not an object")
+                tensor_value = record.get("tensor_file")
+                if not isinstance(tensor_value, str) or not tensor_value:
+                    raise AssetError(f"generated.jsonl line {line_number} has no tensor_file")
+                tensor = (generated.parent / tensor_value).resolve()
+                try:
+                    tensor.relative_to(generated.parent.resolve())
+                except ValueError as exc:
+                    raise AssetError(
+                        f"generated.jsonl line {line_number} tensor escapes generated root: "
+                        f"{tensor_value}"
+                    ) from exc
+                if not tensor.is_file() or tensor.stat().st_size == 0:
+                    raise AssetError(
+                        f"generated.jsonl line {line_number} tensor is missing: {tensor_value}"
+                    )
+                generated_count += 1
+        if generated_count != 1200:
+            raise AssetError(f"generated.jsonl contains {generated_count} records; expected 1200")
     return {
         "kind": "calibration",
         "root": str(root.resolve()),
         "sample_count": image_count,
         "generated_tensor_count": generated_count,
+        "stage": "prepared" if generated_count else "source",
         "task_counts": dict(counts),
     }
 
