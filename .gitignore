@@ -1,6 +1,7 @@
 # Product-local checkpoints and generated artifacts
 /LocateAnything/artifacts/**
 /LocateAnything/workspace/**
+/LocateAnything/deploy/build/
 
 # Model weights and generated artifacts
 *.safetensors
