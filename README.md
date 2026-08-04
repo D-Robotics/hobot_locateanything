@@ -56,26 +56,24 @@ python -m pip install -r deploy/requirements.txt
 
 ### 2. 下载 HBM
 
-将 `LA_HF_REPO` 设置为存放 HBM 的 Hugging Face 仓库：
+从 Hugging Face 模型仓库直接下载 Vision HBM、Language HBM 和 Embedding：
 
 ```bash
 python -m pip install -U huggingface_hub
 export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
+export LA_RELEASE_ROOT="$PWD/artifacts/releases/direct"
+mkdir -p "$LA_RELEASE_ROOT"
 
-python deploy/python/huggingface_assets.py download \
-  --repo-id "$LA_HF_REPO" \
-  --kind hbm \
-  --local-dir artifacts/huggingface
+hf download "$LA_HF_REPO" \
+  --local-dir "$LA_RELEASE_ROOT"
 ```
 
-下载完成后的文件位于：
+确认以下三个文件位于 `LA_RELEASE_ROOT` 根目录：
 
 ```text
-artifacts/huggingface/hbm/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
-├── LocateAnything-3B_embed_tokens.bin
-└── checksums.sha256
+LocateAnything-3B_vision.hbm
+LocateAnything-3B_language.hbm
+LocateAnything-3B_embed_tokens.bin
 ```
 
 ### 3. 编译 S600 运行时
@@ -92,7 +90,7 @@ cmake --build deploy/build \
 ```bash
 sh deploy/scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
-export LA_RELEASE_ROOT="$PWD/artifacts/huggingface/hbm"
+export LA_RELEASE_ROOT="$PWD/artifacts/releases/direct"
 export LA_TOKENIZER_DIR="$PWD/deploy/tokenizer"
 
 LocateAnything \
@@ -173,24 +171,23 @@ export LA_UPSTREAM_SOURCE="$PWD/artifacts/upstream/Eagle/Embodied"
 校准数据可以使用项目提供的数据，也可以使用自己的数据。下载项目数据：
 
 ```bash
-export LA_HF_REPO="YOUR_ACCOUNT/LocateAnything-3B-S600"
-python deploy/python/huggingface_assets.py download \
-  --repo-id "$LA_HF_REPO" \
-  --kind calibration \
-  --local-dir artifacts/huggingface
+mkdir -p artifacts/calibration/download
+hf download xkj521999/OE_LA_Calibration_data source.zip \
+  --repo-type dataset \
+  --local-dir artifacts/calibration/download
 
-export LA_CALIBRATION_ROOT="$PWD/artifacts/huggingface/calibration"
+mkdir -p artifacts/calibration/locateanything/source
+python -m zipfile -e artifacts/calibration/download/source.zip \
+  artifacts/calibration/locateanything/source
 ```
 
-使用自己的数据时，将目录整理为以下结构，并把 `LA_CALIBRATION_ROOT` 指向
-`calibration` 目录：
+下载或准备完成后，校准数据目录应为：
 
 ```text
-calibration/
-└── current/
-    └── source/
-        ├── selected.jsonl
-        └── images/
+artifacts/calibration/locateanything/
+└── source/
+    ├── selected.jsonl
+    └── images/
 ```
 
 `selected.jsonl` 中每条记录只需包含 `bundle_id`、`task`、`image` 和 `prompt`。
@@ -198,9 +195,8 @@ calibration/
 相对路径。`source_width`、`source_height` 和 `target_response` 均可选。样本数量和
 收敛检查点由程序根据实际数据自动确定，不要求使用项目数据的任务配额或 Prompt 模板。
 
-```bash
-export LA_CALIBRATION_ROOT="/path/to/calibration"
-```
+使用默认项目目录时不需要设置环境变量。若希望将所有生成物放到其他磁盘，只需设置
+`LA_ARTIFACTS_ROOT`，目录内部仍保持 `calibration/locateanything/source/` 结构。
 
 ### 4. 使用 `standard` 图集合校准和编译
 
@@ -221,7 +217,8 @@ python compiler/quantize.py --config "$CONFIG" verify --component all --stage sp
 构建产物和日志分别保存到：
 
 ```text
-artifacts/calibration/current/statistics/standard/
+artifacts/calibration/locateanything/generated/
+artifacts/calibration/locateanything/statistics/standard/
 artifacts/builds/locateanything-3b/standard/
 artifacts/logs/locateanything-3b/standard/
 ```
@@ -272,32 +269,15 @@ LocateAnything \
   --output-dir artifacts/runs/predict/demo
 ```
 
-## 上传校准数据和 HBM
+## Hugging Face 资源
 
-Hugging Face 目录只保存校准数据和可部署 HBM：
+Hugging Face 只保存两类可复用资源：
 
-```text
-hf_assets/
-├── calibration/
-│   └── current/
-│       └── source/       选定图片、selected.jsonl 和来源记录
-└── hbm/
-    ├── LocateAnything-3B_vision.hbm
-    ├── LocateAnything-3B_language.hbm
-    └── LocateAnything-3B_embed_tokens.bin
-```
+- Dataset 仓库保存原始校准数据 `source.zip`；
+- Model 仓库保存 Vision HBM、Language HBM 和 Embedding。
 
-上传前检查目录结构、JSONL、图片和 HBM 文件是否齐全。`generated/` 不上传，
-用户执行 Prepare 后会在本地自动生成校准张量：
-
-```bash
-python deploy/python/huggingface_assets.py validate \
-  --kind all \
-  --local-dir hf_assets
-
-hf auth login
-hf upload "$LA_HF_REPO" hf_assets . --type model
-```
+`generated/` 和 `statistics/` 由用户在本地执行 Prepare 与 Calibrate 后生成，不上传。
+源码、运行日志、评测结果和报告图也不放入 Hugging Face 仓库。
 
 ## 项目结构
 
@@ -308,12 +288,12 @@ LocateAnything/
 │   ├── leap_llm/          OELLM 模型适配
 │   ├── scripts/           构建和验证实现
 │   └── quantize.py        统一编译入口
-├── deploy/                S600 运行时、CLI、HBM 下载与部署
+├── deploy/                S600 运行时、CLI 与部署
 │   ├── apps/              Vision 与 Language HBM runner
 │   ├── bin/               LocateAnything CLI 启动器
 │   ├── config/            S600 运行配置
 │   ├── include/           C++ 运行时头文件
-│   ├── python/            CLI、推理流程与 Hugging Face 资产工具
+│   ├── python/            CLI、推理流程与资源监控
 │   ├── scripts/           安装与板端部署脚本
 │   ├── src/               C++ 运行时实现
 │   └── tokenizer/         LocateAnything tokenizer
