@@ -49,6 +49,8 @@ Language 提供两套执行图集合：
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything/LocateAnything
 
+sudo apt-get update
+sudo apt-get install -y ffmpeg
 python3 -m venv --system-site-packages .venv-s600
 source .venv-s600/bin/activate
 python -m pip install -r deploy/requirements.txt
@@ -109,6 +111,15 @@ CLI 启动后会常驻加载 Vision 和 Language HBM。检测、定位和点选�
 /layout title,table,figure
 ```
 
+视频推理先加载视频，再输入任务。程序会逐帧完成推理并按原帧率生成标注视频：
+
+```text
+/video /path/to/video.mp4
+/detect person,motorcycle
+```
+
+各帧独立推理，不包含跨帧目标跟踪。
+
 每次推理依次显示 Vision、Language、Postprocess 三个阶段及耗时。检测或点定位成功时，
 CLI 自动保存标注图，无需额外开启画框参数。
 
@@ -129,6 +140,17 @@ artifacts/runs/predict/demo/
 CLI 会为会话中的每次请求创建 `request_0001`、`request_0002` 等独立目录。不指定
 `--output-dir` 时，程序在 `artifacts/runs/predict/` 下创建带时间和图片名的运行目录，
 不会把结果写到输入图片旁边。
+
+视频推理结果保存在独立目录：
+
+```text
+artifacts/runs/video/<run>/
+├── annotated.mp4       全部帧的标注视频
+├── predictions.jsonl   每帧文本、坐标、检测框与性能
+├── summary.json        视频信息、处理帧数和总耗时
+└── logs/
+    └── runtime.log     每帧 Vision 与 Language runner 日志
+```
 
 ## 方式二：从零校准和编译
 

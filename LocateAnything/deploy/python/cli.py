@@ -21,6 +21,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from PIL import Image
+
 from console import (
     BLUE,
     BOLD,
@@ -55,6 +57,13 @@ from runtime import (
     tokenize_prompt,
 )
 from telemetry import ResourceMonitor, ResourceSummary, resource_summary_lines
+from video import (
+    VideoFrameReader,
+    VideoFrameWriter,
+    VideoInfo,
+    create_video_output_dir,
+    probe_video,
+)
 
 
 VERSION = RUNTIME_VERSION
@@ -72,8 +81,9 @@ TASK_HELP = (
 )
 SESSION_HELP = (
     ("/image <image_path>", "加载图片"),
+    ("/video <video_path>", "加载视频并处理全部帧"),
     ("regen", "重跑上次请求"),
-    ("reset", "清除当前图片与缓存"),
+    ("reset", "清除当前媒体与缓存"),
     ("exit", "退出程序"),
 )
 
@@ -288,7 +298,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  LocateAnything\n"
             "  LocateAnything -i image.jpg\n"
             "  LocateAnything -i image.jpg -p '/detect cat'\n\n"
-            "Task commands:\n  " + "\n  ".join(TASK_COMMANDS)
+            "Task commands:\n  "
+            + "\n  ".join(TASK_COMMANDS)
+            + "\n\nSession commands:\n"
+            "  /image IMAGE_PATH\n"
+            "  /video VIDEO_PATH\n"
+            "  regen\n"
+            "  reset\n"
+            "  exit"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -433,7 +450,7 @@ def build_runtime_header(
         f"max tokens {GREEN}{max_new_tokens}{RESET}",
         f"{BOLD}{CYAN}Tasks{RESET}    /detect  /ground  /ground_single  /gui  /gui_box",
         "         /text  /ground_text  /layout  /point  /help",
-        f"{BOLD}{CYAN}Session{RESET}  /image  regen  reset  exit",
+        f"{BOLD}{CYAN}Session{RESET}  /image  /video  regen  reset  exit",
         f"{DIM}{'─' * 72}{RESET}",
     ))
     return header, details
@@ -451,6 +468,7 @@ def main() -> int:
     current_image = args.image.expanduser().resolve() if args.image else None
     if current_image is not None and not current_image.is_file():
         raise FileNotFoundError(current_image)
+    current_video: tuple[Path, VideoInfo] | None = None
 
     runtime: RuntimeConfig = args.runtime
     require_runtime_paths(runtime)
@@ -482,9 +500,10 @@ def main() -> int:
         close_runtime_resources(None, None, vision)
         raise
 
-    last_request: tuple[Path, str] | None = None
+    last_request: tuple[str, Path, str] | None = None
     vision_cache: tuple[tuple[str, int, int], bytes, dict[str, object]] | None = None
     request_index = 0
+    video_index = 0
     monitor: ResourceMonitor | None = None
     try:
         monitor = ResourceMonitor(
@@ -510,22 +529,34 @@ def main() -> int:
     # The initialization guard above guarantees this before infer() is defined.
     assert monitor is not None
 
-    def infer(image: Path, prompt: str) -> None:
+    def infer(
+        image: Path,
+        prompt: str,
+        *,
+        request_output_dir: Path | None = None,
+        quiet: bool = False,
+        remember: bool = True,
+    ) -> dict[str, object]:
         nonlocal request_index, last_request, vision_cache
         if not image.is_file():
             raise FileNotFoundError(image)
         task_prompt = prompt
         normalized_prompt, task = normalize_prompt(task_prompt)
         request_index += 1
-        last_request = (image, prompt)
+        if remember:
+            last_request = ("image", image, prompt)
         started = time.monotonic()
-        request_output_dir = (
-            output_dir / f"request_{request_index:04d}" if output_dir else None
+        target_output_dir = (
+            request_output_dir
+            if request_output_dir is not None
+            else output_dir / f"request_{request_index:04d}"
+            if output_dir
+            else None
         )
         paths = create_prediction_paths(
             runtime.layout_root,
             image,
-            output_dir=request_output_dir,
+            output_dir=target_output_dir,
         )
         with monitor.request_scope(), tempfile.TemporaryDirectory(
             prefix="locateanything-interactive-"
@@ -574,15 +605,17 @@ def main() -> int:
                     print(decoded[len(streamed_text):], end="", flush=True)
                     streamed_text = decoded
 
-            print(f"{BOLD}{MAGENTA}[Assistant] >>>{RESET} ", end="", flush=True)
+            if not quiet:
+                print(f"{BOLD}{MAGENTA}[Assistant] >>>{RESET} ", end="", flush=True)
             try:
                 language_result, language_log = language.request([
                     "LAHBM/1", "RUN", str(request_index), str(token_path),
                     str(visual_output_path), str(generation_path),
                     str(args.max_new_tokens), args.generation_mode,
-                ], on_token=stream_token)
+                ], on_token=None if quiet else stream_token)
             except Exception:
-                print()
+                if not quiet:
+                    print()
                 raise
             language_fields = language_result.split("\t")
             if len(language_fields) < 8:
@@ -594,21 +627,22 @@ def main() -> int:
 
             stop_reason, token_ids = read_generation(generation_path)
             text = decode_tokens(tokenizer_dir, token_ids, stream_tokenizer)
-            if text.startswith(streamed_text) and len(text) > len(streamed_text):
-                print(text[len(streamed_text):], end="", flush=True)
-            elif text != streamed_text:
-                print(
-                    f"\n{BOLD}{MAGENTA}[Assistant final] >>>{RESET} "
-                    f"{text}",
-                    end="",
-                    flush=True,
-                )
-            print()
-            for line in language_log:
-                if args.show_runner_details and line.startswith(
-                    ("[profile]", "[pbd]", "[hybrid:")
-                ):
-                    print(f"{DIM}{line}{RESET}")
+            if not quiet:
+                if text.startswith(streamed_text) and len(text) > len(streamed_text):
+                    print(text[len(streamed_text):], end="", flush=True)
+                elif text != streamed_text:
+                    print(
+                        f"\n{BOLD}{MAGENTA}[Assistant final] >>>{RESET} "
+                        f"{text}",
+                        end="",
+                        flush=True,
+                    )
+                print()
+                for line in language_log:
+                    if args.show_runner_details and line.startswith(
+                        ("[profile]", "[pbd]", "[hybrid:")
+                    ):
+                        print(f"{DIM}{line}{RESET}")
             language_seconds = time.monotonic() - language_started
 
             postprocess_started = time.monotonic()
@@ -628,19 +662,20 @@ def main() -> int:
             total_ms = (time.monotonic() - started) * 1000.0
             monitor.end_request()
             resource_summary = monitor.summary()
-            print_result(
-                detections,
-                points,
-                vit_ms,
-                vit_infer_ms,
-                vision_cached,
-                prefill_tokens,
-                prefill_ms,
-                decode_token_count,
-                decode_ms,
-                total_ms,
-                resource_summary,
-            )
+            if not quiet:
+                print_result(
+                    detections,
+                    points,
+                    vit_ms,
+                    vit_infer_ms,
+                    vision_cached,
+                    prefill_tokens,
+                    prefill_ms,
+                    decode_token_count,
+                    decode_ms,
+                    total_ms,
+                    resource_summary,
+                )
             timing_data = {
                 "schema_version": 1,
                 "stages_seconds": {
@@ -668,58 +703,251 @@ def main() -> int:
                 + "\n",
                 encoding="utf-8",
             )
-            paths.prediction.write_text(json.dumps({
-                    "schema_version": 1,
-                    "runtime": {
-                        "version": RUNTIME_VERSION,
-                        "config": str(runtime.source),
-                        "model_type": runtime.model_type,
-                        "runtime_specification": runtime.specification(),
-                    },
-                    "image": str(image),
-                    "prompt": prompt,
-                    "normalized_prompt": normalized_prompt,
-                    "task": task,
-                    "text": text,
-                    "raw_detections": raw_detections,
-                    "detections": detections,
-                    "suppressed_detections": suppressed_detections,
-                    "points": points,
-                    "annotated_image": str(annotated_image) if annotated_image else None,
-                    "generation": {
-                        "mode": args.generation_mode,
-                        "stop_reason": stop_reason,
-                        "token_count": len(token_ids),
-                        "max_new_tokens": args.max_new_tokens,
-                    },
-                    "elapsed_seconds": round(total_ms / 1000.0, 3),
-                    "postprocess": {
-                        "method": "class_aware_nms"
-                        if task == "object_detection" and not args.no_nms
-                        else "none",
-                        "iou_threshold": args.nms_iou,
-                        "raw_detection_count": len(raw_detections),
-                        "kept_detection_count": len(detections),
-                        "suppressed_detection_count": len(suppressed_detections),
-                    },
-                    "performance": {
-                        "vit_ms": round(vit_ms, 3),
-                        "vit_infer_ms": round(vit_infer_ms, 3),
-                        "vision_cached": vision_cached,
-                        "prefill_tokens": prefill_tokens,
-                        "prefill_ms": round(prefill_ms, 3),
-                        "decode_tokens": decode_token_count,
-                        "decode_ms": round(decode_ms, 3),
-                    },
-                    "timings": timing_data,
-                    "resources": resource_summary.as_dict(),
-                    "runtime_log": str(paths.runtime_log),
-                }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(f"{BOLD}{CYAN}Saved{RESET}")
-            if annotated_image:
-                print(f"  {BOLD}Image{RESET}  {BLUE}{annotated_image}{RESET}")
-            print(f"  {BOLD}JSON{RESET}   {BLUE}{paths.prediction}{RESET}")
-            print()
+            prediction_data = {
+                "schema_version": 1,
+                "runtime": {
+                    "version": RUNTIME_VERSION,
+                    "config": str(runtime.source),
+                    "model_type": runtime.model_type,
+                    "runtime_specification": runtime.specification(),
+                },
+                "image": str(image),
+                "prompt": prompt,
+                "normalized_prompt": normalized_prompt,
+                "task": task,
+                "text": text,
+                "raw_detections": raw_detections,
+                "detections": detections,
+                "suppressed_detections": suppressed_detections,
+                "points": points,
+                "annotated_image": str(annotated_image) if annotated_image else None,
+                "generation": {
+                    "mode": args.generation_mode,
+                    "stop_reason": stop_reason,
+                    "token_count": len(token_ids),
+                    "max_new_tokens": args.max_new_tokens,
+                },
+                "elapsed_seconds": round(total_ms / 1000.0, 3),
+                "postprocess": {
+                    "method": "class_aware_nms"
+                    if task == "object_detection" and not args.no_nms
+                    else "none",
+                    "iou_threshold": args.nms_iou,
+                    "raw_detection_count": len(raw_detections),
+                    "kept_detection_count": len(detections),
+                    "suppressed_detection_count": len(suppressed_detections),
+                },
+                "performance": {
+                    "vit_ms": round(vit_ms, 3),
+                    "vit_infer_ms": round(vit_infer_ms, 3),
+                    "vision_cached": vision_cached,
+                    "prefill_tokens": prefill_tokens,
+                    "prefill_ms": round(prefill_ms, 3),
+                    "decode_tokens": decode_token_count,
+                    "decode_ms": round(decode_ms, 3),
+                },
+                "timings": timing_data,
+                "resources": resource_summary.as_dict(),
+                "runtime_log": str(paths.runtime_log),
+            }
+            paths.prediction.write_text(
+                json.dumps(prediction_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            if not quiet:
+                print(f"{BOLD}{CYAN}Saved{RESET}")
+                if annotated_image:
+                    print(f"  {BOLD}Image{RESET}  {BLUE}{annotated_image}{RESET}")
+                print(f"  {BOLD}JSON{RESET}   {BLUE}{paths.prediction}{RESET}")
+                print()
+            return prediction_data
+
+    def infer_video(
+        video_path: Path,
+        prompt: str,
+        info: VideoInfo,
+        *,
+        remember: bool = True,
+    ) -> None:
+        nonlocal last_request, video_index, vision_cache
+        if not video_path.is_file():
+            raise FileNotFoundError(video_path)
+        normalized_prompt, task = normalize_prompt(prompt)
+        video_index += 1
+        if remember:
+            last_request = ("video", video_path, prompt)
+        vision_cache = None
+        video_root = create_video_output_dir(
+            runtime.layout_root,
+            video_path,
+            output_dir,
+            sequence=video_index,
+        )
+        predictions_path = video_root / "predictions.jsonl"
+        summary_path = video_root / "summary.json"
+        output_video = video_root / "annotated.mp4"
+        runtime_log = video_root / "logs" / "runtime.log"
+        expected_frames = info.frame_count
+        started = time.monotonic()
+        total_boxes = 0
+        total_points = 0
+        processed_frames = 0
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="locateanything-video-") as raw_dir:
+                work_dir = Path(raw_dir)
+                requests_dir = work_dir / "requests"
+                requests_dir.mkdir()
+                frame_path = work_dir / "frame.png"
+                with (
+                    VideoFrameReader(video_path, info) as frames,
+                    VideoFrameWriter(output_video, video_path, info) as video_writer,
+                    predictions_path.open("w", encoding="utf-8") as predictions,
+                    runtime_log.open("w", encoding="utf-8") as combined_log,
+                ):
+                    for frame_index, rgb_frame in enumerate(frames, 1):
+                        frame_started = time.monotonic()
+                        Image.frombytes(
+                            "RGB", (info.width, info.height), rgb_frame
+                        ).save(frame_path, format="PNG")
+                        vision_cache = None
+                        frame_result = infer(
+                            frame_path,
+                            prompt,
+                            request_output_dir=requests_dir / "frame",
+                            quiet=True,
+                            remember=False,
+                        )
+                        annotated_source = frame_result.get("annotated_image")
+                        if annotated_source and Path(str(annotated_source)).is_file():
+                            with Image.open(Path(str(annotated_source))) as annotated:
+                                video_writer.write(annotated.convert("RGB").tobytes())
+                        else:
+                            video_writer.write(rgb_frame)
+
+                        frame_log = frame_result.get("runtime_log")
+                        if frame_log and Path(str(frame_log)).is_file():
+                            combined_log.write(f"FRAME {frame_index}\n")
+                            combined_log.write(
+                                Path(str(frame_log)).read_text(
+                                    encoding="utf-8", errors="replace"
+                                )
+                            )
+                            combined_log.write("\n")
+
+                        detections = frame_result.get("detections", [])
+                        points = frame_result.get("points", [])
+                        box_count = (
+                            len(detections) if isinstance(detections, list) else 0
+                        )
+                        point_count = len(points) if isinstance(points, list) else 0
+                        total_boxes += box_count
+                        total_points += point_count
+                        processed_frames += 1
+                        source_frame_index = frame_index - 1
+                        timestamp_seconds = (
+                            source_frame_index / info.source_fps
+                            if info.source_fps > 0
+                            else 0.0
+                        )
+                        record = {
+                            "frame_index": frame_index,
+                            "source_frame_index": source_frame_index,
+                            "timestamp_seconds": round(timestamp_seconds, 6),
+                            "text": frame_result.get("text"),
+                            "raw_detections": frame_result.get("raw_detections", []),
+                            "detections": detections,
+                            "suppressed_detections": frame_result.get(
+                                "suppressed_detections", []
+                            ),
+                            "points": points,
+                            "generation": frame_result.get("generation", {}),
+                            "performance": frame_result.get("performance", {}),
+                            "resources": frame_result.get("resources", {}),
+                        }
+                        predictions.write(
+                            json.dumps(record, ensure_ascii=False) + "\n"
+                        )
+                        predictions.flush()
+                        frame_seconds = time.monotonic() - frame_started
+                        print(
+                            f"\r{BOLD}{CYAN}Video{RESET}  frame "
+                            f"{GREEN}{frame_index}/{expected_frames}{RESET}  |  "
+                            f"{timestamp_seconds:8.2f} s  |  "
+                            f"boxes {GREEN}{box_count}{RESET}  |  "
+                            f"{frame_seconds:.2f} s/frame",
+                            end="",
+                            flush=True,
+                        )
+                print()
+                codec = video_writer.codec
+        finally:
+            vision_cache = None
+
+        elapsed_seconds = time.monotonic() - started
+        summary = {
+            "schema_version": 1,
+            "runtime": {
+                "version": RUNTIME_VERSION,
+                "model_type": runtime.model_type,
+                "runtime_specification": runtime.specification(),
+            },
+            "video": {
+                "source": str(video_path),
+                "width": info.width,
+                "height": info.height,
+                "source_fps": round(info.source_fps, 6),
+                "duration_seconds": round(info.duration_seconds, 6),
+                "source_frame_count": info.frame_count,
+                "source_frame_count_exact": info.frame_count_exact,
+                "rotation_degrees": info.rotation_degrees,
+                "has_audio": info.has_audio,
+            },
+            "inference": {
+                "method": "independent_all_frames",
+                "output_fps": round(info.output_fps, 6),
+                "expected_frame_count": expected_frames,
+                "processed_frame_count": processed_frames,
+                "prompt": prompt,
+                "normalized_prompt": normalized_prompt,
+                "task": task,
+                "generation_mode": args.generation_mode,
+                "max_new_tokens": args.max_new_tokens,
+                "total_boxes": total_boxes,
+                "total_points": total_points,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+                "processing_fps": round(
+                    processed_frames / elapsed_seconds if elapsed_seconds > 0 else 0.0,
+                    6,
+                ),
+                "temporal_tracking": False,
+            },
+            "output": {
+                "annotated_video": str(output_video),
+                "predictions": str(predictions_path),
+                "runtime_log": str(runtime_log),
+                "video_codec": codec,
+                "audio_preserved": video_writer.audio_preserved,
+                "warning": video_writer.warning,
+            },
+        }
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"{BOLD}{CYAN}Video complete{RESET}")
+        print(
+            f"  Frames {GREEN}{processed_frames}{RESET}  |  "
+            f"Boxes {GREEN}{total_boxes}{RESET}  |  "
+            f"Points {GREEN}{total_points}{RESET}  |  "
+            f"{elapsed_seconds:.2f} s"
+        )
+        print(f"  {BOLD}Video{RESET}   {BLUE}{output_video}{RESET}")
+        print(f"  {BOLD}JSONL{RESET}   {BLUE}{predictions_path}{RESET}")
+        print(f"  {BOLD}Summary{RESET} {BLUE}{summary_path}{RESET}")
+        if video_writer.warning:
+            print(f"  {YELLOW}Audio warning{RESET}  {video_writer.warning}")
+        print()
 
     try:
         if current_image is not None and args.prompt:
@@ -740,9 +968,10 @@ def main() -> int:
                 continue
             if line == "reset":
                 current_image = None
+                current_video = None
                 last_request = None
                 vision_cache = None
-                print(f"{GREEN}[Session]{RESET} image and cache cleared")
+                print(f"{GREEN}[Session]{RESET} media and cache cleared")
                 continue
             if line == "regen":
                 if last_request is None:
@@ -750,9 +979,17 @@ def main() -> int:
                 else:
                     print(
                         f"{BOLD}{BLUE}[User] <<<{RESET} "
-                        f"{BLUE}{last_request[1]}{RESET}"
+                        f"{BLUE}{last_request[2]}{RESET}"
                     )
-                    infer(*last_request)
+                    if last_request[0] == "image":
+                        infer(last_request[1], last_request[2], remember=False)
+                    else:
+                        infer_video(
+                            last_request[1],
+                            last_request[2],
+                            probe_video(last_request[1]),
+                            remember=False,
+                        )
                 continue
             if line.startswith("/image"):
                 parts = shlex.split(line)
@@ -764,16 +1001,53 @@ def main() -> int:
                     print(f"{RED}[Error]{RESET} image not found: {BLUE}{candidate}{RESET}")
                     continue
                 current_image = candidate
+                current_video = None
+                vision_cache = None
                 print(f"{GREEN}Image loaded{RESET}  {BLUE}{current_image}{RESET}")
                 continue
-            if current_image is None:
+            if line.startswith("/video"):
+                parts = shlex.split(line)
+                if len(parts) != 2:
+                    print(f"{YELLOW}Usage:{RESET} /video VIDEO_PATH")
+                    continue
+                candidate = Path(parts[1]).expanduser().resolve()
+                if not candidate.is_file():
+                    print(f"{RED}[Error]{RESET} video not found: {BLUE}{candidate}{RESET}")
+                    continue
+                try:
+                    info = probe_video(candidate)
+                except (RuntimeError, ValueError) as error:
+                    print(f"{RED}[Error]{RESET} {error}")
+                    continue
+                current_video = (candidate, info)
+                current_image = None
+                vision_cache = None
+                print(f"{GREEN}Video loaded{RESET}  {BLUE}{candidate}{RESET}")
+                frame_count = (
+                    str(info.frame_count)
+                    if info.frame_count_exact
+                    else f"~{info.frame_count}"
+                )
                 print(
-                    f"{YELLOW}[Session]{RESET} load an image first with "
-                    f"{BLUE}/image IMAGE_PATH{RESET}"
+                    f"  {info.width}x{info.height}  |  "
+                    f"source {info.source_fps:.3f} FPS  |  "
+                    f"duration {info.duration_seconds:.2f} s  |  "
+                    f"process all {frame_count} frames"
+                )
+                continue
+            if current_image is None and current_video is None:
+                print(
+                    f"{YELLOW}[Session]{RESET} load media first with "
+                    f"{BLUE}/image IMAGE_PATH{RESET} or "
+                    f"{BLUE}/video VIDEO_PATH{RESET}"
                 )
                 continue
             try:
-                infer(current_image, line)
+                if current_video is not None:
+                    infer_video(current_video[0], line, current_video[1])
+                else:
+                    assert current_image is not None
+                    infer(current_image, line)
             except Exception as error:
                 print(f"{RED}[Request failed]{RESET} {error}", file=sys.stderr)
     finally:

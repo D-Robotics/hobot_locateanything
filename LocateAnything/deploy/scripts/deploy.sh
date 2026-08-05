@@ -111,6 +111,7 @@ for required in \
   "$DEPLOY_DIR/CMakeLists.txt" \
   "$DEPLOY_DIR/python/runtime.py" \
   "$DEPLOY_DIR/python/cli.py" \
+  "$DEPLOY_DIR/python/video.py" \
   "$DEPLOY_DIR/bin/LocateAnything" \
   "$TOKENIZER_DIR/tokenizer.json"; do
   [[ -f $required && -r $required ]] || die "runtime payload file is missing: $required"
@@ -337,6 +338,7 @@ tar -xf bundles/tokenizer.tar -C tokenizer
 test -f deploy/CMakeLists.txt
 test -f deploy/python/runtime.py
 test -f deploy/python/cli.py
+test -f deploy/python/video.py
 test -f deploy/bin/LocateAnything
 test -f tokenizer/tokenizer.json
 command -v cmake >/dev/null 2>&1 || {
