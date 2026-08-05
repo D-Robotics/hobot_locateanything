@@ -414,10 +414,9 @@ def build_runtime_header(
             return entries
         column_width = max(42, (columns - 2) // 2)
         rows: list[str] = []
-        midpoint = (len(entries) + 1) // 2
-        for index in range(midpoint):
+        for index in range(0, len(entries), 2):
             left = truncate_visible(entries[index], column_width)
-            right_index = index + midpoint
+            right_index = index + 1
             right = entries[right_index] if right_index < len(entries) else ""
             rows.append(f"{pad_visible(left, column_width)}  {right}")
         return rows
