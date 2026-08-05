@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -38,6 +39,7 @@ constexpr int32_t kHidden = 2048;
 constexpr int32_t kCacheCount = 72;
 constexpr int32_t kImageToken = 151665;
 constexpr int32_t kTextMaskToken = 151676;
+constexpr int32_t kBoxStartToken = 151668;
 constexpr int32_t kBoxEndToken = 151669;
 constexpr int32_t kImEndToken = 151645;
 constexpr int32_t kNoneToken = 4064;
@@ -182,6 +184,44 @@ void EmitTokens(const TokenCallback& callback,
   for (size_t index = 0; index < std::min(count, tokens.size()); ++index) {
     callback(tokens[index]);
   }
+}
+
+bool IsCompleteDetectionBox(const std::vector<int32_t>& tokens) {
+  if (tokens.size() == 3 && tokens[0] == kBoxStartToken &&
+      tokens[1] == kNoneToken && tokens[2] == kBoxEndToken) {
+    return true;
+  }
+  if (tokens.size() == 4 && tokens[0] == kBoxStartToken &&
+      rt::IsCoordinateToken(tokens[1]) && rt::IsCoordinateToken(tokens[2]) &&
+      tokens[3] == kBoxEndToken) {
+    return true;
+  }
+  return tokens.size() == 6 && tokens[0] == kBoxStartToken &&
+         rt::IsCoordinateToken(tokens[1]) && rt::IsCoordinateToken(tokens[2]) &&
+         rt::IsCoordinateToken(tokens[3]) && rt::IsCoordinateToken(tokens[4]) &&
+         tokens[5] == kBoxEndToken;
+}
+
+bool HasRepeatedDetectionBox(const std::vector<int32_t>& response,
+                             const std::vector<int32_t>& candidate) {
+  if (!IsCompleteDetectionBox(candidate) || response.size() < candidate.size()) {
+    return false;
+  }
+  return std::search(response.begin(), response.end(), candidate.begin(),
+                     candidate.end()) != response.end();
+}
+
+bool HasRepeatedTrailingDetectionBox(const std::vector<int32_t>& response) {
+  for (const size_t length : {size_t{6}, size_t{4}, size_t{3}}) {
+    if (response.size() < length) continue;
+    const auto begin = response.end() - static_cast<std::ptrdiff_t>(length);
+    const std::vector<int32_t> candidate(begin, response.end());
+    if (!IsCompleteDetectionBox(candidate)) continue;
+    if (std::search(response.begin(), begin, candidate.begin(), candidate.end()) != begin) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<std::string> SplitTabs(const std::string& value) {
@@ -768,6 +808,7 @@ bool RunHybridGenerationLegacy(rt::HbmSession* session,
                                int32_t* history_len,
                                std::vector<int32_t>* response,
                                std::string* stop_reason,
+                               bool protect_detection_structure,
                                const TokenCallback& token_callback = {}) {
   std::vector<int32_t> generated = payload.prompt_ids;
   bool use_pbd = true;
@@ -828,6 +869,11 @@ bool RunHybridGenerationLegacy(rt::HbmSession* session,
         *stop_reason = "im_end";
         break;
       }
+      if (protect_detection_structure &&
+          HasRepeatedDetectionBox(*response, decision.tokens)) {
+        *stop_reason = "repeated_box";
+        break;
+      }
       const int32_t accepted = static_cast<int32_t>(decision.tokens.size());
       const int32_t remaining = max_new_tokens - static_cast<int32_t>(response->size());
       if (accepted <= 0 || accepted > 6) return false;
@@ -867,6 +913,11 @@ bool RunHybridGenerationLegacy(rt::HbmSession* session,
                 step++, *history_len, token);
     response->push_back(token);
     generated.push_back(token);
+    if (protect_detection_structure && token == kBoxEndToken &&
+        HasRepeatedTrailingDetectionBox(*response)) {
+      *stop_reason = "repeated_box";
+      break;
+    }
     if (token_callback) token_callback(token);
     if (token != kBoxEndToken && !rt::IsCoordinateToken(token) &&
         token != kNoneToken) {
@@ -907,6 +958,7 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
                               int32_t* history_len,
                               std::vector<int32_t>* response,
                               std::string* stop_reason,
+                              bool protect_detection_structure,
                               const TokenCallback& token_callback = {}) {
   std::vector<int32_t> generated = payload.prompt_ids;
   std::vector<int32_t> pending_pbd;
@@ -963,6 +1015,11 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
         *stop_reason = "im_end";
         break;
       }
+      if (protect_detection_structure &&
+          HasRepeatedDetectionBox(*response, decision.tokens)) {
+        *stop_reason = "repeated_box";
+        break;
+      }
       const int32_t accepted = static_cast<int32_t>(decision.tokens.size());
       const int32_t remaining = max_new_tokens - static_cast<int32_t>(response->size());
       if (accepted <= 0 || accepted > 6) return false;
@@ -1001,6 +1058,11 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
                 step++, *history_len, token);
     response->push_back(token);
     generated.push_back(token);
+    if (protect_detection_structure && token == kBoxEndToken &&
+        HasRepeatedTrailingDetectionBox(*response)) {
+      *stop_reason = "repeated_box";
+      break;
+    }
     if (token_callback) token_callback(token);
     if (token != kBoxEndToken && !rt::IsCoordinateToken(token) &&
         token != kNoneToken) {
@@ -1035,16 +1097,19 @@ bool RunHybridGeneration(rt::HbmSession* session, const rt::EmbedLookup& embed,
                          CacheState* cache, int32_t* history_len,
                          std::vector<int32_t>* response,
                          std::string* stop_reason,
+                         bool protect_detection_structure,
                          const TokenCallback& token_callback = {}) {
   if (graph_set == rt::LanguageGraphSet::kFusedDecode) {
     std::printf("[INFO] Language graph set=fused_decode\n");
     return RunHybridGenerationFused(session, embed, payload, max_new_tokens,
                                     cache, history_len, response, stop_reason,
+                                    protect_detection_structure,
                                     token_callback);
   }
   std::printf("[INFO] Language graph set=standard\n");
   return RunHybridGenerationLegacy(session, embed, payload, max_new_tokens,
                                    cache, history_len, response, stop_reason,
+                                   protect_detection_structure,
                                    token_callback);
 }
 
@@ -1096,7 +1161,9 @@ bool RunArGeneration(rt::HbmSession* session, const rt::EmbedLookup& embed,
 
 bool WriteTokenOutput(const std::string& path,
                       const std::vector<int32_t>& response,
-                      const std::string& stop_reason) {
+                      const std::string& stop_reason,
+                      const std::string& executed_mode = {},
+                      const std::string& fallback_reason = {}) {
   if (path.empty()) return true;
   std::ofstream stream(path, std::ios::trunc);
   if (!stream) return false;
@@ -1107,6 +1174,8 @@ bool WriteTokenOutput(const std::string& path,
     stream << response[index];
   }
   stream << '\n' << "structured=" << rt::RenderLocateAnythingTokens(response) << '\n';
+  if (!executed_mode.empty()) stream << "executed_mode=" << executed_mode << '\n';
+  if (!fallback_reason.empty()) stream << "fallback_reason=" << fallback_reason << '\n';
   return static_cast<bool>(stream);
 }
 
@@ -1116,6 +1185,9 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
                 rt::LanguageGraphSet graph_set,
                 const std::string& output_path, std::string* stop_reason,
                 size_t* response_size, GenerationMetrics* metrics,
+                bool protect_detection_structure,
+                std::string* executed_mode,
+                std::string* fallback_reason,
                 const TokenCallback& token_callback = {}) {
   rt::Graph* prefill = session->GetGraph("prefill");
   if (prefill == nullptr) return false;
@@ -1141,6 +1213,12 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
 
   std::vector<int32_t> response;
   const auto decode_started = std::chrono::steady_clock::now();
+  std::string selected_mode = generation_mode;
+  std::string selected_fallback_reason;
+  const TokenCallback generation_callback =
+      protect_detection_structure && generation_mode == "hybrid"
+          ? TokenCallback{}
+          : token_callback;
   const bool generated = generation_mode == "slow"
       ? RunArGeneration(session, *embed, payload, max_new_tokens,
                         prefill_outputs, &full_cache, &active_len, &response,
@@ -1148,11 +1226,33 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
       : RunHybridGeneration(session, *embed, payload, max_new_tokens,
                             graph_set,
                              &full_cache, &active_len, &response, stop_reason,
-                            token_callback);
-  if (!generated) return false;
+                            protect_detection_structure,
+                            generation_callback);
+  bool final_generated = generated;
+  if (protect_detection_structure && generation_mode == "hybrid" &&
+      (!generated || *stop_reason != "im_end")) {
+    selected_fallback_reason = stop_reason->empty() ? "hybrid_failed" : *stop_reason;
+    response.clear();
+    *stop_reason = {};
+    active_len = prefill_tokens;
+    if (!BuildFullCaches(*prefill, prefill_outputs, active_len, &full_cache)) {
+      return false;
+    }
+    selected_mode = "slow";
+    final_generated = RunArGeneration(session, *embed, payload, max_new_tokens,
+                                       prefill_outputs, &full_cache, &active_len,
+                                       &response, stop_reason, token_callback);
+  } else if (protect_detection_structure && generation_mode == "hybrid") {
+    EmitTokens(token_callback, response, response.size());
+  }
+  if (!final_generated) return false;
   const double decode_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - decode_started).count();
-  if (!WriteTokenOutput(output_path, response, *stop_reason)) return false;
+  if (!WriteTokenOutput(output_path, response, *stop_reason, selected_mode,
+                        selected_fallback_reason)) return false;
+
+  if (executed_mode != nullptr) *executed_mode = selected_mode;
+  if (fallback_reason != nullptr) *fallback_reason = selected_fallback_reason;
 
   *response_size = response.size();
   if (metrics != nullptr) {
@@ -1161,9 +1261,13 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
     metrics->decode_tokens = static_cast<int32_t>(response.size());
     metrics->decode_ms = decode_ms;
   }
-  std::printf("[generation] mode=%s stop=%s tokens=%zu history=%d\n",
-              generation_mode.c_str(), stop_reason->c_str(), response.size(),
+  std::printf("[generation] requested=%s executed=%s stop=%s tokens=%zu history=%d\n",
+              generation_mode.c_str(), selected_mode.c_str(), stop_reason->c_str(), response.size(),
               active_len);
+  if (!selected_fallback_reason.empty()) {
+    std::printf("[generation] fallback_reason=%s\n",
+                selected_fallback_reason.c_str());
+  }
   std::printf("[generation] structured=%s\n",
               rt::RenderLocateAnythingTokens(response).c_str());
   return true;
@@ -1179,7 +1283,8 @@ int main(int argc, char** argv) {
                  "[--mode all|prefill|decode|decode_ar] "
                  "[--tokens prompt.i32.bin --visual visual.f16.bin] "
                  "[--generation-mode hybrid|slow] "
-                 "[--max-new-tokens N --output result.txt] [--server]\n",
+                 "[--max-new-tokens N --output result.txt] "
+                 "[--structured-output] [--server]\n",
                  argv[0]);
     return 1;
   }
@@ -1194,6 +1299,7 @@ int main(int argc, char** argv) {
   std::string graph_set_name;
   rt::LanguageGraphSet graph_set = rt::LanguageGraphSet::kStandard;
   bool server = false;
+  bool structured_output = false;
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
     if (arg == "--model" && index + 1 < argc) model_path = argv[++index];
@@ -1213,6 +1319,9 @@ int main(int argc, char** argv) {
     }
     else if (arg == "--server") {
       server = true;
+    }
+    else if (arg == "--structured-output") {
+      structured_output = true;
     }
     else {
       std::fprintf(stderr, "unknown or incomplete argument: %s\n", arg.c_str());
@@ -1282,7 +1391,8 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, request)) {
       if (request == "LAHBM/1\tQUIT") break;
       const std::vector<std::string> fields = SplitTabs(request);
-      if (fields.size() != 8 || fields[0] != "LAHBM/1" ||
+      if ((fields.size() != 8 && fields.size() != 9) ||
+          fields[0] != "LAHBM/1" ||
           fields[1] != "RUN" || fields[2].empty()) {
         std::printf("LAHBM/1\tERROR\t0\t1\tinvalid request frame\n");
         std::fflush(stdout);
@@ -1297,7 +1407,11 @@ int main(int argc, char** argv) {
         request_tokens = 0;
       }
       const std::string request_mode = fields[7];
+      const bool protect_detection_structure =
+          fields.size() == 9 && fields[8] == "1";
       std::string request_stop;
+      std::string request_executed_mode;
+      std::string request_fallback_reason;
       size_t request_response_size = 0;
       GenerationMetrics request_metrics;
       const TokenCallback token_callback = [&fields](int32_t token) {
@@ -1310,15 +1424,20 @@ int main(int argc, char** argv) {
                 RunPayload(&session, &embed, request_payload, request_tokens,
                            request_mode, graph_set, fields[5], &request_stop,
                            &request_response_size, &request_metrics,
+                           protect_detection_structure, &request_executed_mode,
+                           &request_fallback_reason,
                            token_callback);
       if (!ok) {
         std::printf("LAHBM/1\tERROR\t%s\t1\trequest failed\n",
                     fields[2].c_str());
       } else {
-        std::printf("LAHBM/1\tRESULT\t%s\t%s\t%zu\t%d\t%.3f\t%.3f\n",
+        std::printf("LAHBM/1\tRESULT\t%s\t%s\t%zu\t%d\t%.3f\t%.3f\t%s\t%s\n",
                     fields[2].c_str(), request_stop.c_str(), request_response_size,
                     request_metrics.prefill_tokens, request_metrics.prefill_ms,
-                    request_metrics.decode_ms);
+                    request_metrics.decode_ms,
+                    request_executed_mode.empty() ? request_mode.c_str()
+                                                  : request_executed_mode.c_str(),
+                    request_fallback_reason.c_str());
       }
       std::fflush(stdout);
     }
@@ -1343,6 +1462,25 @@ int main(int argc, char** argv) {
                 payload.visual_features.size() / (static_cast<size_t>(kHidden) * 2));
   }
 
+  if (max_new_tokens > 0 && (mode == "all" || mode == "prefill")) {
+    std::string stop_reason;
+    std::string executed_mode;
+    std::string fallback_reason;
+    size_t response_size = 0;
+    GenerationMetrics metrics;
+    if (!RunPayload(&session, &embed, payload, max_new_tokens, generation_mode,
+                    graph_set, output_path, &stop_reason, &response_size,
+                    &metrics, structured_output, &executed_mode,
+                    &fallback_reason)) {
+      std::fprintf(stderr, "[FAIL] %s generation failed\n",
+                   generation_mode.c_str());
+      return 12;
+    }
+    std::printf("[verdict] language HBM %s generation PASSED\n",
+                executed_mode.c_str());
+    return 0;
+  }
+
   std::vector<rt::Tensor> outputs;
   int32_t active_len = 1024;
   bool ok = true;
@@ -1356,33 +1494,6 @@ int main(int argc, char** argv) {
       return 7;
     }
     prefill_cache = std::move(full_cache);
-    if (max_new_tokens > 0) {
-      std::vector<int32_t> response;
-      std::string stop_reason;
-      const bool generated = generation_mode == "slow"
-          ? RunArGeneration(&session, embed, payload, max_new_tokens, outputs,
-                            &prefill_cache, &active_len, &response, &stop_reason)
-          : RunHybridGeneration(&session, embed, payload, max_new_tokens,
-                                graph_set,
-                                &prefill_cache, &active_len, &response,
-                                &stop_reason);
-      if (!generated) {
-        std::fprintf(stderr, "[FAIL] %s generation failed\n", generation_mode.c_str());
-        return 12;
-      }
-      const std::string structured = rt::RenderLocateAnythingTokens(response);
-      std::printf("[generation] mode=%s stop=%s tokens=%zu history=%d\n",
-                  generation_mode.c_str(), stop_reason.c_str(), response.size(),
-                  active_len);
-      std::printf("[generation] structured=%s\n", structured.c_str());
-      if (!WriteTokenOutput(output_path, response, stop_reason)) {
-        std::fprintf(stderr, "[FAIL] cannot write generation output\n");
-        return 13;
-      }
-      std::printf("[verdict] language HBM %s generation PASSED\n",
-                  generation_mode.c_str());
-      return 0;
-    }
   }
   if (mode == "all" || mode == "decode") {
     if (mode == "decode") {

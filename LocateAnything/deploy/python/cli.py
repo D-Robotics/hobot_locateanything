@@ -612,6 +612,7 @@ def main() -> int:
                     "LAHBM/1", "RUN", str(request_index), str(token_path),
                     str(visual_output_path), str(generation_path),
                     str(args.max_new_tokens), args.generation_mode,
+                    "1" if task == "object_detection" else "0",
                 ], on_token=None if quiet else stream_token)
             except Exception:
                 if not quiet:
@@ -624,8 +625,20 @@ def main() -> int:
             prefill_tokens = int(language_fields[5])
             prefill_ms = float(language_fields[6])
             decode_ms = float(language_fields[7])
+            response_executed_mode = (
+                language_fields[8] if len(language_fields) > 8 else None
+            )
+            response_fallback_reason = (
+                language_fields[9] if len(language_fields) > 9 else None
+            )
 
-            stop_reason, token_ids = read_generation(generation_path)
+            stop_reason, token_ids, file_executed_mode, file_fallback_reason = (
+                read_generation(generation_path)
+            )
+            executed_mode = (
+                response_executed_mode or file_executed_mode or args.generation_mode
+            )
+            fallback_reason = response_fallback_reason or file_fallback_reason
             text = decode_tokens(tokenizer_dir, token_ids, stream_tokenizer)
             if not quiet:
                 if text.startswith(streamed_text) and len(text) > len(streamed_text):
@@ -646,7 +659,12 @@ def main() -> int:
             language_seconds = time.monotonic() - language_started
 
             postprocess_started = time.monotonic()
-            raw_detections = parse_detections(text, transform)
+            output_complete = stop_reason == "im_end"
+            raw_detections = (
+                parse_detections(text, transform)
+                if task != "object_detection" or output_complete
+                else []
+            )
             detections, suppressed_detections = postprocess_detections(
                 raw_detections,
                 task,
@@ -723,7 +741,11 @@ def main() -> int:
                 "annotated_image": str(annotated_image) if annotated_image else None,
                 "generation": {
                     "mode": args.generation_mode,
+                    "requested_mode": args.generation_mode,
+                    "executed_mode": executed_mode,
+                    "fallback_reason": fallback_reason,
                     "stop_reason": stop_reason,
+                    "complete": output_complete,
                     "token_count": len(token_ids),
                     "max_new_tokens": args.max_new_tokens,
                 },

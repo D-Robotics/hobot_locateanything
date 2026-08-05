@@ -557,7 +557,7 @@ def run_command(command: list[str], log_path: Path, env: dict[str, str]) -> tupl
     return process.stdout, elapsed
 
 
-def read_generation(path: Path) -> tuple[str, list[int]]:
+def read_generation(path: Path) -> tuple[str, list[int], str | None, str | None]:
     fields: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
@@ -566,7 +566,12 @@ def read_generation(path: Path) -> tuple[str, list[int]]:
     if "token_ids" not in fields or "stop_reason" not in fields:
         raise ValueError(f"invalid Language output: {path}")
     token_ids = [int(value) for value in fields["token_ids"].split(",") if value]
-    return fields["stop_reason"], token_ids
+    return (
+        fields["stop_reason"],
+        token_ids,
+        fields.get("executed_mode") or None,
+        fields.get("fallback_reason") or None,
+    )
 
 
 def decode_tokens(tokenizer_dir: Path, token_ids: list[int], tokenizer=None) -> str:
@@ -924,21 +929,24 @@ def main() -> int:
             language_stage_started = time.monotonic()
             prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
             prompt_tokens.tofile(prompt_tokens_path)
+            language_command = language_runner_command(runtime) + [
+                "--mode",
+                "all",
+                "--tokens",
+                str(prompt_tokens_path),
+                "--visual",
+                str(visual_features_path),
+                "--generation-mode",
+                args.generation_mode,
+                "--max-new-tokens",
+                str(args.max_new_tokens),
+                "--output",
+                str(generation_path),
+            ]
+            if task == "object_detection":
+                language_command.append("--structured-output")
             _, language_elapsed = run_command(
-                language_runner_command(runtime) + [
-                    "--mode",
-                    "all",
-                    "--tokens",
-                    str(prompt_tokens_path),
-                    "--visual",
-                    str(visual_features_path),
-                    "--generation-mode",
-                    args.generation_mode,
-                    "--max-new-tokens",
-                    str(args.max_new_tokens),
-                    "--output",
-                    str(generation_path),
-                ],
+                language_command,
                 runtime_log,
                 env,
             )
@@ -951,11 +959,18 @@ def main() -> int:
                 + language_log,
                 encoding="utf-8",
             )
-            stop_reason, token_ids = read_generation(generation_path)
+            stop_reason, token_ids, executed_mode, fallback_reason = read_generation(
+                generation_path
+            )
 
         postprocess_started = time.monotonic()
         text = decode_tokens(tokenizer_dir, token_ids)
-        raw_detections = parse_detections(text, transform)
+        output_complete = stop_reason == "im_end"
+        raw_detections = (
+            parse_detections(text, transform)
+            if task != "object_detection" or output_complete
+            else []
+        )
         detections, suppressed_detections = postprocess_detections(
             raw_detections,
             task,
@@ -1017,8 +1032,11 @@ def main() -> int:
         "annotated_image": str(annotated_image) if annotated_image else None,
         "generation": {
             "mode": args.generation_mode,
+            "requested_mode": args.generation_mode,
+            "executed_mode": executed_mode or args.generation_mode,
+            "fallback_reason": fallback_reason,
             "stop_reason": stop_reason,
-            "complete": stop_reason == "im_end",
+            "complete": output_complete,
             "token_count": len(token_ids),
             "max_new_tokens": args.max_new_tokens,
         },
