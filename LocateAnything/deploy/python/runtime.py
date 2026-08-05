@@ -46,7 +46,6 @@ TASK_COMMANDS = (
     "/ground_text <text>              Text grounding",
 )
 
-BOX_COMMAND = "/box"
 RUNTIME_VERSION = "0.6.0"
 DEFAULT_NMS_IOU = 0.90
 
@@ -435,19 +434,6 @@ def _require_task_argument(raw: str, command: str) -> str:
     if not value:
         raise ValueError(f"{command} requires an argument")
     return value.rstrip(".").strip()
-
-
-def unwrap_box_command(prompt: str) -> tuple[str, bool]:
-    """Return the wrapped task command and whether visualization was requested."""
-    raw = prompt.strip()
-    if raw == BOX_COMMAND:
-        raise ValueError("usage: /box <task command>, for example /box /detect cat")
-    if raw.startswith(BOX_COMMAND + " "):
-        task_prompt = raw[len(BOX_COMMAND):].strip()
-        if not task_prompt.startswith("/"):
-            raise ValueError("/box must wrap a task command, for example /box /detect cat")
-        return task_prompt, True
-    return raw, False
 
 
 def normalize_prompt(prompt: str) -> tuple[str, str]:
@@ -894,7 +880,7 @@ def main() -> int:
     require_runtime_paths(runtime)
     tokenizer_dir = runtime.tokenizer_dir
     env = build_runtime_environment(runtime)
-    task_prompt, annotate = unwrap_box_command(args.prompt)
+    task_prompt = args.prompt
     normalized_prompt, task = normalize_prompt(task_prompt)
     started = time.monotonic()
     compatibility_output = args.output.resolve() if args.output else None
@@ -909,7 +895,6 @@ def main() -> int:
     monitor.start()
     monitor.begin_request()
     try:
-        monitor.set_stage(1, 3, "Vision")
         vision_stage_started = time.monotonic()
         vision_input, transform = prepare_image(args.image)
         with tempfile.TemporaryDirectory(prefix="locateanything-") as temporary:
@@ -936,7 +921,6 @@ def main() -> int:
             vision_log = runtime_log.read_text(encoding="utf-8")
             vision_stage_seconds = time.monotonic() - vision_stage_started
 
-            monitor.set_stage(2, 3, "Language")
             language_stage_started = time.monotonic()
             prompt_tokens = tokenize_prompt(tokenizer_dir, task_prompt)
             prompt_tokens.tofile(prompt_tokens_path)
@@ -969,7 +953,6 @@ def main() -> int:
             )
             stop_reason, token_ids = read_generation(generation_path)
 
-        monitor.set_stage(3, 3, "Postprocess")
         postprocess_started = time.monotonic()
         text = decode_tokens(tokenizer_dir, token_ids)
         raw_detections = parse_detections(text, transform)
@@ -981,7 +964,7 @@ def main() -> int:
         )
         points = parse_points(text, transform)
         annotated_image = None
-        if annotate or detections or points:
+        if detections or points:
             annotated_image = paths.annotated_image
             save_annotated_image(args.image, detections, points, annotated_image)
         postprocess_seconds = time.monotonic() - postprocess_started

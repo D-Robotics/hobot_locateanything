@@ -1,4 +1,4 @@
-"""Low-overhead S600 resource sampling and live terminal status."""
+"""Low-overhead S600 resource sampling and fixed terminal header."""
 
 from __future__ import annotations
 
@@ -16,16 +16,12 @@ from typing import Iterator
 
 from console import (
     BOLD,
-    CYAN,
     DIM,
     GREEN,
-    MAGENTA,
     RED,
     RESET,
     YELLOW,
     fit_terminal_line,
-    format_duration,
-    pad_visible,
 )
 
 
@@ -134,18 +130,8 @@ class ResourceMonitor:
             Path(f"/sys/devices/system/bpu/bpu{core}/ratio") for core in range(4)
         )
         self._temperature_paths = self._discover_temperature_paths()
-        self._current_bpu: list[float | None] = [None] * 4
-        self._current_cpu: float | None = None
-        self._current_memory: float | None = None
-        self._current_temperature: float | None = None
-        self._stage_index = 0
-        self._stage_total = 0
-        self._stage_name = "Idle"
-        self._stage_started = 0.0
         self._request_started = 0.0
         self._request_elapsed = 0.0
-        self._token_count = 0
-        self._completed_request = False
         self._reset_aggregates()
 
     @staticmethod
@@ -253,10 +239,6 @@ class ResourceMonitor:
             bpu, temperature = self._read_vendor_fallback()
         memory = self._read_memory_percent()
         with self._lock:
-            self._current_bpu = bpu
-            self._current_cpu = cpu_percent
-            self._current_memory = memory
-            self._current_temperature = temperature
             if not self._active.is_set():
                 return
             self._sample_count += 1
@@ -290,14 +272,8 @@ class ResourceMonitor:
         now = time.monotonic()
         with self._lock:
             self._reset_aggregates()
-            self._stage_index = 0
-            self._stage_total = 0
-            self._stage_name = "Starting"
-            self._stage_started = now
             self._request_started = now
             self._request_elapsed = 0.0
-            self._token_count = 0
-            self._completed_request = False
         self._previous_cpu = self._read_system_cpu()
         self._active.set()
         self._wake.set()
@@ -309,9 +285,6 @@ class ResourceMonitor:
         self._active.clear()
         with self._lock:
             self._request_elapsed = time.monotonic() - self._request_started
-            self._completed_request = True
-            self._stage_index = self._stage_total
-            self._stage_name = "Complete"
         self._wake.set()
 
     @contextmanager
@@ -321,19 +294,6 @@ class ResourceMonitor:
             yield self
         finally:
             self.end_request()
-
-    def set_stage(self, index: int, total: int, name: str) -> None:
-        with self._lock:
-            self._stage_index = index
-            self._stage_total = total
-            self._stage_name = name
-            self._stage_started = time.monotonic()
-            self._token_count = 0
-        self._wake.set()
-
-    def observe_token(self) -> None:
-        with self._lock:
-            self._token_count += 1
 
     def summary(self, *, sample_now: bool = False) -> ResourceSummary:
         if sample_now and self._active.is_set():
@@ -361,103 +321,8 @@ class ResourceMonitor:
                 bpu_temperature_peak_celsius=self._temperature_peak,
             )
 
-    @staticmethod
-    def _plain_percent(value: float | None) -> str:
-        return "--" if value is None else f"{value:.0f}%"
-
-    @staticmethod
-    def _colored_percent(value: float | None) -> str:
-        if value is None:
-            return f"{DIM}--{RESET}"
-        color = GREEN if value < 55.0 else YELLOW if value < 85.0 else RED
-        return f"{color}{value:3.0f}%{RESET}"
-
-    @staticmethod
-    def _colored_temperature(value: float | None) -> str:
-        if value is None:
-            return f"{DIM}--{RESET}"
-        color = GREEN if value < 70.0 else YELLOW if value < 85.0 else RED
-        return f"{color}{value:.1f} C{RESET}"
-
-    @staticmethod
-    def _progress_bar(index: int, total: int, complete: bool, width: int = 14) -> str:
-        if total <= 0:
-            return "[" + "-" * width + "]"
-        fraction = 1.0 if complete else max(0.0, min(1.0, (index - 1) / total))
-        filled = min(width, int(fraction * width))
-        if complete:
-            body = "=" * width
-        elif filled < width:
-            body = "=" * filled + ">" + "-" * (width - filled - 1)
-        else:
-            body = "=" * width
-        return f"[{body}]"
-
-    def _render(self) -> tuple[str, str]:
-        with self._lock:
-            now = time.monotonic()
-            active = self._active.is_set()
-            elapsed = (
-                now - self._request_started
-                if active and self._request_started
-                else self._request_elapsed
-            )
-            stage_elapsed = now - self._stage_started if self._stage_started else 0.0
-            rate = self._token_count / stage_elapsed if stage_elapsed > 0 else 0.0
-            bar = self._progress_bar(
-                self._stage_index, self._stage_total, self._completed_request
-            )
-            stage = (
-                f"{BOLD}{CYAN}{bar}{RESET} "
-                f"{GREEN}{self._stage_index}/{self._stage_total}{RESET} "
-                f"{BOLD}{self._stage_name}{RESET}"
-            )
-            if (
-                active
-                and self._stage_name.lower().startswith("language")
-                and self._token_count
-            ):
-                stage += (
-                    f"  {GREEN}{self._token_count} tokens{RESET}  "
-                    f"{MAGENTA}{rate:.1f} tokens/s{RESET}"
-                )
-            stage += f"  {YELLOW}{format_duration(elapsed)}{RESET}"
-
-            bpu = " ".join(
-                f"{DIM}{core}:{RESET}{self._colored_percent(value)}"
-                for core, value in enumerate(self._current_bpu)
-            )
-            resources = (
-                f"{BOLD}{CYAN}BPU{RESET} {bpu}  |  "
-                f"{BOLD}CPU{RESET} {self._colored_percent(self._current_cpu)}  |  "
-                f"{BOLD}Memory{RESET} {self._colored_percent(self._current_memory)}  |  "
-                f"{BOLD}Temp{RESET} {self._colored_temperature(self._current_temperature)}"
-            )
-            return stage, resources
-
-    def _draw(self) -> None:
-        if not self.visible:
-            return
-        stage, resources = self._render()
-        columns = shutil.get_terminal_size((120, 32)).columns
-        if columns < 88:
-            with self._lock:
-                bpu = "/".join(self._plain_percent(value) for value in self._current_bpu)
-                resources = (
-                    f"BPU {bpu} | CPU {self._plain_percent(self._current_cpu)} | "
-                    f"MEM {self._plain_percent(self._current_memory)}"
-                )
-        stage = fit_terminal_line(stage, columns)
-        resources = fit_terminal_line(resources, columns)
-        sys.stdout.write(
-            f"\0337\033[{self._rows - 1};1H\033[2K{stage}"
-            f"\033[{self._rows};1H\033[2K{resources}\0338"
-        )
-        sys.stdout.flush()
-
     def _run(self) -> None:
         next_sample = 0.0
-        next_draw = 0.0
         while not self._stop.is_set():
             active = self._active.is_set()
             now = time.monotonic()
@@ -466,11 +331,8 @@ class ResourceMonitor:
                 next_sample = now + self.interval_seconds
             elif not active:
                 next_sample = 0.0
-            if now >= next_draw:
-                self._draw()
-                next_draw = now + self.interval_seconds
             timeout = (
-                max(0.0, min(next_sample, next_draw) - time.monotonic())
+                max(0.0, next_sample - time.monotonic())
                 if active
                 else None
             )
@@ -485,7 +347,7 @@ class ResourceMonitor:
         self._rows = size.lines
         self._columns = size.columns
         content_top = len(self._header_lines) + 1
-        content_bottom = self._rows - 2
+        content_bottom = self._rows
         self._layout_active = (
             self.visible and content_bottom - content_top + 1 >= 4
         )
@@ -514,10 +376,7 @@ class ResourceMonitor:
         if self._thread is not None:
             self._thread.join(timeout=1.5)
         if self._layout_active:
-            sys.stdout.write(
-                f"\033[r\033[{self._rows - 1};1H\033[2K"
-                f"\033[{self._rows};1H\033[2K\033[{self._rows - 1};1H"
-            )
+            sys.stdout.write("\033[r")
             sys.stdout.flush()
             self._layout_active = False
 
@@ -536,17 +395,13 @@ def format_resource_values(values: tuple[float | None, ...]) -> str:
 
 
 def resource_summary_lines(summary: ResourceSummary) -> list[str]:
-    bpu_average = pad_visible(format_resource_values(summary.bpu_average_percent), 27)
-    cpu_average = pad_visible(_summary_value(summary.cpu_average_percent), 8)
-    memory_average = pad_visible(_summary_value(summary.memory_average_percent), 8)
     return [
-        f"  {BOLD}BPU cores{RESET}   avg {bpu_average} "
+        f"  {BOLD}BPU{RESET}     avg "
+        f"{format_resource_values(summary.bpu_average_percent)}  "
         f"peak {format_resource_values(summary.bpu_peak_percent)}",
-        f"  {BOLD}CPU{RESET}         avg {cpu_average} "
-        f"peak {_summary_value(summary.cpu_peak_percent)}",
-        f"  {BOLD}Memory{RESET}      avg {memory_average} "
-        f"peak {_summary_value(summary.memory_peak_percent)}",
-        f"  {BOLD}BPU temp{RESET}    peak "
-        f"{_summary_value(summary.bpu_temperature_peak_celsius, ' C')}  "
-        f"samples {GREEN}{summary.sample_count}{RESET}",
+        f"  {BOLD}System{RESET}  CPU avg {_summary_value(summary.cpu_average_percent)} "
+        f"peak {_summary_value(summary.cpu_peak_percent)}  |  "
+        f"Memory avg {_summary_value(summary.memory_average_percent)} "
+        f"peak {_summary_value(summary.memory_peak_percent)}  |  "
+        f"Temp {_summary_value(summary.bpu_temperature_peak_celsius, ' C')}",
     ]

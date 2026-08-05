@@ -12,7 +12,6 @@ import argparse
 import json
 import queue
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -34,8 +33,6 @@ from console import (
     YELLOW,
     WaitIndicator,
     banner_lines,
-    pad_visible,
-    truncate_visible,
 )
 from runtime import (
     RUNTIME_VERSION,
@@ -56,12 +53,29 @@ from runtime import (
     require_runtime_paths,
     save_annotated_image,
     tokenize_prompt,
-    unwrap_box_command,
 )
 from telemetry import ResourceMonitor, ResourceSummary, resource_summary_lines
 
 
 VERSION = RUNTIME_VERSION
+
+TASK_HELP = (
+    ("/detect cat,dog", "目标检测"),
+    ("/ground <phrase>", "指代表达，多目标"),
+    ("/ground_single <phrase>", "指代表达，单目标"),
+    ("/gui <element>", "GUI 点定位"),
+    ("/gui_box <element>", "GUI 框定位"),
+    ("/text", "文本 OCR"),
+    ("/ground_text <text>", "指定文本定位"),
+    ("/layout title,table,figure", "文档版面分析"),
+    ("/point <target>", "通用点定位"),
+)
+SESSION_HELP = (
+    ("/image <image_path>", "加载图片"),
+    ("regen", "重跑上次请求"),
+    ("reset", "清除当前图片与缓存"),
+    ("exit", "退出程序"),
+)
 
 
 class HbmServer:
@@ -297,12 +311,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-dashboard", action="store_true",
-        help="disable the live S600 resource footer",
+        help="disable the fixed terminal header",
     )
     parser.add_argument(
         "--show-runner-details",
         action="store_true",
-        help="print detailed runner timing lines in addition to the live footer",
+        help="print detailed runner timing lines",
     )
     parser.add_argument(
         "--show-profiles",
@@ -377,50 +391,31 @@ def print_result(
     print(f"{BOLD}{CYAN}Resources{RESET}")
     for line in resource_summary_lines(resources):
         print(line)
-    print(f"{BOLD}{CYAN}Predictions{RESET}")
+    print(f"{BOLD}{CYAN}Result{RESET}")
     label_text = ", ".join(labels) if labels else "(none)"
-    print(f"  {BOLD}Labels{RESET}  {MAGENTA}{label_text}{RESET}")
-    print(f"  {BOLD}Boxes{RESET}   {GREEN}{len(detections)}{RESET}")
-    for index, item in enumerate(detections, 1):
-        print(
-            f"    {GREEN}{index}.{RESET} {BLUE}{item['label']!r}{RESET}  "
-            f"normalized={YELLOW}{item['bbox_profile_1000']}{RESET}  "
-            f"pixels={YELLOW}{item['bbox_xyxy']}{RESET}"
-        )
-    print(f"  {BOLD}Points{RESET}  {GREEN}{len(points)}{RESET}")
-    for index, item in enumerate(points, 1):
-        print(
-            f"    {GREEN}{index}.{RESET} {BLUE}{item['label']!r}{RESET}  "
-            f"normalized={YELLOW}{item['point_profile_1000']}{RESET}  "
-            f"pixels={YELLOW}{item['point_xy']}{RESET}"
-        )
+    print(
+        f"  Labels {MAGENTA}{label_text}{RESET}  |  "
+        f"Boxes {GREEN}{len(detections)}{RESET}  |  "
+        f"Points {GREEN}{len(points)}{RESET}"
+    )
+
+
+def print_command_help() -> None:
+    print(f"{BOLD}{CYAN}Tasks{RESET}")
+    for command, description in TASK_HELP:
+        print(f"  {command:<30} {DIM}{description}{RESET}")
+    print(f"{BOLD}{CYAN}Session{RESET}")
+    for command, description in SESSION_HELP:
+        print(f"  {command:<30} {DIM}{description}{RESET}")
 
 
 def build_runtime_header(
     vision: HbmServer,
     language: HbmServer,
-    runtime: RuntimeConfig,
     generation_mode: str,
     max_new_tokens: int,
     show_runner_details: bool = False,
 ) -> tuple[list[str], list[str]]:
-    def command(value: str, description: str, color: str) -> str:
-        label = pad_visible(f"  {color}{value}{RESET}", 32)
-        return f"{label}{DIM}{description}{RESET}"
-
-    def menu_rows(items: list[tuple[str, str, str]], columns: int) -> list[str]:
-        entries = [command(*item) for item in items]
-        if columns < 88:
-            return entries
-        column_width = max(42, (columns - 2) // 2)
-        rows: list[str] = []
-        for index in range(0, len(entries), 2):
-            left = truncate_visible(entries[index], column_width)
-            right_index = index + 1
-            right = entries[right_index] if right_index < len(entries) else ""
-            rows.append(f"{pad_visible(left, column_width)}  {right}")
-        return rows
-
     details: list[str] = []
     if show_runner_details:
         printed: set[str] = set()
@@ -431,37 +426,16 @@ def build_runtime_header(
                 details.append(line)
                 printed.add(line)
 
-    columns = shutil.get_terminal_size((120, 32)).columns
-    core_text = ",".join(str(core) for core in runtime.bpu_cores)
     header = banner_lines()
     header.extend((
-        f"{BOLD}{GREEN}Ready{RESET}  {BOLD}S600/Nash-P{RESET}  |  "
-        f"{runtime.model_type}  |  BPU {GREEN}{core_text}{RESET}  |  "
-        f"v{RUNTIME_VERSION}",
-        f"{BOLD}{CYAN}Input{RESET} {GREEN}{runtime.image_width}x{runtime.image_height}{RESET}"
-        f"  |  Graphs {MAGENTA}{runtime.language_graph_set}{RESET}"
-        f"  |  Generation {MAGENTA}{generation_mode}{RESET}"
-        f"  |  Max tokens {GREEN}{max_new_tokens}{RESET}",
-        f"{BOLD}{CYAN}Tasks{RESET}",
+        f"{BOLD}{GREEN}Ready{RESET}  S600/Nash-P  |  "
+        f"{MAGENTA}{generation_mode}{RESET}  |  "
+        f"max tokens {GREEN}{max_new_tokens}{RESET}",
+        f"{BOLD}{CYAN}Tasks{RESET}    /detect  /ground  /ground_single  /gui  /gui_box",
+        "         /text  /ground_text  /layout  /point  /help",
+        f"{BOLD}{CYAN}Session{RESET}  /image  regen  reset  exit",
+        f"{DIM}{'─' * 72}{RESET}",
     ))
-    header.extend(menu_rows([
-        ("/detect cat,dog", "目标检测", GREEN),
-        ("/ground <phrase>", "指代表达，多目标", MAGENTA),
-        ("/ground_single <phrase>", "指代表达，单目标", MAGENTA),
-        ("/gui <element>", "GUI 点定位", BLUE),
-        ("/gui_box <element>", "GUI 框定位", BLUE),
-        ("/text", "文本 OCR", YELLOW),
-        ("/ground_text <text>", "指定文本定位", YELLOW),
-        ("/layout title,table,figure", "文档版面分析", CYAN),
-        ("/point <target>", "通用点定位", CYAN),
-        ("/box /detect cat", "保存预测框图片", GREEN),
-    ], columns))
-    header.append(f"{BOLD}{CYAN}Session{RESET}")
-    header.extend(menu_rows([
-        ("/image <image_path>", "加载图片", BLUE),
-        ("regen", "重跑上次请求", BLUE),
-        ("reset", "清除当前图片与缓存", BLUE),
-    ], columns))
     return header, details
 
 
@@ -520,7 +494,6 @@ def main() -> int:
         header_lines, startup_details = build_runtime_header(
             vision,
             language,
-            runtime,
             args.generation_mode,
             args.max_new_tokens,
             show_runner_details=getattr(args, "show_runner_details", False),
@@ -541,7 +514,7 @@ def main() -> int:
         nonlocal request_index, last_request, vision_cache
         if not image.is_file():
             raise FileNotFoundError(image)
-        task_prompt, annotate = unwrap_box_command(prompt)
+        task_prompt = prompt
         normalized_prompt, task = normalize_prompt(task_prompt)
         request_index += 1
         last_request = (image, prompt)
@@ -558,7 +531,6 @@ def main() -> int:
             prefix="locateanything-interactive-"
         ) as raw_dir:
             work_dir = Path(raw_dir)
-            monitor.set_stage(1, 3, "Vision")
             vit_started = time.monotonic()
             vision_input_path = work_dir / "vision_input.f16.bin"
             visual_output_path = work_dir / "visual_features.f16.bin"
@@ -585,7 +557,6 @@ def main() -> int:
                 vision_cache = (cache_key, visual_output_path.read_bytes(), transform)
             vit_ms = (time.monotonic() - vit_started) * 1000.0
 
-            monitor.set_stage(2, 3, "Language")
             language_started = time.monotonic()
             tokens = tokenize_prompt(tokenizer_dir, task_prompt, stream_tokenizer)
             tokens.tofile(token_path)
@@ -595,22 +566,14 @@ def main() -> int:
 
             def stream_token(token: int) -> None:
                 nonlocal streamed_text
-                monitor.observe_token()
                 streamed_ids.append(token)
                 decoded = stream_tokenizer.decode(
                     streamed_ids, skip_special_tokens=False
                 ).rstrip("\ufffd")
                 if decoded.startswith(streamed_text):
-                    print(
-                        f"{MAGENTA}{decoded[len(streamed_text):]}{RESET}",
-                        end="",
-                        flush=True,
-                    )
+                    print(decoded[len(streamed_text):], end="", flush=True)
                     streamed_text = decoded
 
-            if normalized_prompt != prompt:
-                print(f"{CYAN}[Task]{RESET} {MAGENTA}{task}{RESET}")
-                print(f"{CYAN}[Prompt]{RESET} {BLUE}{normalized_prompt}{RESET}")
             print(f"{BOLD}{MAGENTA}[Assistant] >>>{RESET} ", end="", flush=True)
             try:
                 language_result, language_log = language.request([
@@ -632,15 +595,11 @@ def main() -> int:
             stop_reason, token_ids = read_generation(generation_path)
             text = decode_tokens(tokenizer_dir, token_ids, stream_tokenizer)
             if text.startswith(streamed_text) and len(text) > len(streamed_text):
-                print(
-                    f"{MAGENTA}{text[len(streamed_text):]}{RESET}",
-                    end="",
-                    flush=True,
-                )
+                print(text[len(streamed_text):], end="", flush=True)
             elif text != streamed_text:
                 print(
                     f"\n{BOLD}{MAGENTA}[Assistant final] >>>{RESET} "
-                    f"{MAGENTA}{text}{RESET}",
+                    f"{text}",
                     end="",
                     flush=True,
                 )
@@ -652,7 +611,6 @@ def main() -> int:
                     print(f"{DIM}{line}{RESET}")
             language_seconds = time.monotonic() - language_started
 
-            monitor.set_stage(3, 3, "Postprocess")
             postprocess_started = time.monotonic()
             raw_detections = parse_detections(text, transform)
             detections, suppressed_detections = postprocess_detections(
@@ -663,7 +621,7 @@ def main() -> int:
             )
             points = parse_points(text, transform)
             annotated_image = None
-            if annotate or detections or points:
+            if detections or points:
                 annotated_image = paths.annotated_image
                 save_annotated_image(image, detections, points, annotated_image)
             postprocess_seconds = time.monotonic() - postprocess_started
@@ -683,12 +641,6 @@ def main() -> int:
                 total_ms,
                 resource_summary,
             )
-            if suppressed_detections:
-                print(
-                    f"  {YELLOW}NMS removed{RESET} "
-                    f"{GREEN}{len(suppressed_detections)}{RESET} same-label box(es) "
-                    f"at IoU >= {YELLOW}{args.nms_iou:.2f}{RESET}"
-                )
             timing_data = {
                 "schema_version": 1,
                 "stages_seconds": {
@@ -765,10 +717,9 @@ def main() -> int:
                 }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"{BOLD}{CYAN}Saved{RESET}")
             if annotated_image:
-                print(f"  {BOLD}Annotated image{RESET}  {BLUE}{annotated_image}{RESET}")
-            print(f"  {BOLD}Prediction{RESET}       {BLUE}{paths.prediction}{RESET}")
-            print(f"  {BOLD}Timings{RESET}          {BLUE}{paths.timings}{RESET}")
-            print(f"  {BOLD}Run directory{RESET}    {BLUE}{paths.root}{RESET}")
+                print(f"  {BOLD}Image{RESET}  {BLUE}{annotated_image}{RESET}")
+            print(f"  {BOLD}JSON{RESET}   {BLUE}{paths.prediction}{RESET}")
+            print()
 
     try:
         if current_image is not None and args.prompt:
@@ -784,6 +735,9 @@ def main() -> int:
                 continue
             if line == "exit":
                 break
+            if line in {"/help", "help", "?"}:
+                print_command_help()
+                continue
             if line == "reset":
                 current_image = None
                 last_request = None
