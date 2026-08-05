@@ -1,6 +1,6 @@
 {
   "model_type": "LocateAnything-3B",
-  "model_dir": "artifacts/releases/current/",
+  "model_dir": "models/LocateAnything-3B/",
   "vit_model_file": "LocateAnything-3B_vision.hbm",
   "llm_model_file": "LocateAnything-3B_language.hbm",
   "embed_weight_file_path": "LocateAnything-3B_embed_tokens.bin",

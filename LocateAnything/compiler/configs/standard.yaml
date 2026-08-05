@@ -1,11 +1,11 @@
 extends: common.yaml
 
 paths:
-  calibration_dir: artifacts/calibration/locateanything/statistics/standard
-  scale_manifest: artifacts/calibration/locateanything/statistics/standard/calibration_scale_manifest.json
-  coverage_json: artifacts/calibration/locateanything/statistics/standard/calibration_graph_coverage.json
-  build_root: artifacts/builds/locateanything-3b/standard
-  log_root: artifacts/logs/locateanything-3b/standard
+  calibration_dir: outputs/calibration/locateanything/statistics/standard
+  scale_manifest: outputs/calibration/locateanything/statistics/standard/calibration_scale_manifest.json
+  coverage_json: outputs/calibration/locateanything/statistics/standard/calibration_graph_coverage.json
+  build_root: outputs/builds/locateanything-3b/standard
+  log_root: outputs/logs/locateanything-3b/standard
 
 language:
   graph_set: standard

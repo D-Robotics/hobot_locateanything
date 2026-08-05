@@ -49,8 +49,7 @@ def create_video_output_dir(
         name = name or "video"
         root = (
             layout_root
-            / "artifacts"
-            / "runs"
+            / "outputs"
             / "video"
             / f"{timestamp}_{name}_{uuid.uuid4().hex[:8]}"
         )

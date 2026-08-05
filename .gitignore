@@ -1,6 +1,18 @@
-# Product-local checkpoints and generated artifacts
+# Legacy local development outputs (not part of the public layout)
 /LocateAnything/artifacts/**
 /LocateAnything/workspace/**
+
+# User-provided model and dataset files
+/LocateAnything/models/LocateAnything-3B/*
+!/LocateAnything/models/LocateAnything-3B/.gitignore
+/LocateAnything/datasets/calibration/*
+!/LocateAnything/datasets/calibration/.gitignore
+/LocateAnything/datasets/upstream/*
+!/LocateAnything/datasets/upstream/.gitignore
+
+# Generated compiler and inference outputs
+/LocateAnything/outputs/*
+!/LocateAnything/outputs/.gitignore
 /LocateAnything/deploy/build/
 
 # Model weights and generated artifacts

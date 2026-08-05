@@ -46,15 +46,16 @@ PATH_ENV_OVERRIDES = {
     "upstream_source": "LA_UPSTREAM_SOURCE",
 }
 PATH_ROOT_OVERRIDES = {
-    "model": ("LA_MODEL_ROOT", Path("artifacts/models")),
-    "selected_jsonl": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "generated_dir": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "generated_jsonl": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "calibration_dir": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "scale_manifest": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "coverage_json": ("LA_CALIBRATION_ROOT", Path("artifacts/calibration")),
-    "build_root": ("LA_BUILD_ROOT", Path("artifacts/builds")),
-    "log_root": ("LA_LOG_ROOT", Path("artifacts/logs")),
+    "model": ("LA_MODEL_ROOT", Path("models")),
+    "upstream_source": ("LA_DATASET_ROOT", Path("datasets")),
+    "selected_jsonl": ("LA_DATASET_ROOT", Path("datasets")),
+    "generated_dir": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "generated_jsonl": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "calibration_dir": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "scale_manifest": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "coverage_json": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "build_root": ("LA_OUTPUTS_ROOT", Path("outputs")),
+    "log_root": ("LA_OUTPUTS_ROOT", Path("outputs")),
 }
 
 
@@ -207,14 +208,6 @@ def _resolve_config_path(
                 ) from exc
             return (Path(configured_root).expanduser() / suffix).resolve()
 
-    artifacts_root = os.environ.get("LA_ARTIFACTS_ROOT")
-    if artifacts_root:
-        try:
-            suffix = expanded.relative_to("artifacts")
-        except ValueError:
-            pass
-        else:
-            return (Path(artifacts_root).expanduser() / suffix).resolve()
     return (PROJECT_ROOT / expanded).resolve()
 
 

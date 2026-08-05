@@ -1,11 +1,11 @@
 extends: common.yaml
 
 paths:
-  calibration_dir: artifacts/calibration/locateanything/statistics/fused_decode
-  scale_manifest: artifacts/calibration/locateanything/statistics/fused_decode/calibration_scale_manifest.json
-  coverage_json: artifacts/calibration/locateanything/statistics/fused_decode/calibration_graph_coverage.json
-  build_root: artifacts/builds/locateanything-3b/fused_decode
-  log_root: artifacts/logs/locateanything-3b/fused_decode
+  calibration_dir: outputs/calibration/locateanything/statistics/fused_decode
+  scale_manifest: outputs/calibration/locateanything/statistics/fused_decode/calibration_scale_manifest.json
+  coverage_json: outputs/calibration/locateanything/statistics/fused_decode/calibration_graph_coverage.json
+  build_root: outputs/builds/locateanything-3b/fused_decode
+  log_root: outputs/logs/locateanything-3b/fused_decode
 
 language:
   graph_set: fused_decode

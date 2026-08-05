@@ -1,11 +1,11 @@
 schema_version: 1
 
 paths:
-  model: artifacts/models/LocateAnything-3B
-  upstream_source: artifacts/upstream/Eagle/Embodied
-  selected_jsonl: artifacts/calibration/locateanything/source/selected.jsonl
-  generated_dir: artifacts/calibration/locateanything/generated
-  generated_jsonl: artifacts/calibration/locateanything/generated/generated.jsonl
+  model: models/LocateAnything-3B
+  upstream_source: datasets/upstream/Eagle/Embodied
+  selected_jsonl: datasets/calibration/locateanything/source/selected.jsonl
+  generated_dir: outputs/calibration/locateanything/generated
+  generated_jsonl: outputs/calibration/locateanything/generated/generated.jsonl
 
 model:
   image_width: 672

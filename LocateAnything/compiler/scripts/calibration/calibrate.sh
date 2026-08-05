@@ -15,7 +15,7 @@ Required variables:
   CHECKPOINT_SAMPLES  convergence checkpoint smaller than MAX_SAMPLES
 
 Model defaults:
-  MODEL_PATH          artifacts/models/LocateAnything-3B
+  MODEL_PATH          models/LocateAnything-3B
   CALIBRATION_COMPONENT  all
   CHUNK_SIZE          1024
   CACHE_LEN           4096
@@ -36,7 +36,7 @@ REPLAY_SCRIPT=${REPLAY_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/calibrat
 GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration index}
 SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the frozen dataset index}
 UPSTREAM_REPO=${UPSTREAM_REPO:?set UPSTREAM_REPO to the LocateAnything Float source tree}
-MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/artifacts/models/LocateAnything-3B"}
+MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/models/LocateAnything-3B"}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation calibration output directory}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-float16}
@@ -67,13 +67,13 @@ RESUME=${RESUME:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/artifacts/logs"
+mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/outputs/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_calibrate"}
-LOG_PATH=${LOG_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.log"}
-EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.exit.txt"}
+LOG_PATH=${LOG_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.log"}
+EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
-PID_PATH=${PID_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.pid"}
-LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.launcher.log"}
+PID_PATH=${PID_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.pid"}
+LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.launcher.log"}
 ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/calibration_environment.json"}
 ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 STARTED_AT=$(date --iso-8601=seconds)

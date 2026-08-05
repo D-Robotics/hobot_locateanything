@@ -34,13 +34,13 @@ RESUME=${RESUME:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/artifacts/logs"
+mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/outputs/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_prepare"}
-LOG_PATH=${LOG_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.log"}
-EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.exit.txt"}
+LOG_PATH=${LOG_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.log"}
+EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/prepare_job_metadata.json"}
-PID_PATH=${PID_PATH:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.pid"}
-LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/artifacts/logs/${JOB_NAME}.launcher.log"}
+PID_PATH=${PID_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.pid"}
+LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.launcher.log"}
 ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/prepare_environment.json"}
 ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 

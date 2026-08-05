@@ -126,7 +126,7 @@ def create_prediction_paths(
         timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
         image_name = _safe_name(image_path.stem, "image")
         suffix = _safe_name(unique_id or uuid.uuid4().hex[:8], "run")
-        root = layout_root / "artifacts" / "runs" / "predict"
+        root = layout_root / "outputs" / "predict"
         output_dir = root / f"{timestamp}_{image_name}_{suffix}"
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -277,9 +277,9 @@ def load_runtime_config(
         raise ValueError("runner_startup_timeout_seconds must be finite and positive")
 
     model_dir = _configured_path(layout_root, str(raw["model_dir"]))
-    release_root = os.environ.get("LA_RELEASE_ROOT")
-    if release_root:
-        model_dir = _configured_path(layout_root, release_root)
+    model_root = os.environ.get("LA_MODEL_ROOT")
+    if model_root:
+        model_dir = _configured_path(layout_root, model_root)
     vision_model = _environment_path(
         "LA_VISION_MODEL", model_dir / str(raw["vit_model_file"]), layout_root
     )
@@ -294,12 +294,12 @@ def load_runtime_config(
         _configured_path(layout_root, str(raw["vocabulary_path"])),
         layout_root,
     )
-    release_deploy_dir = layout_root / "deploy"
+    deploy_dir = layout_root / "deploy"
     vision_runner = _environment_path(
-        "LA_VISION_RUNNER", release_deploy_dir / "build" / "vision_hbm_runner", layout_root
+        "LA_VISION_RUNNER", deploy_dir / "build" / "vision_hbm_runner", layout_root
     )
     language_runner = _environment_path(
-        "LA_LANGUAGE_RUNNER", release_deploy_dir / "build" / "language_hbm_runner", layout_root
+        "LA_LANGUAGE_RUNNER", deploy_dir / "build" / "language_hbm_runner", layout_root
     )
     expected_cores = (0, 1, 2, 3)
     for field in ("vit_bpu_core", "prefill_bpu_core", "decode_bpu_core"):
