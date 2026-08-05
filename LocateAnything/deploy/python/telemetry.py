@@ -14,7 +14,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from console import BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, format_duration
+from console import (
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    MAGENTA,
+    RED,
+    RESET,
+    YELLOW,
+    fit_terminal_line,
+    format_duration,
+    pad_visible,
+)
 
 
 S600_BPU_RATIO_RE = re.compile(
@@ -31,7 +43,6 @@ S600_SECTION_VALUE_RE = re.compile(
     r"(?P<unit>m?C)\b",
     re.IGNORECASE,
 )
-ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def parse_s600_resource_status(text: str) -> tuple[list[float | None], float | None]:
@@ -60,12 +71,6 @@ def parse_s600_resource_status(text: str) -> tuple[list[float | None], float | N
             value /= 1000.0
         temperatures.append(value)
     return bpu, max(temperatures) if temperatures else None
-
-
-def _fit_terminal_line(value: str, columns: int) -> str:
-    plain = ANSI_ESCAPE_RE.sub("", value)
-    return value if len(plain) < columns else plain[: max(1, columns - 1)]
-
 
 @dataclass(frozen=True)
 class ResourceSummary:
@@ -97,7 +102,7 @@ class ResourceSummary:
 
 
 class ResourceMonitor:
-    """Collect request telemetry and optionally render a fixed two-line footer."""
+    """Collect request telemetry and render a low-overhead fixed terminal layout."""
 
     def __init__(
         self,
@@ -107,15 +112,17 @@ class ResourceMonitor:
     ) -> None:
         if interval_seconds < 0.1:
             raise ValueError("telemetry interval must be at least 0.1 seconds")
-        rows = shutil.get_terminal_size((120, 32)).lines
+        size = shutil.get_terminal_size((120, 32))
         self.visible = (
             visible
-            and rows >= 6
             and sys.stdout.isatty()
             and os.environ.get("TERM") != "dumb"
         )
         self.interval_seconds = interval_seconds
-        self._rows = rows
+        self._rows = size.lines
+        self._columns = size.columns
+        self._header_lines: tuple[str, ...] = ()
+        self._layout_active = False
         self._stop = threading.Event()
         self._active = threading.Event()
         self._wake = threading.Event()
@@ -327,7 +334,6 @@ class ResourceMonitor:
     def observe_token(self) -> None:
         with self._lock:
             self._token_count += 1
-        self._wake.set()
 
     def summary(self, *, sample_now: bool = False) -> ResourceSummary:
         if sample_now and self._active.is_set():
@@ -367,6 +373,13 @@ class ResourceMonitor:
         return f"{color}{value:3.0f}%{RESET}"
 
     @staticmethod
+    def _colored_temperature(value: float | None) -> str:
+        if value is None:
+            return f"{DIM}--{RESET}"
+        color = GREEN if value < 70.0 else YELLOW if value < 85.0 else RED
+        return f"{color}{value:.1f} C{RESET}"
+
+    @staticmethod
     def _progress_bar(index: int, total: int, complete: bool, width: int = 14) -> str:
         if total <= 0:
             return "[" + "-" * width + "]"
@@ -396,26 +409,29 @@ class ResourceMonitor:
             )
             stage = (
                 f"{BOLD}{CYAN}{bar}{RESET} "
-                f"{self._stage_index}/{self._stage_total} {self._stage_name}"
+                f"{GREEN}{self._stage_index}/{self._stage_total}{RESET} "
+                f"{BOLD}{self._stage_name}{RESET}"
             )
             if (
                 active
                 and self._stage_name.lower().startswith("language")
                 and self._token_count
             ):
-                stage += f"  {self._token_count} tokens  {rate:.1f} tokens/s"
-            stage += f"  {DIM}{format_duration(elapsed)}{RESET}"
+                stage += (
+                    f"  {GREEN}{self._token_count} tokens{RESET}  "
+                    f"{MAGENTA}{rate:.1f} tokens/s{RESET}"
+                )
+            stage += f"  {YELLOW}{format_duration(elapsed)}{RESET}"
 
             bpu = " ".join(
-                f"{core}:{self._colored_percent(value)}"
+                f"{DIM}{core}:{RESET}{self._colored_percent(value)}"
                 for core, value in enumerate(self._current_bpu)
             )
-            temperature = (
-                "--" if self._current_temperature is None else f"{self._current_temperature:.1f} C"
-            )
             resources = (
-                f"BPU {bpu}  |  CPU {self._colored_percent(self._current_cpu)}  |  "
-                f"Memory {self._colored_percent(self._current_memory)}  |  Temp {temperature}"
+                f"{BOLD}{CYAN}BPU{RESET} {bpu}  |  "
+                f"{BOLD}CPU{RESET} {self._colored_percent(self._current_cpu)}  |  "
+                f"{BOLD}Memory{RESET} {self._colored_percent(self._current_memory)}  |  "
+                f"{BOLD}Temp{RESET} {self._colored_temperature(self._current_temperature)}"
             )
             return stage, resources
 
@@ -431,8 +447,8 @@ class ResourceMonitor:
                     f"BPU {bpu} | CPU {self._plain_percent(self._current_cpu)} | "
                     f"MEM {self._plain_percent(self._current_memory)}"
                 )
-        stage = _fit_terminal_line(stage, columns)
-        resources = _fit_terminal_line(resources, columns)
+        stage = fit_terminal_line(stage, columns)
+        resources = fit_terminal_line(resources, columns)
         sys.stdout.write(
             f"\0337\033[{self._rows - 1};1H\033[2K{stage}"
             f"\033[{self._rows};1H\033[2K{resources}\0338"
@@ -441,6 +457,7 @@ class ResourceMonitor:
 
     def _run(self) -> None:
         next_sample = 0.0
+        next_draw = 0.0
         while not self._stop.is_set():
             active = self._active.is_set()
             now = time.monotonic()
@@ -449,20 +466,43 @@ class ResourceMonitor:
                 next_sample = now + self.interval_seconds
             elif not active:
                 next_sample = 0.0
-            self._draw()
-            timeout = max(0.0, next_sample - time.monotonic()) if active else None
+            if now >= next_draw:
+                self._draw()
+                next_draw = now + self.interval_seconds
+            timeout = (
+                max(0.0, min(next_sample, next_draw) - time.monotonic())
+                if active
+                else None
+            )
             self._wake.wait(timeout)
             self._wake.clear()
 
-    def start(self) -> None:
+    def start(self, header_lines: list[str] | tuple[str, ...] = ()) -> None:
         if self._thread is not None:
             return
-        if self.visible:
+        self._header_lines = tuple(header_lines)
+        size = shutil.get_terminal_size((120, 32))
+        self._rows = size.lines
+        self._columns = size.columns
+        content_top = len(self._header_lines) + 1
+        content_bottom = self._rows - 2
+        self._layout_active = (
+            self.visible and content_bottom - content_top + 1 >= 4
+        )
+        if self._layout_active:
             sys.stdout.flush()
+            header = "\r\n".join(
+                fit_terminal_line(line, self._columns) for line in self._header_lines
+            )
             sys.stdout.write(
-                f"\033[1;{self._rows - 2}r\033[{self._rows - 2};1H"
+                f"\033[2J\033[H{header}\033[{content_top};{content_bottom}r"
+                f"\033[{content_top};1H"
             )
             sys.stdout.flush()
+        else:
+            self.visible = False
+            if self._header_lines:
+                print("\n".join(self._header_lines), flush=True)
         self._thread = threading.Thread(
             target=self._run, name="s600-telemetry", daemon=True
         )
@@ -473,29 +513,40 @@ class ResourceMonitor:
         self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=1.5)
-        if self.visible:
+        if self._layout_active:
             sys.stdout.write(
-                f"\0337\033[r\033[{self._rows - 1};1H\033[2K"
-                f"\033[{self._rows};1H\033[2K\0338"
+                f"\033[r\033[{self._rows - 1};1H\033[2K"
+                f"\033[{self._rows};1H\033[2K\033[{self._rows - 1};1H"
             )
             sys.stdout.flush()
+            self._layout_active = False
+
+
+def _summary_value(number: float | None, suffix: str = "%") -> str:
+    if number is None:
+        return f"{DIM}--{RESET}"
+    threshold = 70.0 if suffix == " C" else 55.0
+    warning = 85.0
+    color = GREEN if number < threshold else YELLOW if number < warning else RED
+    return f"{color}{number:.1f}{suffix}{RESET}"
 
 
 def format_resource_values(values: tuple[float | None, ...]) -> str:
-    return "/".join("--" if value is None else f"{value:.1f}%" for value in values)
+    return "/".join(_summary_value(value) for value in values)
 
 
 def resource_summary_lines(summary: ResourceSummary) -> list[str]:
-    def value(number: float | None, suffix: str = "%") -> str:
-        return "--" if number is None else f"{number:.1f}{suffix}"
-
+    bpu_average = pad_visible(format_resource_values(summary.bpu_average_percent), 27)
+    cpu_average = pad_visible(_summary_value(summary.cpu_average_percent), 8)
+    memory_average = pad_visible(_summary_value(summary.memory_average_percent), 8)
     return [
-        f"  BPU cores   avg {format_resource_values(summary.bpu_average_percent):<27} "
+        f"  {BOLD}BPU cores{RESET}   avg {bpu_average} "
         f"peak {format_resource_values(summary.bpu_peak_percent)}",
-        f"  CPU         avg {value(summary.cpu_average_percent):<8} "
-        f"peak {value(summary.cpu_peak_percent)}",
-        f"  Memory      avg {value(summary.memory_average_percent):<8} "
-        f"peak {value(summary.memory_peak_percent)}",
-        f"  BPU temp    peak {value(summary.bpu_temperature_peak_celsius, ' C')}  "
-        f"samples {summary.sample_count}",
+        f"  {BOLD}CPU{RESET}         avg {cpu_average} "
+        f"peak {_summary_value(summary.cpu_peak_percent)}",
+        f"  {BOLD}Memory{RESET}      avg {memory_average} "
+        f"peak {_summary_value(summary.memory_peak_percent)}",
+        f"  {BOLD}BPU temp{RESET}    peak "
+        f"{_summary_value(summary.bpu_temperature_peak_celsius, ' C')}  "
+        f"samples {GREEN}{summary.sample_count}{RESET}",
     ]

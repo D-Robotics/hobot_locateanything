@@ -12,6 +12,7 @@ import argparse
 import json
 import queue
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,6 +33,9 @@ from console import (
     RESET,
     YELLOW,
     WaitIndicator,
+    banner_lines,
+    pad_visible,
+    truncate_visible,
 )
 from runtime import (
     RUNTIME_VERSION,
@@ -250,7 +254,8 @@ def close_runtime_resources(
     for label, error in failures:
         try:
             print(
-                f"[WARN] failed to close {label}: {type(error).__name__}: {error}",
+                f"{YELLOW}[WARN]{RESET} failed to close {BOLD}{label}{RESET}: "
+                f"{type(error).__name__}: {error}",
                 file=sys.stderr,
             )
         except Exception:
@@ -349,92 +354,116 @@ def print_result(
     print()
     print(f"{BOLD}{CYAN}Performance{RESET}")
     print(
-        f"  Vision       {vit_ms:10.3f} ms  "
-        f"HBM {vit_infer_ms:.3f} ms  cached={'yes' if vision_cached else 'no'}"
+        f"  {BOLD}Vision{RESET}       {YELLOW}{vit_ms:10.3f} ms{RESET}  "
+        f"HBM {YELLOW}{vit_infer_ms:.3f} ms{RESET}  "
+        f"cached={GREEN if vision_cached else DIM}"
+        f"{'yes' if vision_cached else 'no'}{RESET}"
     )
     print(
-        f"  Prefill      {prefill_ms:10.3f} ms  "
-        f"{prefill_tokens} tokens  {prefill_tps:.3f} tokens/s"
+        f"  {BOLD}Prefill{RESET}      {YELLOW}{prefill_ms:10.3f} ms{RESET}  "
+        f"{GREEN}{prefill_tokens} tokens{RESET}  "
+        f"{MAGENTA}{prefill_tps:.3f} tokens/s{RESET}"
     )
     print(
-        f"  Decode       {decode_ms:10.3f} ms  "
-        f"{decode_tokens} tokens  {decode_tpot:.3f} ms/token  "
-        f"{decode_tps:.3f} tokens/s"
+        f"  {BOLD}Decode{RESET}       {YELLOW}{decode_ms:10.3f} ms{RESET}  "
+        f"{GREEN}{decode_tokens} tokens{RESET}  "
+        f"{YELLOW}{decode_tpot:.3f} ms/token{RESET}  "
+        f"{MAGENTA}{decode_tps:.3f} tokens/s{RESET}"
     )
-    print(f"  End-to-end   {total_ms:10.3f} ms")
+    print(
+        f"  {BOLD}End-to-end{RESET}   "
+        f"{BOLD}{YELLOW}{total_ms:10.3f} ms{RESET}"
+    )
     print(f"{BOLD}{CYAN}Resources{RESET}")
     for line in resource_summary_lines(resources):
         print(line)
     print(f"{BOLD}{CYAN}Predictions{RESET}")
-    print(f"  Labels  {', '.join(labels) if labels else '(none)'}")
-    print(f"  Boxes   {len(detections)}")
+    label_text = ", ".join(labels) if labels else "(none)"
+    print(f"  {BOLD}Labels{RESET}  {MAGENTA}{label_text}{RESET}")
+    print(f"  {BOLD}Boxes{RESET}   {GREEN}{len(detections)}{RESET}")
     for index, item in enumerate(detections, 1):
         print(
-            f"    {index}. {item['label']!r}  "
-            f"normalized={item['bbox_profile_1000']}  pixels={item['bbox_xyxy']}"
+            f"    {GREEN}{index}.{RESET} {BLUE}{item['label']!r}{RESET}  "
+            f"normalized={YELLOW}{item['bbox_profile_1000']}{RESET}  "
+            f"pixels={YELLOW}{item['bbox_xyxy']}{RESET}"
         )
-    print(f"  Points  {len(points)}")
+    print(f"  {BOLD}Points{RESET}  {GREEN}{len(points)}{RESET}")
     for index, item in enumerate(points, 1):
         print(
-            f"    {index}. {item['label']!r}  "
-            f"normalized={item['point_profile_1000']}  pixels={item['point_xy']}"
+            f"    {GREEN}{index}.{RESET} {BLUE}{item['label']!r}{RESET}  "
+            f"normalized={YELLOW}{item['point_profile_1000']}{RESET}  "
+            f"pixels={YELLOW}{item['point_xy']}{RESET}"
         )
 
 
-def print_runtime_info(
+def build_runtime_header(
     vision: HbmServer,
     language: HbmServer,
     runtime: RuntimeConfig,
-    image: Path | None,
     generation_mode: str,
     max_new_tokens: int,
     show_runner_details: bool = False,
-) -> None:
-    def command(value: str, description: str, color: str = "") -> None:
-        padding = " " * max(2, 34 - len(value))
-        print(f"  {color}{value}{RESET}{padding}{DIM}{description}{RESET}")
+) -> tuple[list[str], list[str]]:
+    def command(value: str, description: str, color: str) -> str:
+        label = pad_visible(f"  {color}{value}{RESET}", 32)
+        return f"{label}{DIM}{description}{RESET}"
 
+    def menu_rows(items: list[tuple[str, str, str]], columns: int) -> list[str]:
+        entries = [command(*item) for item in items]
+        if columns < 88:
+            return entries
+        column_width = max(42, (columns - 2) // 2)
+        rows: list[str] = []
+        midpoint = (len(entries) + 1) // 2
+        for index in range(midpoint):
+            left = truncate_visible(entries[index], column_width)
+            right_index = index + midpoint
+            right = entries[right_index] if right_index < len(entries) else ""
+            rows.append(f"{pad_visible(left, column_width)}  {right}")
+        return rows
+
+    details: list[str] = []
     if show_runner_details:
         printed: set[str] = set()
         for line in vision.startup_output + language.startup_output:
             if line not in printed and any(
                 marker in line for marker in ("[UCP]", "[DNN]", "[BPU]")
             ):
-                print(line)
+                details.append(line)
                 printed.add(line)
+
+    columns = shutil.get_terminal_size((120, 32)).columns
     core_text = ",".join(str(core) for core in runtime.bpu_cores)
-    print(f"\n{BOLD}{CYAN}LocateAnything{RESET} {DIM}v{RUNTIME_VERSION}{RESET}")
-    print(f"{GREEN}Ready{RESET}  S600/Nash-P  |  {runtime.model_type}  |  BPU {core_text}")
-    print(
-        f"Input {runtime.image_width}x{runtime.image_height}  |  "
-        f"Language graphs {runtime.language_graph_set}  |  "
-        f"Generation {generation_mode} ({max_new_tokens} token limit)"
-    )
-    print(
-        f"Resources every {runtime.telemetry_interval_seconds:.2f}s  |  "
-        "BPU per core, CPU, memory, temperature"
-    )
-    if image is not None:
-        print(f"Image {image}")
-    print()
-    print(f"{BOLD}{CYAN}Tasks{RESET}")
-    command("/detect cat,dog", "目标检测", GREEN)
-    command("/ground <phrase>", "指代表达，多目标", MAGENTA)
-    command("/ground_single <phrase>", "指代表达，单目标", MAGENTA)
-    command("/gui <element>", "GUI 点定位", BLUE)
-    command("/gui_box <element>", "GUI 框定位", BLUE)
-    command("/text", "文本 OCR", YELLOW)
-    command("/ground_text <text>", "指定文本定位", YELLOW)
-    command("/layout title,table,figure", "文档版面分析", CYAN)
-    command("/point <target>", "通用点定位", RED)
-    command("/box /detect cat", "保存预测框图片", GREEN)
-    print()
-    print(f"{BOLD}{CYAN}Session{RESET}")
-    command("/image <image_path>", "加载图片", BOLD)
-    command("regen", "重跑上次请求", BOLD)
-    command("reset", "清除当前图片与缓存", BOLD)
-    command("exit", "退出程序", BOLD)
-    print()
+    header = banner_lines()
+    header.extend((
+        f"{BOLD}{GREEN}Ready{RESET}  {BOLD}S600/Nash-P{RESET}  |  "
+        f"{runtime.model_type}  |  BPU {GREEN}{core_text}{RESET}  |  "
+        f"v{RUNTIME_VERSION}",
+        f"{BOLD}{CYAN}Input{RESET} {GREEN}{runtime.image_width}x{runtime.image_height}{RESET}"
+        f"  |  Graphs {MAGENTA}{runtime.language_graph_set}{RESET}"
+        f"  |  Generation {MAGENTA}{generation_mode}{RESET}"
+        f"  |  Max tokens {GREEN}{max_new_tokens}{RESET}",
+        f"{BOLD}{CYAN}Tasks{RESET}",
+    ))
+    header.extend(menu_rows([
+        ("/detect cat,dog", "目标检测", GREEN),
+        ("/ground <phrase>", "指代表达，多目标", MAGENTA),
+        ("/ground_single <phrase>", "指代表达，单目标", MAGENTA),
+        ("/gui <element>", "GUI 点定位", BLUE),
+        ("/gui_box <element>", "GUI 框定位", BLUE),
+        ("/text", "文本 OCR", YELLOW),
+        ("/ground_text <text>", "指定文本定位", YELLOW),
+        ("/layout title,table,figure", "文档版面分析", CYAN),
+        ("/point <target>", "通用点定位", CYAN),
+        ("/box /detect cat", "保存预测框图片", GREEN),
+    ], columns))
+    header.append(f"{BOLD}{CYAN}Session{RESET}")
+    header.extend(menu_rows([
+        ("/image <image_path>", "加载图片", BLUE),
+        ("regen", "重跑上次请求", BLUE),
+        ("reset", "清除当前图片与缓存", BLUE),
+    ], columns))
+    return header, details
 
 
 def main() -> int:
@@ -489,16 +518,19 @@ def main() -> int:
             visible=not args.no_dashboard,
             interval_seconds=runtime.telemetry_interval_seconds,
         )
-        print_runtime_info(
+        header_lines, startup_details = build_runtime_header(
             vision,
             language,
             runtime,
-            current_image,
             args.generation_mode,
             args.max_new_tokens,
             show_runner_details=getattr(args, "show_runner_details", False),
         )
-        monitor.start()
+        monitor.start(header_lines)
+        for line in startup_details:
+            print(f"{DIM}{line}{RESET}")
+        if current_image is not None:
+            print(f"{GREEN}Image loaded{RESET}  {BLUE}{current_image}{RESET}")
     except BaseException:
         close_runtime_resources(monitor, language, vision)
         raise
@@ -570,13 +602,17 @@ def main() -> int:
                     streamed_ids, skip_special_tokens=False
                 ).rstrip("\ufffd")
                 if decoded.startswith(streamed_text):
-                    print(decoded[len(streamed_text):], end="", flush=True)
+                    print(
+                        f"{MAGENTA}{decoded[len(streamed_text):]}{RESET}",
+                        end="",
+                        flush=True,
+                    )
                     streamed_text = decoded
 
             if normalized_prompt != prompt:
-                print(f"[LocateAnything] task={task}")
-                print(f"[LocateAnything] prompt={normalized_prompt}")
-            print("[Assistant] >>> ", end="", flush=True)
+                print(f"{CYAN}[Task]{RESET} {MAGENTA}{task}{RESET}")
+                print(f"{CYAN}[Prompt]{RESET} {BLUE}{normalized_prompt}{RESET}")
+            print(f"{BOLD}{MAGENTA}[Assistant] >>>{RESET} ", end="", flush=True)
             try:
                 language_result, language_log = language.request([
                     "LAHBM/1", "RUN", str(request_index), str(token_path),
@@ -597,15 +633,24 @@ def main() -> int:
             stop_reason, token_ids = read_generation(generation_path)
             text = decode_tokens(tokenizer_dir, token_ids, stream_tokenizer)
             if text.startswith(streamed_text) and len(text) > len(streamed_text):
-                print(text[len(streamed_text):], end="", flush=True)
+                print(
+                    f"{MAGENTA}{text[len(streamed_text):]}{RESET}",
+                    end="",
+                    flush=True,
+                )
             elif text != streamed_text:
-                print(f"\n[Assistant final] >>> {text}", end="", flush=True)
+                print(
+                    f"\n{BOLD}{MAGENTA}[Assistant final] >>>{RESET} "
+                    f"{MAGENTA}{text}{RESET}",
+                    end="",
+                    flush=True,
+                )
             print()
             for line in language_log:
                 if args.show_runner_details and line.startswith(
                     ("[profile]", "[pbd]", "[hybrid:")
                 ):
-                    print(line)
+                    print(f"{DIM}{line}{RESET}")
             language_seconds = time.monotonic() - language_started
 
             monitor.set_stage(3, 3, "Postprocess")
@@ -641,8 +686,9 @@ def main() -> int:
             )
             if suppressed_detections:
                 print(
-                    f"  NMS removed {len(suppressed_detections)} same-label box(es) "
-                    f"at IoU >= {args.nms_iou:.2f}"
+                    f"  {YELLOW}NMS removed{RESET} "
+                    f"{GREEN}{len(suppressed_detections)}{RESET} same-label box(es) "
+                    f"at IoU >= {YELLOW}{args.nms_iou:.2f}{RESET}"
                 )
             timing_data = {
                 "schema_version": 1,
@@ -720,18 +766,18 @@ def main() -> int:
                 }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"{BOLD}{CYAN}Saved{RESET}")
             if annotated_image:
-                print(f"  Annotated image  {annotated_image}")
-            print(f"  Prediction       {paths.prediction}")
-            print(f"  Timings          {paths.timings}")
-            print(f"  Run directory    {paths.root}")
+                print(f"  {BOLD}Annotated image{RESET}  {BLUE}{annotated_image}{RESET}")
+            print(f"  {BOLD}Prediction{RESET}       {BLUE}{paths.prediction}{RESET}")
+            print(f"  {BOLD}Timings{RESET}          {BLUE}{paths.timings}{RESET}")
+            print(f"  {BOLD}Run directory{RESET}    {BLUE}{paths.root}{RESET}")
 
     try:
         if current_image is not None and args.prompt:
-            print(f"[User] <<< {args.prompt}")
+            print(f"{BOLD}{BLUE}[User] <<<{RESET} {BLUE}{args.prompt}{RESET}")
             infer(current_image, args.prompt)
         while True:
             try:
-                line = input("[User] <<< ").strip()
+                line = input(f"{BOLD}{BLUE}[User] <<<{RESET} ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
@@ -743,34 +789,40 @@ def main() -> int:
                 current_image = None
                 last_request = None
                 vision_cache = None
-                print("[LocateAnything] session reset")
+                print(f"{GREEN}[Session]{RESET} image and cache cleared")
                 continue
             if line == "regen":
                 if last_request is None:
-                    print("[LocateAnything] no previous request")
+                    print(f"{YELLOW}[Session]{RESET} no previous request")
                 else:
-                    print(f"[User] <<< {last_request[1]}")
+                    print(
+                        f"{BOLD}{BLUE}[User] <<<{RESET} "
+                        f"{BLUE}{last_request[1]}{RESET}"
+                    )
                     infer(*last_request)
                 continue
             if line.startswith("/image"):
                 parts = shlex.split(line)
                 if len(parts) != 2:
-                    print("usage: /image IMAGE_PATH")
+                    print(f"{YELLOW}Usage:{RESET} /image IMAGE_PATH")
                     continue
                 candidate = Path(parts[1]).expanduser().resolve()
                 if not candidate.is_file():
-                    print(f"[LocateAnything] image not found: {candidate}")
+                    print(f"{RED}[Error]{RESET} image not found: {BLUE}{candidate}{RESET}")
                     continue
                 current_image = candidate
-                print(f"[LocateAnything] image loaded: {current_image}")
+                print(f"{GREEN}Image loaded{RESET}  {BLUE}{current_image}{RESET}")
                 continue
             if current_image is None:
-                print("[LocateAnything] load an image first with /image IMAGE_PATH")
+                print(
+                    f"{YELLOW}[Session]{RESET} load an image first with "
+                    f"{BLUE}/image IMAGE_PATH{RESET}"
+                )
                 continue
             try:
                 infer(current_image, line)
             except Exception as error:
-                print(f"[LocateAnything] request failed: {error}", file=sys.stderr)
+                print(f"{RED}[Request failed]{RESET} {error}", file=sys.stderr)
     finally:
         close_runtime_resources(monitor, language, vision)
     return 0
@@ -780,5 +832,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
-        print(f"[FAIL] {type(error).__name__}: {error}", file=sys.stderr)
+        print(
+            f"{RED}[FAIL]{RESET} {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)

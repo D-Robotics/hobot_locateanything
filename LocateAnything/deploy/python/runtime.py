@@ -252,6 +252,7 @@ def load_runtime_config(
         "pbd_query_len": 6,
         "ar_query_len": 1,
         "default_generation_mode": "hybrid",
+        "default_max_new_tokens": 4096,
         "l2m_sizes": "6:6:6:6",
     }
     for key, expected in fixed_specification.items():

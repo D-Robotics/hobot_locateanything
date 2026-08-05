@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
+import unicodedata
 from contextlib import AbstractContextManager
 from typing import TextIO
 
@@ -28,6 +30,69 @@ YELLOW = "\033[33m" if COLOR else ""
 BLUE = "\033[34m" if COLOR else ""
 MAGENTA = "\033[35m" if COLOR else ""
 RED = "\033[31m" if COLOR else ""
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+LOCATE_BANNER = (
+    "  ██╗      ██████╗  ██████╗ █████╗ ████████╗███████╗",
+    "  ██║     ██╔═══██╗██╔════╝██╔══██╗╚══██╔══╝██╔════╝",
+    "  ██║     ██║   ██║██║     ███████║   ██║   █████╗  ",
+    "  ██║     ██║   ██║██║     ██╔══██║   ██║   ██╔══╝  ",
+    "  ███████╗╚██████╔╝╚██████╗██║  ██║   ██║   ███████╗",
+    "  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝",
+)
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", value)
+
+
+def character_width(value: str) -> int:
+    if unicodedata.combining(value):
+        return 0
+    return 2 if unicodedata.east_asian_width(value) in {"W", "F"} else 1
+
+
+def visible_width(value: str) -> int:
+    return sum(character_width(character) for character in strip_ansi(value))
+
+
+def truncate_visible(value: str, width: int) -> str:
+    """Truncate colored text without splitting ANSI escapes or wide characters."""
+    if width <= 0:
+        return ""
+    result: list[str] = []
+    position = 0
+    used_color = False
+    while position < len(value):
+        match = ANSI_ESCAPE_RE.match(value, position)
+        if match is not None:
+            result.append(match.group(0))
+            used_color = True
+            position = match.end()
+            continue
+        character = value[position]
+        next_width = character_width(character)
+        if next_width and width < next_width:
+            break
+        result.append(character)
+        width -= next_width
+        position += 1
+    if used_color and position < len(value):
+        result.append(RESET or "\033[0m")
+    return "".join(result)
+
+
+def fit_terminal_line(value: str, columns: int) -> str:
+    return truncate_visible(value, max(1, columns - 1))
+
+
+def pad_visible(value: str, width: int) -> str:
+    return value + " " * max(0, width - visible_width(value))
+
+
+def banner_lines() -> list[str]:
+    return [f"{BOLD}{CYAN}{line}{RESET}" for line in LOCATE_BANNER]
 
 
 def format_duration(seconds: float) -> str:
@@ -70,7 +135,11 @@ class WaitIndicator(AbstractContextManager["WaitIndicator"]):
 
     def _line(self, frame: str) -> str:
         elapsed = format_duration(time.monotonic() - self.started)
-        return f"[{self.index}/{self.total}] {frame} {self.label}  {DIM}{elapsed}{RESET}"
+        return (
+            f"{CYAN}[{self.index}/{self.total}]{RESET} "
+            f"{YELLOW}{frame}{RESET} {BOLD}{self.label}{RESET}  "
+            f"{DIM}{elapsed}{RESET}"
+        )
 
     def _animate(self) -> None:
         frame = 0
@@ -103,4 +172,3 @@ class WaitIndicator(AbstractContextManager["WaitIndicator"]):
             flush=True,
         )
         return False
-
