@@ -4,8 +4,8 @@
   <arg name="image_topic" default="/hbmem_img"/>
   <arg name="frame_complete_topic" default="/locateanything/frame_complete"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>
-  <node pkg="locateanything" exec="locateanything_video_source"
-        name="locateanything_video_source" output="screen">
+  <node pkg="locateanything" exec="video_source"
+        name="video_source" output="screen">
     <param name="source" value="$(var source)" type="str"/>
     <param name="image_topic" value="$(var image_topic)" type="str"/>
     <param name="frame_complete_topic" value="$(var frame_complete_topic)" type="str"/>

@@ -67,33 +67,33 @@ add_library(locateanything_inference STATIC
 target_include_directories(locateanything_inference PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(locateanything_inference PUBLIC ${OpenCV_LIBS} Threads::Threads)
 
-add_executable(vision_hbm_runner apps/vision_hbm_runner.cpp)
-target_link_libraries(vision_hbm_runner PRIVATE locateanything_hbm)
+add_executable(vision_runner apps/vision_runner.cpp)
+target_link_libraries(vision_runner PRIVATE locateanything_hbm)
 
-add_executable(language_hbm_runner apps/language_hbm_runner.cpp)
-target_link_libraries(language_hbm_runner PRIVATE locateanything_hbm)
+add_executable(language_runner apps/language_runner.cpp)
+target_link_libraries(language_runner PRIVATE locateanything_hbm)
 
-add_executable(locateanything_image_source ros/image_source_node.cpp)
-target_include_directories(locateanything_image_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(locateanything_image_source ${OpenCV_LIBS})
-ament_target_dependencies(locateanything_image_source hbm_img_msgs rclcpp)
+add_executable(image_source ros/image_source_node.cpp)
+target_include_directories(image_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(image_source ${OpenCV_LIBS})
+ament_target_dependencies(image_source hbm_img_msgs rclcpp)
 
-add_executable(locateanything_video_source ros/video_source_node.cpp)
-target_include_directories(locateanything_video_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(locateanything_video_source ${OpenCV_LIBS})
-ament_target_dependencies(locateanything_video_source hbm_img_msgs rclcpp std_msgs)
+add_executable(video_source ros/video_source_node.cpp)
+target_include_directories(video_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(video_source ${OpenCV_LIBS})
+ament_target_dependencies(video_source hbm_img_msgs rclcpp std_msgs)
 
-add_executable(locateanything_node ros/locateanything_node.cpp)
-target_link_libraries(locateanything_node locateanything_inference)
-ament_target_dependencies(locateanything_node
+add_executable(inference ros/inference_node.cpp)
+target_link_libraries(inference locateanything_inference)
+ament_target_dependencies(inference
   ament_index_cpp cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
 
 install(TARGETS
-  vision_hbm_runner
-  language_hbm_runner
-  locateanything_image_source
-  locateanything_video_source
-  locateanything_node
+  vision_runner
+  language_runner
+  image_source
+  video_source
+  inference
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch tokenizer
   DESTINATION share/${PROJECT_NAME})

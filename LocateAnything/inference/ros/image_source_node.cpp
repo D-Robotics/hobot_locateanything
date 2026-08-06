@@ -19,7 +19,7 @@ namespace locateanything {
 
 class ImageSourceNode : public rclcpp::Node {
  public:
-  ImageSourceNode() : Node("locateanything_image_source") {
+  ImageSourceNode() : Node("image_source") {
     source_ = declare_parameter<std::string>("source", "");
     const std::string topic =
         declare_parameter<std::string>("image_topic", "/hbmem_img");
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
   try {
     rclcpp::spin(std::make_shared<locateanything::ImageSourceNode>());
   } catch (const std::exception& error) {
-    RCLCPP_FATAL(rclcpp::get_logger("locateanything_image_source"), "%s",
+    RCLCPP_FATAL(rclcpp::get_logger("image_source"), "%s",
                  error.what());
   }
   rclcpp::shutdown();

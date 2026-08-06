@@ -21,7 +21,7 @@ namespace locateanything {
 
 class VideoSourceNode : public rclcpp::Node {
  public:
-  VideoSourceNode() : Node("locateanything_video_source") {
+  VideoSourceNode() : Node("video_source") {
     source_ = declare_parameter<std::string>("source", "");
     const std::string topic =
         declare_parameter<std::string>("image_topic", "/hbmem_img");
@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
   try {
     rclcpp::spin(std::make_shared<locateanything::VideoSourceNode>());
   } catch (const std::exception& error) {
-    RCLCPP_FATAL(rclcpp::get_logger("locateanything_video_source"), "%s",
+    RCLCPP_FATAL(rclcpp::get_logger("video_source"), "%s",
                  error.what());
   }
   rclcpp::shutdown();

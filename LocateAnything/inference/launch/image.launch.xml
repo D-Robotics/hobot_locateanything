@@ -2,8 +2,8 @@
   <arg name="source"/>
   <arg name="image_topic" default="/hbmem_img"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>
-  <node pkg="locateanything" exec="locateanything_image_source"
-        name="locateanything_image_source" output="screen">
+  <node pkg="locateanything" exec="image_source"
+        name="image_source" output="screen">
     <param name="source" value="$(var source)" type="str"/>
     <param name="image_topic" value="$(var image_topic)" type="str"/>
   </node>

@@ -6,7 +6,7 @@
   <arg name="model_directory" default=""/>
   <arg name="output_directory" default="inference/outputs"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>
-  <node pkg="locateanything" exec="locateanything_node" name="locateanything" output="screen">
+  <node pkg="locateanything" exec="inference" name="locateanything" output="screen">
     <param from="$(var config)"/>
     <param name="image_topic" value="$(var image_topic)" type="str"/>
     <param name="shared_image_topic" value="$(var shared_image_topic)" type="str"/>

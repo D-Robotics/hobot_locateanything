@@ -112,9 +112,9 @@ class LocateAnythingNode : public rclcpp::Node {
 
     InferenceOptions options;
     options.vision_runner =
-        (package_prefix / "lib/locateanything/vision_hbm_runner").string();
+        (package_prefix / "lib/locateanything/vision_runner").string();
     options.language_runner =
-        (package_prefix / "lib/locateanything/language_hbm_runner").string();
+        (package_prefix / "lib/locateanything/language_runner").string();
     options.vision_model =
         (fs::path(model_directory) /
          declare_parameter<std::string>("vision_model", "LocateAnything-3B_vision.hbm"))
