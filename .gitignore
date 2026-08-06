@@ -19,8 +19,6 @@
 # Inference-owned model files and outputs
 /LocateAnything/inference/models/*
 !/LocateAnything/inference/models/.gitignore
-!/LocateAnything/inference/models/tokenizer/
-!/LocateAnything/inference/models/tokenizer/**
 /LocateAnything/inference/outputs/*
 !/LocateAnything/inference/outputs/.gitignore
 /LocateAnything/inference/build/

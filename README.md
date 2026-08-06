@@ -65,7 +65,8 @@ hf download <模型仓库> --local-dir inference/models
 inference/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
-└── LocateAnything-3B_embed_tokens.bin
+├── LocateAnything-3B_embed_tokens.bin
+└── tokenizer/
 ```
 
 ### 2. 构建 TROS C++ 包
