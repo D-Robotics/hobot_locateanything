@@ -1,12 +1,12 @@
 <launch>
-  <arg name="config" default="$(find-pkg-share locateanything_tros)/config/locateanything.yaml"/>
+  <arg name="config" default="$(find-pkg-share locateanything)/config/locateanything.yaml"/>
   <arg name="image_topic" default="/image"/>
   <arg name="shared_image_topic" default="/hbmem_img"/>
   <arg name="use_shared_memory" default="true"/>
   <arg name="model_directory" default=""/>
   <arg name="output_directory" default="inference/outputs"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>
-  <node pkg="locateanything_tros" exec="locateanything_node" name="locateanything" output="screen">
+  <node pkg="locateanything" exec="locateanything_node" name="locateanything" output="screen">
     <param from="$(var config)"/>
     <param name="image_topic" value="$(var image_topic)" type="str"/>
     <param name="shared_image_topic" value="$(var shared_image_topic)" type="str"/>

@@ -90,9 +90,9 @@ class LocateAnythingNode : public rclcpp::Node {
     prompt_ = declare_parameter<std::string>("default_prompt", "/detect person");
 
     const fs::path package_prefix =
-        ament_index_cpp::get_package_prefix("locateanything_tros");
+        ament_index_cpp::get_package_prefix("locateanything");
     const fs::path package_share =
-        ament_index_cpp::get_package_share_directory("locateanything_tros");
+        ament_index_cpp::get_package_share_directory("locateanything");
     std::string model_directory =
         declare_parameter<std::string>("model_directory", "");
     if (model_directory.empty()) {
@@ -112,9 +112,9 @@ class LocateAnythingNode : public rclcpp::Node {
 
     InferenceOptions options;
     options.vision_runner =
-        (package_prefix / "lib/locateanything_tros/vision_hbm_runner").string();
+        (package_prefix / "lib/locateanything/vision_hbm_runner").string();
     options.language_runner =
-        (package_prefix / "lib/locateanything_tros/language_hbm_runner").string();
+        (package_prefix / "lib/locateanything/language_hbm_runner").string();
     options.vision_model =
         (fs::path(model_directory) /
          declare_parameter<std::string>("vision_model", "LocateAnything-3B_vision.hbm"))

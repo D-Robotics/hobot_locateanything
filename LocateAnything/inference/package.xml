@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>locateanything_tros</name>
+  <name>locateanything</name>
   <version>0.1.0</version>
   <description>LocateAnything HBM inference for D-Robotics TROS.</description>
   <maintainer email="xkj521999@users.noreply.github.com">Kangjie Xu</maintainer>
