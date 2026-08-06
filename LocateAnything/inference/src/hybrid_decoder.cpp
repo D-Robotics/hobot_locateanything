@@ -64,15 +64,54 @@ struct NucleusDistribution {
 
 std::vector<float> Softmax(const std::vector<float> &logits);
 
+std::vector<float> Softmax(const std::vector<float> &logits,
+                           float maximum) {
+  std::vector<float> probabilities(logits.size());
+  double total = 0.0;
+  for (size_t index = 0; index < logits.size(); ++index) {
+    probabilities[index] = std::exp(logits[index] - maximum);
+    total += probabilities[index];
+  }
+  if (total <= 0.0 || !std::isfinite(total)) return probabilities;
+  for (float &value : probabilities) value = static_cast<float>(value / total);
+  return probabilities;
+}
+
 NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
                                     float temperature, float top_p) {
   std::vector<float> adjusted(logits.size());
   const float inverse_temperature = 1.0f / temperature;
+  float maximum = -std::numeric_limits<float>::infinity();
+  float second_maximum = -std::numeric_limits<float>::infinity();
+  size_t maximum_token = 0;
   for (size_t index = 0; index < logits.size(); ++index) {
-    adjusted[index] = logits[index] * inverse_temperature;
+    const float value = logits[index] * inverse_temperature;
+    adjusted[index] = value;
+    if (value > maximum) {
+      second_maximum = maximum;
+      maximum = value;
+      maximum_token = index;
+    } else if (value > second_maximum) {
+      second_maximum = value;
+    }
   }
 
-  std::vector<float> raw = Softmax(adjusted);
+  if (top_p < 1.0f && std::isfinite(maximum) &&
+      std::isfinite(second_maximum)) {
+    const double other_mass_upper_bound =
+        static_cast<double>(adjusted.size() - 1) *
+        std::exp(static_cast<double>(second_maximum - maximum));
+    const double maximum_probability_lower_bound =
+        1.0 / (1.0 + other_mass_upper_bound);
+    if (maximum_probability_lower_bound >
+        static_cast<double>(top_p) + 1e-6) {
+      std::vector<float> probabilities(logits.size(), 0.0f);
+      probabilities[maximum_token] = 1.0f;
+      return {std::move(probabilities), 1};
+    }
+  }
+
+  std::vector<float> raw = Softmax(adjusted, maximum);
   if (top_p >= 1.0f) {
     return {std::move(raw), static_cast<int32_t>(logits.size())};
   }
@@ -135,15 +174,7 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
 
 std::vector<float> Softmax(const std::vector<float> &logits) {
   const float maximum = *std::max_element(logits.begin(), logits.end());
-  std::vector<float> probabilities(logits.size());
-  double total = 0.0;
-  for (size_t index = 0; index < logits.size(); ++index) {
-    probabilities[index] = std::exp(logits[index] - maximum);
-    total += probabilities[index];
-  }
-  if (total <= 0.0 || !std::isfinite(total)) return probabilities;
-  for (float &value : probabilities) value = static_cast<float>(value / total);
-  return probabilities;
+  return Softmax(logits, maximum);
 }
 
 std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
@@ -172,12 +203,23 @@ std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
   return top;
 }
 
-std::vector<uint8_t> BuildHistoryMask(
+const std::vector<uint8_t> &BuildHistoryMask(
     const std::vector<int32_t> &generated) {
-  std::vector<uint8_t> history(static_cast<size_t>(kVocab), 0);
+  // Decoding calls this once per graph step. Reuse the mask and clear only
+  // tokens marked by the previous call to avoid a 152k-byte allocation and
+  // full memset for every PBD/AR step.
+  static thread_local std::vector<uint8_t> history(
+      static_cast<size_t>(kVocab), 0);
+  static thread_local std::vector<int32_t> marked_tokens;
+  for (const int32_t token : marked_tokens) {
+    history[static_cast<size_t>(token)] = 0;
+  }
+  marked_tokens.clear();
   for (int32_t token : generated) {
-    if (token >= 0 && token < kVocab) {
+    if (token >= 0 && token < kVocab &&
+        history[static_cast<size_t>(token)] == 0) {
       history[static_cast<size_t>(token)] = 1;
+      marked_tokens.push_back(token);
     }
   }
   return history;
@@ -297,7 +339,7 @@ HybridDecision DecodePbd(const Tensor &logits,
       config.top_p > 1.0f || config.repetition_penalty <= 0.0f) {
     return {"im_end", {kImEnd}, false, true};
   }
-  const std::vector<uint8_t> history = BuildHistoryMask(generated);
+  const std::vector<uint8_t> &history = BuildHistoryMask(generated);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
   std::vector<std::vector<float>> probabilities;
@@ -349,7 +391,7 @@ int32_t DecodeArGreedy(const Tensor &logits,
   if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 1, kVocab}) {
     return kImEnd;
   }
-  const std::vector<uint8_t> history = BuildHistoryMask(generated);
+  const std::vector<uint8_t> &history = BuildHistoryMask(generated);
   return Argmax(Row(logits, 0, history, 1.1f));
 }
 
