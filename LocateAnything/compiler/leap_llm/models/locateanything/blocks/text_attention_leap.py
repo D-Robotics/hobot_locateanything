@@ -104,6 +104,9 @@ class LocateAnythingTextAttention(Module):
         self.attention_dropout = config.attention_dropout
         self.rope_scaling = config.rope_scaling
         self.q_mul_value = 1.0 / math.sqrt(self.head_dim)
+        # Optional AR WV FP16 rescue is an explicit experiment only.  The
+        # released fused graph keeps this unset and uses the INT8 path.
+        self.ar_wv_float16_matmul = None
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
                 f"hidden_size must be divisible by num_heads"
