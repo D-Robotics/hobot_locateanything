@@ -80,6 +80,24 @@ source install/setup.bash
 
 ### 3. 启动推理节点
 
+本地图片和视频使用交互式 C++ Console：
+
+```bash
+ros2 run locateanything console
+```
+
+进入 Console 后先加载媒体，再输入任务：
+
+```text
+/image /path/to/image.jpg
+/detect person,motorcycle
+
+/video /path/to/video.mp4
+/detect person
+```
+
+USB 和 MIPI 实时输入使用常驻推理节点：
+
 ```bash
 ros2 launch locateanything locateanything.launch.xml
 ```
@@ -93,14 +111,14 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
 
 ### 4. 输入图片、视频或 USB 相机
 
-本地图片：
+本地图片也可通过独立 TROS Source 节点发布：
 
 ```bash
 ros2 launch locateanything image.launch.xml \
   source:=/path/to/image.jpg
 ```
 
-本地视频（AVI、MP4 等 OpenCV 支持的格式）：
+本地视频也可通过独立 TROS Source 节点逐帧发布：
 
 ```bash
 ros2 launch locateanything video.launch.xml \

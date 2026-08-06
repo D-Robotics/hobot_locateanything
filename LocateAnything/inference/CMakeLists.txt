@@ -88,12 +88,17 @@ target_link_libraries(inference locateanything_inference)
 ament_target_dependencies(inference
   ament_index_cpp cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
 
+add_executable(console src/console.cpp)
+target_link_libraries(console locateanything_inference)
+ament_target_dependencies(console ament_index_cpp)
+
 install(TARGETS
   vision_runner
   language_runner
   image_source
   video_source
   inference
+  console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch models
   DESTINATION share/${PROJECT_NAME})
