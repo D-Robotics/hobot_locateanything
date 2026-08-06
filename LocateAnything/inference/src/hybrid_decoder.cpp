@@ -10,6 +10,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(__aarch64__) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+#include <arm_neon.h>
+#endif
+
 namespace locateanything_runtime {
 namespace {
 
@@ -42,20 +46,47 @@ float Fp16ToFloat(uint16_t bits) {
   return sign ? -value : value;
 }
 
+void ConvertFp16Row(const uint16_t *raw, std::vector<float> *values) {
+  size_t token = 0;
+#if defined(__aarch64__) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  const uint16x8_t exponent_mask = vdupq_n_u16(0x7c00);
+  for (; token + 8 <= static_cast<size_t>(kVocab); token += 8) {
+    const uint16x8_t bits = vld1q_u16(raw + token);
+    const float16x8_t halves = vreinterpretq_f16_u16(bits);
+    vst1q_f32(values->data() + token,
+              vcvt_f32_f16(vget_low_f16(halves)));
+    vst1q_f32(values->data() + token + 4,
+              vcvt_f32_f16(vget_high_f16(halves)));
+
+    const uint16x8_t special =
+        vceqq_u16(vandq_u16(bits, exponent_mask), exponent_mask);
+    if (vmaxvq_u16(special) != 0) {
+      for (size_t lane = 0; lane < 8; ++lane) {
+        if ((raw[token + lane] & 0x7c00) == 0x7c00) {
+          (*values)[token + lane] = std::numeric_limits<float>::quiet_NaN();
+        }
+      }
+    }
+  }
+#endif
+  for (; token < static_cast<size_t>(kVocab); ++token) {
+    (*values)[token] = Fp16ToFloat(raw[token]);
+  }
+}
+
 std::vector<float> Row(const Tensor &logits, int32_t row,
-                       const std::vector<uint8_t> &history,
+                       const std::vector<int32_t> &history_tokens,
                        float repetition_penalty) {
   const auto *raw = reinterpret_cast<const uint16_t *>(logits.data.data());
   std::vector<float> values(kVocab);
   const size_t offset = static_cast<size_t>(row) * kVocab;
-  for (int32_t token = 0; token < kVocab; ++token) {
-    float value = Fp16ToFloat(raw[offset + static_cast<size_t>(token)]);
-    if (history[static_cast<size_t>(token)] != 0 &&
-        repetition_penalty != 1.0f) {
+  ConvertFp16Row(raw + offset, &values);
+  if (repetition_penalty != 1.0f) {
+    for (const int32_t token : history_tokens) {
+      float &value = values[static_cast<size_t>(token)];
       value = value > 0 ? value / repetition_penalty
                         : value * repetition_penalty;
     }
-    values[static_cast<size_t>(token)] = value;
   }
   return values;
 }
@@ -190,11 +221,11 @@ struct PbdRowResult {
 };
 
 PbdRowResult DecodePbdRow(const Tensor &logits, int32_t row,
-                          const std::vector<uint8_t> &history,
+                          const std::vector<int32_t> &history_tokens,
                           const PbdDecodeConfig &config,
                           bool collect_diagnostics) {
   std::vector<float> adjusted =
-      Row(logits, row, history, config.repetition_penalty);
+      Row(logits, row, history_tokens, config.repetition_penalty);
   std::vector<float> legacy;
   if (collect_diagnostics) legacy = Softmax(adjusted);
   NucleusDistribution nucleus =
@@ -225,14 +256,15 @@ class PbdRowExecutor {
   PbdRowExecutor(const PbdRowExecutor &) = delete;
   PbdRowExecutor &operator=(const PbdRowExecutor &) = delete;
 
-  void Decode(const Tensor &logits, const std::vector<uint8_t> &history,
+  void Decode(const Tensor &logits,
+              const std::vector<int32_t> &history_tokens,
               const PbdDecodeConfig &config, bool collect_diagnostics,
               std::array<PbdRowResult, 6> *results) {
     std::lock_guard<std::mutex> call_lock(call_mutex_);
     {
       std::lock_guard<std::mutex> lock(job_mutex_);
       logits_ = &logits;
-      history_ = &history;
+      history_tokens_ = &history_tokens;
       config_ = config;
       collect_diagnostics_ = collect_diagnostics;
       results_ = results;
@@ -242,12 +274,12 @@ class PbdRowExecutor {
     job_ready_.notify_all();
 
     (*results)[5] =
-        DecodePbdRow(logits, 5, history, config, collect_diagnostics);
+        DecodePbdRow(logits, 5, history_tokens, config, collect_diagnostics);
 
     std::unique_lock<std::mutex> lock(job_mutex_);
     job_done_.wait(lock, [this] { return pending_workers_ == 0; });
     logits_ = nullptr;
-    history_ = nullptr;
+    history_tokens_ = nullptr;
     results_ = nullptr;
   }
 
@@ -256,7 +288,7 @@ class PbdRowExecutor {
     size_t observed_generation = 0;
     while (true) {
       const Tensor *logits = nullptr;
-      const std::vector<uint8_t> *history = nullptr;
+      const std::vector<int32_t> *history_tokens = nullptr;
       PbdDecodeConfig config;
       bool collect_diagnostics = false;
       std::array<PbdRowResult, 6> *results = nullptr;
@@ -268,14 +300,15 @@ class PbdRowExecutor {
         if (stopping_) return;
         observed_generation = generation_;
         logits = logits_;
-        history = history_;
+        history_tokens = history_tokens_;
         config = config_;
         collect_diagnostics = collect_diagnostics_;
         results = results_;
       }
 
       (*results)[static_cast<size_t>(row)] =
-          DecodePbdRow(*logits, row, *history, config, collect_diagnostics);
+          DecodePbdRow(*logits, row, *history_tokens, config,
+                       collect_diagnostics);
 
       {
         std::lock_guard<std::mutex> lock(job_mutex_);
@@ -291,7 +324,7 @@ class PbdRowExecutor {
   std::condition_variable job_done_;
   std::vector<std::thread> workers_;
   const Tensor *logits_ = nullptr;
-  const std::vector<uint8_t> *history_ = nullptr;
+  const std::vector<int32_t> *history_tokens_ = nullptr;
   PbdDecodeConfig config_;
   std::array<PbdRowResult, 6> *results_ = nullptr;
   size_t generation_ = 0;
@@ -336,26 +369,23 @@ std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
   return top;
 }
 
-const std::vector<uint8_t> &BuildHistoryMask(
+const std::vector<int32_t> &BuildHistoryTokens(
     const std::vector<int32_t> &generated) {
-  // Decoding calls this once per graph step. Reuse the mask and clear only
-  // tokens marked by the previous call to avoid a 152k-byte allocation and
-  // full memset for every PBD/AR step.
-  static thread_local std::vector<uint8_t> history(
+  static thread_local std::vector<uint8_t> seen(
       static_cast<size_t>(kVocab), 0);
-  static thread_local std::vector<int32_t> marked_tokens;
-  for (const int32_t token : marked_tokens) {
-    history[static_cast<size_t>(token)] = 0;
+  static thread_local std::vector<int32_t> history_tokens;
+  for (const int32_t token : history_tokens) {
+    seen[static_cast<size_t>(token)] = 0;
   }
-  marked_tokens.clear();
+  history_tokens.clear();
   for (int32_t token : generated) {
     if (token >= 0 && token < kVocab &&
-        history[static_cast<size_t>(token)] == 0) {
-      history[static_cast<size_t>(token)] = 1;
-      marked_tokens.push_back(token);
+        seen[static_cast<size_t>(token)] == 0) {
+      seen[static_cast<size_t>(token)] = 1;
+      history_tokens.push_back(token);
     }
   }
-  return history;
+  return history_tokens;
 }
 
 int32_t Argmax(const std::vector<float> &values) {
@@ -472,9 +502,9 @@ HybridDecision DecodePbd(const Tensor &logits,
       config.top_p > 1.0f || config.repetition_penalty <= 0.0f) {
     return {"im_end", {kImEnd}, false, true};
   }
-  const std::vector<uint8_t> &history = BuildHistoryMask(generated);
+  const std::vector<int32_t> &history_tokens = BuildHistoryTokens(generated);
   std::array<PbdRowResult, 6> row_results;
-  PbdRows().Decode(logits, history, config, diagnostics != nullptr,
+  PbdRows().Decode(logits, history_tokens, config, diagnostics != nullptr,
                    &row_results);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
@@ -523,8 +553,8 @@ int32_t DecodeArGreedy(const Tensor &logits,
   if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 1, kVocab}) {
     return kImEnd;
   }
-  const std::vector<uint8_t> &history = BuildHistoryMask(generated);
-  return Argmax(Row(logits, 0, history, 1.1f));
+  const std::vector<int32_t> &history_tokens = BuildHistoryTokens(generated);
+  return Argmax(Row(logits, 0, history_tokens, 1.1f));
 }
 
 std::string RenderLocateAnythingTokens(const std::vector<int32_t> &tokens) {

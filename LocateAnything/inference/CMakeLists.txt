@@ -51,6 +51,11 @@ add_library(locateanything_hbm STATIC
   src/position_ids.cpp)
 target_include_directories(locateanything_hbm PUBLIC include ${HOBOT_INCLUDE_DIR})
 target_link_libraries(locateanything_hbm PUBLIC ${HOBOT_RUNTIME_LIBS} Threads::Threads)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(src/hybrid_decoder.cpp PROPERTIES
+    COMPILE_OPTIONS "-march=armv8.2-a+fp16")
+endif()
 
 add_library(locateanything_inference STATIC
   src/image_preprocessor.cpp
