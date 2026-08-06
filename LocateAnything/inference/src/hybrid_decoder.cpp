@@ -116,9 +116,9 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
     return {std::move(raw), static_cast<int32_t>(logits.size())};
   }
 
-  const auto maximum = std::max_element(raw.begin(), raw.end());
-  if (maximum != raw.end() && *maximum > top_p) {
-    const size_t token = static_cast<size_t>(maximum - raw.begin());
+  const auto maximum_probability = std::max_element(raw.begin(), raw.end());
+  if (maximum_probability != raw.end() && *maximum_probability > top_p) {
+    const size_t token = static_cast<size_t>(maximum_probability - raw.begin());
     std::vector<float> probabilities(logits.size(), 0.0f);
     probabilities[token] = 1.0f;
     return {std::move(probabilities), 1};
