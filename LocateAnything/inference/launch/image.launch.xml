@@ -1,7 +1,17 @@
 <launch>
   <arg name="source"/>
+  <arg name="prompt" default="/detect person"/>
   <arg name="image_topic" default="/hbmem_img"/>
+  <arg name="model_directory" default=""/>
+  <arg name="output_directory" default="inference/outputs"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>
+  <include file="$(find-pkg-share locateanything)/launch/locateanything.launch.xml">
+    <arg name="shared_image_topic" value="$(var image_topic)"/>
+    <arg name="use_shared_memory" value="true"/>
+    <arg name="model_directory" value="$(var model_directory)"/>
+    <arg name="output_directory" value="$(var output_directory)"/>
+    <arg name="prompt" value="$(var prompt)"/>
+  </include>
   <node pkg="locateanything" exec="image_source"
         name="image_source" output="screen">
     <param name="source" value="$(var source)" type="str"/>

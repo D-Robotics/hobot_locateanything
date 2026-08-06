@@ -78,7 +78,7 @@ colcon build --merge-install --symlink-install
 source install/setup.bash
 ```
 
-### 3. 启动推理节点
+### 3. 运行推理
 
 本地图片和视频使用交互式 C++ Console：
 
@@ -96,59 +96,61 @@ ros2 run locateanything console
 /detect person
 ```
 
-USB 和 MIPI 实时输入使用常驻推理节点：
+也可以用一条 launch 命令直接完成本地图片或完整视频推理：
 
 ```bash
-ros2 launch locateanything locateanything.launch.xml
+ros2 launch locateanything image.launch.xml \
+  source:=/path/to/image.jpg prompt:="/detect person,motorcycle"
+
+ros2 launch locateanything video.launch.xml \
+  source:=/path/to/video.mp4 prompt:="/detect person"
 ```
 
-默认任务为 `/detect person`。运行时可通过 Prompt 话题切换任务：
+视频默认处理全部帧，上一帧推理完成后才发送下一帧；加入 `loop:=True`
+可以循环播放。
+
+USB 摄像头使用一条命令同时启动 TROS 摄像头、共享内存和 LA：
+
+```bash
+ros2 launch locateanything usb.launch.xml \
+  device:=/dev/video0 prompt:="/detect person"
+```
+
+默认分辨率为 1920 x 1080、30 FPS，也可以显式修改：
+
+```bash
+ros2 launch locateanything usb.launch.xml \
+  device:=/dev/video0 width:=1280 height:=720 fps:=30 \
+  prompt:="/detect person,motorcycle"
+```
+
+MIPI 摄像头同样使用一条命令启动完整链路：
+
+```bash
+ros2 launch locateanything mipi.launch.xml \
+  prompt:="/detect person"
+```
+
+默认任务为 `/detect person`。运行期间需要切换任务时，再从另一个终端发布：
 
 ```bash
 ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect person,motorcycle'}"
 ```
 
-### 4. 输入图片、视频或 USB 相机
+`locateanything.launch.xml` 仍保留为仅启动 LA 推理节点的底层入口，供用户
+连接自定义 TROS 图像节点；一般使用图片、视频、USB 或 MIPI 的组合 launch
+即可，不需要手动启动多个节点。
 
-本地图片也可通过独立 TROS Source 节点发布：
+### 4. 输入与处理策略
 
-```bash
-ros2 launch locateanything image.launch.xml \
-  source:=/path/to/image.jpg
-```
+图片和视频 Source 节点、USB 相机以及 MIPI 相机都通过共享内存 NV12 话题
+`/hbmem_img` 接入同一个 LA 推理节点。本地视频保证所有帧都经过模型；USB
+和 MIPI 保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
 
-本地视频也可通过独立 TROS Source 节点逐帧发布：
+四种输入均逐帧创建独立的 Language 状态，不跨帧复用 KV Cache。
 
-```bash
-ros2 launch locateanything video.launch.xml \
-  source:=/path/to/video.mp4
-```
-
-USB 相机直接使用 TROS 的 `hobot_usb_cam`：
-
-```bash
-ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
-  usb_video_device:=/dev/video0 usb_image_width:=1920 \
-  usb_image_height:=1080 usb_framerate:=30 usb_zero_copy:=True
-```
-
-图片、视频和 USB 相机使用 TROS 节点发布共享内存 NV12 图像到
-`/hbmem_img`。本地视频在上一帧完成后再发布下一帧，保证所有帧都经过模型；
-USB 和 MIPI 相机保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
-
-### 5. 接入 MIPI 相机
-
-MIPI 相机直接使用 TROS 的 `mipi_cam` 共享内存图像：
-
-```bash
-ros2 launch mipi_cam mipi_cam.launch.py \
-  mipi_io_method:=shared_mem mipi_frame_ts_type:=realtime
-```
-
-图片、视频、USB 和 MIPI 使用同一推理节点，不跨帧复用 Language KV Cache。
-
-### 6. 获取结果
+### 5. 获取结果
 
 | 话题 | 消息类型 | 内容 |
 |---|---|---|
