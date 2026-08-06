@@ -18,6 +18,8 @@
 /LocateAnything/inference/outputs/*
 !/LocateAnything/inference/outputs/.gitignore
 /LocateAnything/inference/build/
+/LocateAnything/inference/install/
+/LocateAnything/inference/log/
 
 # Model weights and generated artifacts
 *.safetensors
