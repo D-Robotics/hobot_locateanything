@@ -119,9 +119,9 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
   const auto maximum_probability = std::max_element(raw.begin(), raw.end());
   if (maximum_probability != raw.end() && *maximum_probability > top_p) {
     const size_t token = static_cast<size_t>(maximum_probability - raw.begin());
-    std::vector<float> probabilities(logits.size(), 0.0f);
-    probabilities[token] = 1.0f;
-    return {std::move(probabilities), 1};
+    std::fill(raw.begin(), raw.end(), 0.0f);
+    raw[token] = 1.0f;
+    return {std::move(raw), 1};
   }
 
   std::vector<int32_t> indices(logits.size());
@@ -161,15 +161,21 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
     }
   }
 
-  std::vector<float> probabilities(logits.size(), 0.0f);
   if (retained == 0 || cumulative <= 0.0 || !std::isfinite(cumulative)) {
-    return {std::move(probabilities), 0};
+    std::fill(raw.begin(), raw.end(), 0.0f);
+    return {std::move(raw), 0};
+  }
+  // Keep the same retained-token values while reusing the full softmax
+  // allocation. The decoder only observes retained entries; all others must
+  // be zero after nucleus filtering.
+  for (size_t index = retained; index < indices.size(); ++index) {
+    raw[static_cast<size_t>(indices[index])] = 0.0f;
   }
   for (size_t index = 0; index < retained; ++index) {
     const size_t token = static_cast<size_t>(indices[index]);
-    probabilities[token] = static_cast<float>(raw[token] / cumulative);
+    raw[token] = static_cast<float>(raw[token] / cumulative);
   }
-  return {std::move(probabilities), static_cast<int32_t>(retained)};
+  return {std::move(raw), static_cast<int32_t>(retained)};
 }
 
 std::vector<float> Softmax(const std::vector<float> &logits) {
