@@ -91,6 +91,10 @@ class LocateAnythingLanguageApi:
         apply_hidden_rotation: bool = True,
         export_only: bool = False,
         calibration_scale_manifest: Optional[str] = None,
+        sampling_backend: str = "host",
+        sampling_temperature: float = 0.7,
+        sampling_top_p: float = 0.9,
+        sampling_repetition_penalty: float = 1.1,
     ) -> None:
         if w_bits not in {4, 8}:
             raise ValueError(f"decoder w_bits must be 4 or 8, got {w_bits}")
@@ -117,6 +121,13 @@ class LocateAnythingLanguageApi:
         self.apply_hidden_rotation = apply_hidden_rotation
         self.export_only = export_only
         self.calibration_scale_manifest = calibration_scale_manifest
+        if sampling_backend not in {"host", "bpu"}:
+            raise ValueError(f"unsupported sampling backend: {sampling_backend}")
+        if sampling_temperature <= 0 or not 0 < sampling_top_p <= 1:
+            raise ValueError("sampling temperature/top_p must be positive and top_p <= 1")
+        if sampling_repetition_penalty <= 0:
+            raise ValueError("sampling repetition penalty must be positive")
+        self.sampling_backend = sampling_backend
 
         os.makedirs(output_model_path, exist_ok=True)
         self.output_lm_model_path = standard_lm_name(
@@ -148,6 +159,10 @@ class LocateAnythingLanguageApi:
         tc.batch_size = batch_size
         tc.w_bits = w_bits
         tc.lm_head_w_bits = lm_head_w_bits
+        tc.sampling_backend = sampling_backend
+        tc.sampling_temperature = float(sampling_temperature)
+        tc.sampling_top_p = float(sampling_top_p)
+        tc.sampling_repetition_penalty = float(sampling_repetition_penalty)
         tc.has_scale = False
 
         print("[LocateAnythingLanguageApi] adapted text_config:")
@@ -311,6 +326,7 @@ class LocateAnythingLanguageApi:
             stage_inputs[stage_name] = (
                 self.text_model.get_leap_input_types_decode_model(
                     num_layers, query_len, cache_len, batch_size,
+                    pbd=(stage_name == "decode" or stage_name.startswith("decode_pbd_q")),
                 )
             )
             stage_core_map[stage_name] = (

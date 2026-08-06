@@ -558,6 +558,101 @@ HybridDecision DecodePbdGreedy(const Tensor &logits,
   return DecodePbd(logits, generated);
 }
 
+HybridDecision DecodePbdCompact(const std::vector<Tensor> &outputs) {
+  // Compact BPU sampler contract:
+  // sampled ids, global top-5 ids/probabilities, special probabilities,
+  // coordinate top-4 ids/probabilities, nucleus mass, then KV updates.
+  if (outputs.size() < 7 || outputs[0].dtype != 8 ||
+      outputs[0].shape != std::vector<int32_t>{1, 6, 1}) {
+    return {"im_end", {kImEnd}, false, true};
+  }
+  const auto read_i32 = [](const Tensor &tensor, size_t index) -> int32_t {
+    if (tensor.dtype != 8 || index * sizeof(int32_t) + sizeof(int32_t) >
+            tensor.data.size()) return kImEnd;
+    return reinterpret_cast<const int32_t *>(tensor.data.data())[index];
+  };
+  const auto read_f16 = [](const Tensor &tensor, size_t index) -> float {
+    if (tensor.dtype != 4 || index * sizeof(uint16_t) + sizeof(uint16_t) >
+            tensor.data.size()) return 0.0f;
+    return Fp16ToFloat(reinterpret_cast<const uint16_t *>(tensor.data.data())[index]);
+  };
+  const Tensor &top_ids = outputs[1];
+  const Tensor &top_probs = outputs[2];
+  const Tensor &special = outputs[3];
+  const Tensor &coord_ids = outputs[4];
+  const Tensor &coord_probs = outputs[5];
+  if (top_ids.shape != std::vector<int32_t>{1, 6, 5} ||
+      top_probs.shape != std::vector<int32_t>{1, 6, 5} ||
+      special.shape != std::vector<int32_t>{1, 6, 6} ||
+      coord_ids.shape != std::vector<int32_t>{1, 6, 4} ||
+      coord_probs.shape != std::vector<int32_t>{1, 6, 4}) {
+    return {"im_end", {kImEnd}, false, true};
+  }
+  auto special_probability = [&](int32_t row, int32_t index) {
+    return read_f16(special, static_cast<size_t>(row * 6 + index));
+  };
+  const float end_score = special_probability(5, 2) +
+                          special_probability(5, 3) +
+                          special_probability(5, 4);
+  std::vector<int32_t> decoded;
+  if (special_probability(0, 0) >= 0.6f &&
+      special_probability(1, 5) > 0.2f &&
+      special_probability(2, 2) > 0.2f &&
+      special_probability(3, 3) > 0.1f &&
+      special_probability(4, 3) > 0.1f) {
+    decoded = {kBoxStart, kNone, kBoxEnd, kNull, kNull, kNull};
+  } else if (end_score >= 0.2f) {
+    std::vector<int32_t> coordinates;
+    for (int32_t row = 1; row <= 4; ++row) {
+      std::vector<int32_t> valid;
+      for (int32_t rank = 0; rank < 4; ++rank) {
+        const size_t index = static_cast<size_t>(row * 4 + rank);
+        const int32_t token = read_i32(coord_ids, index);
+        if (IsCoordinateToken(token)) valid.push_back(token);
+      }
+      if (valid.empty()) {
+        coordinates.clear();
+        break;
+      }
+      const int32_t first = valid.front();
+      const auto range = std::minmax_element(valid.begin(), valid.end());
+      const float first_probability = read_f16(
+          coord_probs, static_cast<size_t>(row * 4));
+      const bool abnormal = first_probability < 0.9f && valid.size() > 1 &&
+                            *range.second - *range.first > 60;
+      coordinates.push_back(abnormal ? 0 : first);
+    }
+    if (coordinates.size() == 4) {
+      decoded = {kBoxStart, coordinates[0], coordinates[1], coordinates[2],
+                 coordinates[3], kBoxEnd};
+    }
+  }
+  if (decoded.empty() && special_probability(0, 1) >= 0.6f) {
+    decoded.push_back(kRefStart);
+    for (int32_t row = 1; row < 6; ++row) {
+      int32_t selected = kImEnd;
+      for (int32_t rank = 0; rank < 5; ++rank) {
+        const int32_t token = read_i32(top_ids, static_cast<size_t>(row * 5 + rank));
+        if (token < kCoordStart || token > kCoordEnd) {
+          selected = token;
+          break;
+        }
+      }
+      if (selected == kImEnd) {
+        decoded.clear();
+        break;
+      }
+      decoded.push_back(selected);
+    }
+  }
+  if (decoded.empty()) {
+    for (int32_t row = 0; row < 6; ++row) {
+      decoded.push_back(read_i32(outputs[0], static_cast<size_t>(row)));
+    }
+  }
+  return HandlePattern(std::move(decoded));
+}
+
 int32_t DecodeArGreedy(const Tensor &logits,
                        const std::vector<int32_t> &generated) {
   if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 1, kVocab}) {

@@ -44,6 +44,7 @@ CACHE_TENSOR_COUNT = NUM_LAYERS * 2
 class LanguageContract:
     chunk_size: int
     cache_len: int
+    sampling_backend: str = "host"
 
 
 def expected_contract(
@@ -131,10 +132,29 @@ def expected_io_contract(
         ((1, q_len, contract.cache_len), "float16"),
         *[(cache_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
     ]
-    outputs = [
-        (logits_shape, "float16"),
-        *[(update_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
-    ]
+    bpu_sampling = contract.sampling_backend == "bpu" and (
+        name == "decode" or name.startswith("decode_pbd_q")
+    )
+    if bpu_sampling:
+        inputs.extend([
+            ((1, 6, VOCAB_SIZE), "uint8"),
+            ((1, 6, 1), "float16"),
+        ])
+        outputs = [
+            ((1, 6, 1), "int32"),
+            ((1, 6, 5), "int32"),
+            ((1, 6, 5), "float16"),
+            ((1, 6, 6), "float16"),
+            ((1, 6, 4), "int32"),
+            ((1, 6, 4), "float16"),
+            ((1, 6, 1), "float16"),
+            *[(update_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
+        ]
+    else:
+        outputs = [
+            (logits_shape, "float16"),
+            *[(update_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
+        ]
     return inputs, outputs
 
 
@@ -380,6 +400,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-len", type=int, default=4096)
     parser.add_argument("--language-w-bits", type=int, choices=(4, 8), default=8)
     parser.add_argument("--lm-head-w-bits", type=int, choices=(4, 8), default=8)
+    parser.add_argument("--sampling-backend", choices=("host", "bpu"), default="host")
+    parser.add_argument("--sampling-temperature", type=float, default=0.7)
+    parser.add_argument("--sampling-top-p", type=float, default=0.9)
+    parser.add_argument("--sampling-repetition-penalty", type=float, default=1.1)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--convert_only", action="store_true")
     parser.add_argument("--check_only", action="store_true")
@@ -409,7 +433,9 @@ def main() -> int:
         or args.cache_len % 64
     ):
         raise RuntimeError("chunk/cache lengths must be multiples of 64 with cache > chunk")
-    args.contract = LanguageContract(args.chunk_size, args.cache_len)
+    args.contract = LanguageContract(
+        args.chunk_size, args.cache_len, args.sampling_backend
+    )
     if args.hbm_path and len(args.ar_core_nums) != 1:
         raise RuntimeError("--hbm_path requires exactly one --ar_core_nums value")
     args.output_dir.mkdir(parents=True, exist_ok=True)

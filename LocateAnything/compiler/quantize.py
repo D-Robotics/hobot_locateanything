@@ -128,11 +128,19 @@ def validate_config(config: Mapping[str, Any]) -> None:
 
     language = _mapping(config.get("language"), "language")
     required_language = {"chunk_size", "cache_len"}
-    if set(language) != required_language:
+    allowed_language = required_language | {
+        "sampling_backend", "sampling_temperature", "sampling_top_p",
+        "sampling_repetition_penalty",
+    }
+    if not required_language.issubset(language) or not set(language).issubset(allowed_language):
         missing = sorted(required_language - set(language))
-        extra = sorted(set(language) - required_language)
+        extra = sorted(set(language) - allowed_language)
         details = [*(f"missing {name}" for name in missing), *(f"unknown {name}" for name in extra)]
         raise ConfigurationError("invalid language fields: " + ", ".join(details))
+    language.setdefault("sampling_backend", "host")
+    language.setdefault("sampling_temperature", 0.7)
+    language.setdefault("sampling_top_p", 0.9)
+    language.setdefault("sampling_repetition_penalty", 1.1)
     chunk_size = _positive_int(language.get("chunk_size"), "language.chunk_size")
     cache_len = _positive_int(language.get("cache_len"), "language.cache_len")
     if not 128 <= chunk_size <= 2048 or not 256 <= cache_len <= 4096:
@@ -144,6 +152,14 @@ def validate_config(config: Mapping[str, Any]) -> None:
             "language.chunk_size and language.cache_len must be multiples of 64, "
             "with cache_len greater than chunk_size"
         )
+    if language.get("sampling_backend") not in {"host", "bpu"}:
+        raise ConfigurationError("language.sampling_backend must be host or bpu")
+    for name in ("sampling_temperature", "sampling_top_p", "sampling_repetition_penalty"):
+        value = language.get(name)
+        if not isinstance(value, (int, float)) or not value > 0:
+            raise ConfigurationError(f"language.{name} must be positive")
+    if language["sampling_top_p"] > 1:
+        raise ConfigurationError("language.sampling_top_p must be <= 1")
 
     quantization = _mapping(config.get("quantization"), "quantization")
     required_quantization = {
@@ -323,6 +339,10 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
         "CALIBRATION_COMPONENT": "all" if args.component == "all" else args.component,
         "CHUNK_SIZE": str(language["chunk_size"]),
         "CACHE_LEN": str(language["cache_len"]),
+        "SAMPLING_BACKEND": str(language["sampling_backend"]),
+        "SAMPLING_TEMPERATURE": str(language["sampling_temperature"]),
+        "SAMPLING_TOP_P": str(language["sampling_top_p"]),
+        "SAMPLING_REPETITION_PENALTY": str(language["sampling_repetition_penalty"]),
         "VISION_W_BITS": str(quantization["vision_weight_bits"]),
         "LANGUAGE_W_BITS": str(quantization["language_weight_bits"]),
         "LM_HEAD_W_BITS": str(quantization["lm_head_weight_bits"]),
@@ -361,6 +381,10 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "JOBS": str(build["jobs"]),
             "CHUNK_SIZE": str(language["chunk_size"]),
             "CACHE_LEN": str(language["cache_len"]),
+            "SAMPLING_BACKEND": str(language["sampling_backend"]),
+            "SAMPLING_TEMPERATURE": str(language["sampling_temperature"]),
+            "SAMPLING_TOP_P": str(language["sampling_top_p"]),
+            "SAMPLING_REPETITION_PENALTY": str(language["sampling_repetition_penalty"]),
             "DECODE_SEQ_LEN": str(PBD_QUERY_LEN),
             "LM_HEAD_W_BITS": str(quantization["lm_head_weight_bits"]),
             "EXPORT_ONLY": "1" if args.target == "bc" else "0",
@@ -408,6 +432,7 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
         "lm_head_w_bits": quantization["lm_head_weight_bits"],
         "language_graph_set": graph_set.name,
         "language_graph_count": len(graph_set.graphs),
+        "sampling_backend": language["sampling_backend"],
     }
     print("[build] " + json.dumps(payload, sort_keys=True))
 

@@ -68,6 +68,10 @@ def _build_locateanything_lm_3b(args):
         apply_hidden_rotation=not args.disable_hidden_rotation,
         export_only=args.export_only,
         calibration_scale_manifest=args.calibration_scale_manifest,
+        sampling_backend=args.sampling_backend,
+        sampling_temperature=args.sampling_temperature,
+        sampling_top_p=args.sampling_top_p,
+        sampling_repetition_penalty=args.sampling_repetition_penalty,
     )
 
 

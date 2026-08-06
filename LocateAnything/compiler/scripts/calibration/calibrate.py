@@ -280,6 +280,10 @@ def run(args: argparse.Namespace) -> int:
             lm_head_w_bits=args.lm_head_w_bits,
             hidden_rotation_path=args.hidden_rotation_path,
             apply_hidden_rotation=True, export_only=True,
+            sampling_backend=args.sampling_backend,
+            sampling_temperature=args.sampling_temperature,
+            sampling_top_p=args.sampling_top_p,
+            sampling_repetition_penalty=args.sampling_repetition_penalty,
         )
         language = language_api.text_model.to(device=device, dtype=dtype).eval()
         language.compile_mode(False)
@@ -636,6 +640,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--vision-w-bits", type=int, choices=[8], default=8)
     result.add_argument("--language-w-bits", type=int, choices=[4, 8], default=8)
     result.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
+    result.add_argument("--sampling-backend", choices=("host", "bpu"), default="host")
+    result.add_argument("--sampling-temperature", type=float, default=0.7)
+    result.add_argument("--sampling-top-p", type=float, default=0.9)
+    result.add_argument("--sampling-repetition-penalty", type=float, default=1.1)
     result.add_argument("--max-samples", type=int, required=True)
     result.add_argument(
         "--checkpoint-samples",

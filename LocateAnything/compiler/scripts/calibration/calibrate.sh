@@ -37,6 +37,10 @@ CALIBRATION_COMPONENT=${CALIBRATION_COMPONENT:-all}
 VISION_W_BITS=${VISION_W_BITS:-8}
 LANGUAGE_W_BITS=${LANGUAGE_W_BITS:-8}
 LM_HEAD_W_BITS=${LM_HEAD_W_BITS:-8}
+SAMPLING_BACKEND=${SAMPLING_BACKEND:-host}
+SAMPLING_TEMPERATURE=${SAMPLING_TEMPERATURE:-0.7}
+SAMPLING_TOP_P=${SAMPLING_TOP_P:-0.9}
+SAMPLING_REPETITION_PENALTY=${SAMPLING_REPETITION_PENALTY:-1.1}
 REPLAY_SEED=${REPLAY_SEED:-20260729}
 MAX_SAMPLES=${MAX_SAMPLES:?set MAX_SAMPLES to the prepared dataset size}
 CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:?set CHECKPOINT_SAMPLES below MAX_SAMPLES}
@@ -107,7 +111,8 @@ write_initial_metadata() {
     "$DEVICE" "$DTYPE" "$CHUNK_SIZE" "$CACHE_LEN" "$MAX_SAMPLES" \
     "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
     "$VISION_W_BITS" "$LANGUAGE_W_BITS" "$LM_HEAD_W_BITS" "$REPLAY_SEED" \
-    "$HIDDEN_ROTATION_PATH" "$LOG_PATH" "$DETAILED_STATISTICS" "$REPO_ROOT" <<'PY'
+  "$HIDDEN_ROTATION_PATH" "$LOG_PATH" "$DETAILED_STATISTICS" "$SAMPLING_BACKEND" \
+  "$SAMPLING_TEMPERATURE" "$SAMPLING_TOP_P" "$SAMPLING_REPETITION_PENALTY" "$REPO_ROOT" <<'PY'
 import json
 import os
 import socket
@@ -118,7 +123,8 @@ from pathlib import Path
     path, started_at, generated, selected, source, model, output, replay, device,
     dtype, chunk, cache, max_samples, checkpoint, image_token, component,
     vision_w_bits, language_w_bits, lm_head_w_bits, replay_seed, rotation,
-    log_path, detailed_statistics, repo_root,
+    log_path, detailed_statistics, sampling_backend, sampling_temperature,
+    sampling_top_p, sampling_repetition_penalty, repo_root,
 ) = sys.argv[1:]
 sys.path.insert(0, repo_root)
 from compiler.leap_llm.language_graphs import language_graph_set
@@ -157,6 +163,10 @@ value = {
     "replay_seed": int(replay_seed),
     "graph_set": profile.name,
     "detailed_statistics": detailed_statistics == "1",
+    "sampling_backend": sampling_backend,
+    "sampling_temperature": float(sampling_temperature),
+    "sampling_top_p": float(sampling_top_p),
+    "sampling_repetition_penalty": float(sampling_repetition_penalty),
     "hidden_rotation_path": rotation or None,
     "expected_graph_paths": expected_graph_paths,
     "log_path": log_path,
@@ -246,6 +256,10 @@ replay_args=(
   --checkpoint-samples "$CHECKPOINT_SAMPLES"
   --image-token-id "$IMAGE_TOKEN_ID"
   --replay-seed "$REPLAY_SEED"
+  --sampling-backend "$SAMPLING_BACKEND"
+  --sampling-temperature "$SAMPLING_TEMPERATURE"
+  --sampling-top-p "$SAMPLING_TOP_P"
+  --sampling-repetition-penalty "$SAMPLING_REPETITION_PENALTY"
 )
 if [[ "$DETAILED_STATISTICS" == "1" ]]; then
   replay_args+=(--detailed-statistics)

@@ -80,6 +80,23 @@ float Fp16ToFloat(uint16_t bits) {
   return sign ? -value : value;
 }
 
+uint16_t FloatToFp16(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const uint32_t sign = (bits >> 16) & 0x8000u;
+  int32_t exponent = static_cast<int32_t>((bits >> 23) & 0xffu) - 127 + 15;
+  uint32_t mantissa = bits & 0x7fffffu;
+  if (exponent <= 0) return static_cast<uint16_t>(sign);
+  if (exponent >= 31) return static_cast<uint16_t>(sign | 0x7c00u);
+  mantissa = (mantissa + 0x1000u) >> 13;
+  if (mantissa == 0x400u) {
+    mantissa = 0;
+    if (++exponent >= 31) return static_cast<uint16_t>(sign | 0x7c00u);
+  }
+  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) |
+                               mantissa);
+}
+
 struct CacheState {
   std::vector<rt::Tensor> tensors;
 };
@@ -88,8 +105,17 @@ struct PreparedInputs {
   rt::Tensor embeddings;
   rt::Tensor positions;
   rt::Tensor mask;
+  rt::Tensor history_mask;
+  rt::Tensor random_values;
   std::vector<const rt::Tensor*> views;
 };
+
+size_t CacheOutputOffset(const std::vector<rt::Tensor>& outputs) {
+  return !outputs.empty() && outputs[0].dtype == kS32 &&
+                 SameShape(outputs[0].shape, {1, 6, 1})
+             ? 7
+             : 1;
+}
 
 uint64_t FingerprintCache(const CacheState& cache) {
   // A small identity marker for a graph input state.  Full cache dumps are
@@ -563,7 +589,8 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
                   const CacheState& cache, const InputPayload* payload,
                   const std::vector<int32_t>* explicit_tokens,
                   int32_t* active_len, PreparedInputs* inputs,
-                  int32_t pbd_prefix_len) {
+                  int32_t pbd_prefix_len,
+                  const std::vector<int32_t>* generated_tokens = nullptr) {
   if (cache.tensors.size() != kCacheCount) return false;
   const int32_t query = graph.GetInputShapes()[0][1];
   const bool embedding_ok =
@@ -598,11 +625,43 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
   inputs->views.push_back(&inputs->positions);
   inputs->views.push_back(&inputs->mask);
   for (const auto& tensor : cache.tensors) inputs->views.push_back(&tensor);
+  if (graph.GetInputShapes().size() == 3 + kCacheCount + 2) {
+    if (generated_tokens == nullptr || graph.GetInputDtypes().size() !=
+            graph.GetInputShapes().size()) return false;
+    const size_t history_index = 3 + kCacheCount;
+    const size_t random_index = history_index + 1;
+    inputs->history_mask.shape = graph.GetInputShapes()[history_index];
+    inputs->history_mask.dtype = graph.GetInputDtypes()[history_index];
+    inputs->history_mask.data.assign(
+        static_cast<size_t>(ElementCount(inputs->history_mask.shape)), 0);
+    for (int32_t token : *generated_tokens) {
+      if (token < 0 || token >= kVocab) continue;
+      for (int32_t row = 0; row < 6; ++row) {
+        inputs->history_mask.data[static_cast<size_t>(row) * kVocab + token] = 1;
+      }
+    }
+    inputs->random_values.shape = graph.GetInputShapes()[random_index];
+    inputs->random_values.dtype = graph.GetInputDtypes()[random_index];
+    inputs->random_values.data.assign(
+        static_cast<size_t>(ElementCount(inputs->random_values.shape)) * 2, 0);
+    auto* values = reinterpret_cast<uint16_t*>(inputs->random_values.data.data());
+    static uint32_t state = 0x9e3779b9u;
+    for (int32_t row = 0; row < 6; ++row) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      const float uniform = static_cast<float>(state & 0x3ffu) / 1024.0f;
+      values[row] = FloatToFp16(uniform);
+    }
+    inputs->views.push_back(&inputs->history_mask);
+    inputs->views.push_back(&inputs->random_values);
+  }
   return true;
 }
 
 bool PrintLogitsSummary(const std::vector<rt::Tensor>& outputs,
                         const std::string& graph_name) {
+  if (CacheOutputOffset(outputs) == 7) return true;
   if (outputs.size() != 1 + kCacheCount || outputs[0].dtype != kF16) {
     std::fprintf(stderr, "[FAIL] %s: unexpected output contract\n",
                  graph_name.c_str());
@@ -673,7 +732,8 @@ bool RunGraph(rt::HbmSession* session, const std::string& name,
               const std::vector<int32_t>* explicit_tokens = nullptr,
               bool print_summary = true,
               int32_t pbd_prefix_len = 0,
-              GenerationMetrics* metrics = nullptr) {
+              GenerationMetrics* metrics = nullptr,
+              const std::vector<int32_t>* generated_tokens = nullptr) {
   rt::Graph* graph = session->GetGraph(name);
   if (!graph) {
     std::fprintf(stderr, "[FAIL] graph not found: %s\n", name.c_str());
@@ -686,7 +746,7 @@ bool RunGraph(rt::HbmSession* session, const std::string& name,
           : -1;
   if (!BuildInputs(*graph, embed, token_base, past_len, pbd, cache, payload,
                    explicit_tokens, &local_active_len, &inputs,
-                   pbd_prefix_len)) {
+                   pbd_prefix_len, generated_tokens)) {
     std::fprintf(stderr, "[FAIL] cannot build %s inputs\n", name.c_str());
     return false;
   }
@@ -721,7 +781,12 @@ bool RunGraph(rt::HbmSession* session, const std::string& name,
     // never committed. Avoid invalidating and unpacking those rows on Host.
     const auto& output_shapes = graph->GetOutputShapes();
     output_slices.resize(output_shapes.size());
-    for (size_t index = 1; index < output_shapes.size(); ++index) {
+    const size_t cache_offset =
+        !output_shapes.empty() && graph->GetOutputDtypes()[0] == kS32 &&
+                SameShape(output_shapes[0], {1, 6, 1})
+            ? 7
+            : 1;
+    for (size_t index = cache_offset; index < output_shapes.size(); ++index) {
       output_slices[index] = rt::OutputSlice{0, -1, false};
     }
     selected_outputs = &output_slices;
@@ -763,12 +828,13 @@ bool AppendCacheUpdate(const std::vector<rt::Tensor>& outputs,
                        GenerationMetrics* metrics = nullptr) {
   const auto started = std::chrono::steady_clock::now();
   uint64_t copied_bytes = 0;
-  if (outputs.size() != 1 + kCacheCount ||
+  const size_t output_offset = CacheOutputOffset(outputs);
+  if (outputs.size() != output_offset + kCacheCount ||
       state->tensors.size() != kCacheCount) {
     return false;
   }
   for (int32_t index = 0; index < kCacheCount; ++index) {
-    const rt::Tensor& update = outputs[static_cast<size_t>(index + 1)];
+    const rt::Tensor& update = outputs[output_offset + static_cast<size_t>(index)];
     rt::Tensor& cache = state->tensors[static_cast<size_t>(index)];
     if (update.dtype != cache.dtype || update.shape.size() != 4 ||
         cache.shape.size() != 4) {
@@ -873,7 +939,8 @@ bool RunHybridGenerationBase(rt::HbmSession* session,
           kTextMaskToken, kTextMaskToken};
       std::vector<rt::Tensor> outputs;
       if (!RunGraph(session, "decode", embed, 0, *history_len, true, *cache,
-                    &outputs, nullptr, nullptr, &draft, false, 0, metrics)) {
+                    &outputs, nullptr, nullptr, &draft, false, 0, metrics,
+                    &generated)) {
         return false;
       }
       if (metrics != nullptr) ++metrics->pbd_calls;
@@ -881,9 +948,11 @@ bool RunHybridGenerationBase(rt::HbmSession* session,
           std::getenv("LA_PBD_DIAGNOSTICS") != nullptr;
       rt::PbdDiagnostics diagnostics;
       const auto pbd_decode_started = std::chrono::steady_clock::now();
-      const rt::HybridDecision decision = rt::DecodePbd(
-          outputs[0], generated, rt::PbdDecodeConfig{},
-          diagnostics_enabled ? &diagnostics : nullptr);
+      const rt::HybridDecision decision =
+          CacheOutputOffset(outputs) == 7
+              ? rt::DecodePbdCompact(outputs)
+              : rt::DecodePbd(outputs[0], generated, rt::PbdDecodeConfig{},
+                              diagnostics_enabled ? &diagnostics : nullptr);
       const double pbd_decode_ms = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - pbd_decode_started).count();
       if (metrics != nullptr) metrics->host_decode_ms += pbd_decode_ms;
@@ -940,7 +1009,7 @@ bool RunHybridGenerationBase(rt::HbmSession* session,
       std::vector<rt::Tensor> committed;
       if (!RunGraph(session, "decode", embed, 0, *history_len, false,
                     *cache, &committed, nullptr, nullptr, &commit_tokens, false,
-                    0, metrics) ||
+                    0, metrics, &generated) ||
           !AppendCacheUpdate(committed, *history_len, cache, accepted, metrics)) {
         return false;
       }
@@ -1055,7 +1124,7 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
       std::vector<rt::Tensor> outputs;
       if (!RunGraph(session, PbdGraphName(prefix_len), embed, 0, *history_len,
                     true, *cache, &outputs, nullptr, nullptr, &tokens, false,
-                    prefix_len, metrics)) {
+                    prefix_len, metrics, &generated)) {
         return false;
       }
       if (metrics != nullptr) ++metrics->pbd_calls;
@@ -1067,9 +1136,11 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
       }
       const int32_t pbd_logit_start = PbdLogitStart(outputs[0], prefix_len);
       const auto pbd_decode_started = std::chrono::steady_clock::now();
-      const rt::HybridDecision decision = rt::DecodePbd(
-          outputs[0], generated, rt::PbdDecodeConfig{}, nullptr,
-          pbd_logit_start);
+      const rt::HybridDecision decision =
+          CacheOutputOffset(outputs) == 7
+              ? rt::DecodePbdCompact(outputs)
+              : rt::DecodePbd(outputs[0], generated, rt::PbdDecodeConfig{},
+                              nullptr, pbd_logit_start);
       if (metrics != nullptr) {
         metrics->host_decode_ms += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - pbd_decode_started).count();

@@ -40,6 +40,7 @@ except ImportError:
     QuantStub = None
 
 from .blocks.text_block_leap import LocateAnythingDecoderLayer
+from .bpu_sampler import PBD_ROWS, VOCAB_SIZE, build_pbd_sampler
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +217,10 @@ class LocateAnythingTextModel(Model):
         hidden_states = inputs_embeds
         position_embeddings = (cos, sin)
 
-        n = len(caches) // 2
+        n = self.config.num_hidden_layers
         cache_keys = caches[:n]
-        cache_values = caches[n:]
+        cache_values = caches[n:2 * n]
+        sampling_inputs = caches[2 * n:]
         new_keys = []
         new_values = []
         for idx, layer in enumerate(self.layers):
@@ -250,7 +252,22 @@ class LocateAnythingTextModel(Model):
         logits = self.dequant(logits)
         new_keys = self._export_cache_rows(new_keys, num_tokens)
         new_values = self._export_cache_rows(new_values, num_tokens)
-        return (logits, *new_keys, *new_values)
+        stage = self._export_stage or ""
+        use_bpu_sampling = (
+            getattr(self.config, "sampling_backend", "host") == "bpu"
+            and (stage == "decode" or stage.startswith("decode_pbd_q"))
+        )
+        if not use_bpu_sampling:
+            return (logits, *new_keys, *new_values)
+        if len(sampling_inputs) != 2:
+            raise ValueError(f"{stage} requires history mask and random values")
+        compact = build_pbd_sampler(
+            logits, sampling_inputs[0], sampling_inputs[1],
+            temperature=self.config.sampling_temperature,
+            top_p=self.config.sampling_top_p,
+            repetition_penalty=self.config.sampling_repetition_penalty,
+        )
+        return (*compact, *new_keys, *new_values)
 
     # ------------------------------------------------------------------
     # PyTorch forward — for calibration passes.
@@ -308,8 +325,15 @@ class LocateAnythingTextModel(Model):
 
     def get_leap_input_types_decode_model(
         self, num_layers: int, seq_len: int, cache_len: int, batch_size: int = 1,
+        *, pbd: bool = False,
     ) -> List[leap.TensorType]:
         # Same as text_model but seq_len is decode_seq_len (default 6 for PBD).
-        return self.get_leap_input_types_text_model(
+        inputs = self.get_leap_input_types_text_model(
             num_layers, seq_len, cache_len, batch_size,
         )
+        if pbd and getattr(self.config, "sampling_backend", "host") == "bpu":
+            inputs.extend([
+                leap.TensorType([1, PBD_ROWS, VOCAB_SIZE], leap.uint8),
+                leap.TensorType([1, PBD_ROWS, 1], leap.float16),
+            ])
+        return inputs

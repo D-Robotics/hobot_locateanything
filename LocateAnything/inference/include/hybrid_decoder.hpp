@@ -42,6 +42,7 @@ HybridDecision DecodePbd(const Tensor &logits,
                          int32_t row_start = 0);
 HybridDecision DecodePbdGreedy(const Tensor &logits,
                                const std::vector<int32_t> &generated);
+HybridDecision DecodePbdCompact(const std::vector<Tensor> &outputs);
 int32_t DecodeArGreedy(const Tensor &logits,
                        const std::vector<int32_t> &generated);
 bool IsCoordinateToken(int32_t token);

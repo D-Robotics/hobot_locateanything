@@ -14,6 +14,10 @@ MODEL_NAME="${MODEL_NAME:-locateanything-lm-3b}"
 MARCH="${MARCH:?set by compiler/quantize.py}"
 W_BITS="${W_BITS:?set by compiler/quantize.py}"
 LM_HEAD_W_BITS="${LM_HEAD_W_BITS:?set by compiler/quantize.py}"
+SAMPLING_BACKEND="${SAMPLING_BACKEND:-host}"
+SAMPLING_TEMPERATURE="${SAMPLING_TEMPERATURE:-0.7}"
+SAMPLING_TOP_P="${SAMPLING_TOP_P:-0.9}"
+SAMPLING_REPETITION_PENALTY="${SAMPLING_REPETITION_PENALTY:-1.1}"
 CHUNK_SIZE="${CHUNK_SIZE:?set by compiler/quantize.py}"
 CACHE_LEN="${CACHE_LEN:?set by compiler/quantize.py}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:?set by compiler/quantize.py}"
@@ -125,6 +129,10 @@ STAGE_ARGS=(
   --cache-len "$CACHE_LEN"
   --language-w-bits "$W_BITS"
   --lm-head-w-bits "$LM_HEAD_W_BITS"
+  --sampling-backend "$SAMPLING_BACKEND"
+  --sampling-temperature "$SAMPLING_TEMPERATURE"
+  --sampling-top-p "$SAMPLING_TOP_P"
+  --sampling-repetition-penalty "$SAMPLING_REPETITION_PENALTY"
 )
 mapfile -t LANGUAGE_GRAPHS < <(
   "$PYTHON_BIN" -m leap_llm.language_graphs
@@ -148,6 +156,10 @@ export_bc() {
     --output_model_path "$OUTPUT_MODEL_PATH" \
     --w_bits "$W_BITS" \
     --lm_head_w_bits "$LM_HEAD_W_BITS" \
+    --sampling_backend "$SAMPLING_BACKEND" \
+    --sampling_temperature "$SAMPLING_TEMPERATURE" \
+    --sampling_top_p "$SAMPLING_TOP_P" \
+    --sampling_repetition_penalty "$SAMPLING_REPETITION_PENALTY" \
     --chunk_size "$CHUNK_SIZE" \
     --cache_len "$CACHE_LEN" \
     --decode_seq_len "$DECODE_SEQ_LEN" \
