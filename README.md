@@ -57,14 +57,14 @@ LocateAnything/
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything/LocateAnything
 
-mkdir -p inference/models/LocateAnything-3B
-hf download <模型仓库> --local-dir inference/models/LocateAnything-3B
+mkdir -p inference/models
+hf download <模型仓库> --local-dir inference/models
 ```
 
 模型目录应包含：
 
 ```text
-inference/models/LocateAnything-3B/
+inference/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 └── LocateAnything-3B_embed_tokens.bin
@@ -73,21 +73,16 @@ inference/models/LocateAnything-3B/
 ### 2. 构建 TROS C++ 包
 
 ```bash
-source /opt/ros/jazzy/setup.bash
 source /opt/tros/jazzy/setup.bash
-
-mkdir -p ~/tros_ws/src
-ln -s "$(pwd)/inference" ~/tros_ws/src/locateanything_tros
-cd ~/tros_ws
-colcon build --packages-select locateanything_tros --symlink-install
+cd inference
+colcon build --merge-install --symlink-install
 source install/setup.bash
-cd -
 ```
 
 ### 3. 启动推理节点
 
 ```bash
-ros2 launch locateanything_tros locateanything.launch.xml
+ros2 launch locateanything locateanything.launch.xml
 ```
 
 默认任务为 `/detect person`。运行时可通过 Prompt 话题切换任务：
@@ -102,14 +97,14 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
 本地图片：
 
 ```bash
-ros2 launch locateanything_tros image.launch.xml \
+ros2 launch locateanything image.launch.xml \
   source:=/path/to/image.jpg
 ```
 
 本地视频（AVI、MP4 等 OpenCV 支持的格式）：
 
 ```bash
-ros2 launch locateanything_tros video.launch.xml \
+ros2 launch locateanything video.launch.xml \
   source:=/path/to/video.mp4
 ```
 
@@ -206,7 +201,7 @@ python compiler/quantize.py --config "$CONFIG" build --component all --target hb
 python compiler/quantize.py --config "$CONFIG" verify --component all --stage specification
 ```
 
-编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/LocateAnything-3B/`，再按直接部署流程构建 TROS 包。
+编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
 
