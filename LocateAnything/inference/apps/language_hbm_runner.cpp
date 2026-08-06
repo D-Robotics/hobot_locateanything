@@ -716,6 +716,15 @@ bool RunGraph(rt::HbmSession* session, const std::string& name,
       }
     }
     selected_outputs = &output_slices;
+  } else if (pbd && pbd_prefix_len == 0) {
+    // q6 logits decide which tokens are accepted; its provisional KV rows are
+    // never committed. Avoid invalidating and unpacking those rows on Host.
+    const auto& output_shapes = graph->GetOutputShapes();
+    output_slices.resize(output_shapes.size());
+    for (size_t index = 1; index < output_shapes.size(); ++index) {
+      output_slices[index] = rt::OutputSlice{0, -1, false};
+    }
+    selected_outputs = &output_slices;
   }
   const rt::Result result = session->ExecuteGraphByName(
       name, inputs.views, outputs, &execution_metrics, selected_outputs);

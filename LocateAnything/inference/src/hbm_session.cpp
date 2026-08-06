@@ -700,6 +700,16 @@ Result Graph::Execute(hbDNNHandle_t handle,
   outputs->clear();
   outputs->reserve(out_tensors.size());
   for (size_t i = 0; i < out_tensors.size(); ++i) {
+    if (output_slices != nullptr &&
+        !(*output_slices)[i].materialize) {
+      Tensor t;
+      t.shape.assign(out_tensors[i].properties.validShape.dimensionSize,
+                     out_tensors[i].properties.validShape.dimensionSize +
+                         out_tensors[i].properties.validShape.numDimensions);
+      t.dtype = out_tensors[i].properties.tensorType;
+      outputs->push_back(std::move(t));
+      continue;
+    }
     const auto flush_started = Clock::now();
     err = hbUCPMemFlush(&out_tensors[i].sysMem, HB_SYS_MEM_CACHE_INVALIDATE);
     if (err != 0) {

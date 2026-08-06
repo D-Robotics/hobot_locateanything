@@ -110,6 +110,7 @@ Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
 struct OutputSlice {
   int32_t row_start = 0;
   int32_t row_count = -1;
+  bool materialize = true;
 };
 
 // One loaded graph inside a packed hbm file. Lazily populated with IO
