@@ -44,7 +44,7 @@ CACHE_TENSOR_COUNT = NUM_LAYERS * 2
 class LanguageContract:
     chunk_size: int
     cache_len: int
-    sampling_backend: str = "host"
+    sampling_backend: str = "bpu"
 
 
 def expected_contract(
@@ -400,7 +400,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-len", type=int, default=4096)
     parser.add_argument("--language-w-bits", type=int, choices=(4, 8), default=8)
     parser.add_argument("--lm-head-w-bits", type=int, choices=(4, 8), default=8)
-    parser.add_argument("--sampling-backend", choices=("host", "bpu"), default="host")
+    parser.add_argument("--sampling-backend", choices=("host", "bpu"), default="bpu")
     parser.add_argument("--sampling-temperature", type=float, default=0.7)
     parser.add_argument("--sampling-top-p", type=float, default=0.9)
     parser.add_argument("--sampling-repetition-penalty", type=float, default=1.1)

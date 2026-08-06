@@ -20,7 +20,7 @@ language:
   # tokens. Increase this explicitly when compiling for longer prompts.
   chunk_size: 768
   cache_len: 4096
-  sampling_backend: host
+  sampling_backend: bpu
   sampling_temperature: 0.7
   sampling_top_p: 0.9
   sampling_repetition_penalty: 1.1

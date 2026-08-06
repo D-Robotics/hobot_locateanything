@@ -254,7 +254,7 @@ class LocateAnythingTextModel(Model):
         new_values = self._export_cache_rows(new_values, num_tokens)
         stage = self._export_stage or ""
         use_bpu_sampling = (
-            getattr(self.config, "sampling_backend", "host") == "bpu"
+            getattr(self.config, "sampling_backend", "bpu") == "bpu"
             and (stage == "decode" or stage.startswith("decode_pbd_q"))
         )
         if not use_bpu_sampling:
@@ -331,7 +331,7 @@ class LocateAnythingTextModel(Model):
         inputs = self.get_leap_input_types_text_model(
             num_layers, seq_len, cache_len, batch_size,
         )
-        if pbd and getattr(self.config, "sampling_backend", "host") == "bpu":
+        if pbd and getattr(self.config, "sampling_backend", "bpu") == "bpu":
             inputs.extend([
                 leap.TensorType([1, PBD_ROWS, VOCAB_SIZE], leap.uint8),
                 leap.TensorType([1, PBD_ROWS, 1], leap.float16),

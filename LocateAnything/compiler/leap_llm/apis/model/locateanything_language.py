@@ -91,7 +91,7 @@ class LocateAnythingLanguageApi:
         apply_hidden_rotation: bool = True,
         export_only: bool = False,
         calibration_scale_manifest: Optional[str] = None,
-        sampling_backend: str = "host",
+        sampling_backend: str = "bpu",
         sampling_temperature: float = 0.7,
         sampling_top_p: float = 0.9,
         sampling_repetition_penalty: float = 1.1,

@@ -137,7 +137,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
         extra = sorted(set(language) - allowed_language)
         details = [*(f"missing {name}" for name in missing), *(f"unknown {name}" for name in extra)]
         raise ConfigurationError("invalid language fields: " + ", ".join(details))
-    language.setdefault("sampling_backend", "host")
+    language.setdefault("sampling_backend", "bpu")
     language.setdefault("sampling_temperature", 0.7)
     language.setdefault("sampling_top_p", 0.9)
     language.setdefault("sampling_repetition_penalty", 1.1)

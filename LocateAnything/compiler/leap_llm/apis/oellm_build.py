@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=validate_device, default=["cpu"])
     parser.add_argument("--w_bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--lm_head_w_bits", type=int, choices=[4, 8], default=8)
-    parser.add_argument("--sampling_backend", choices=("host", "bpu"), default="host")
+    parser.add_argument("--sampling_backend", choices=("host", "bpu"), default="bpu")
     parser.add_argument("--sampling_temperature", type=float, default=0.7)
     parser.add_argument("--sampling_top_p", type=float, default=0.9)
     parser.add_argument("--sampling_repetition_penalty", type=float, default=1.1)

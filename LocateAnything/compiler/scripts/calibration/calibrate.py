@@ -640,7 +640,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--vision-w-bits", type=int, choices=[8], default=8)
     result.add_argument("--language-w-bits", type=int, choices=[4, 8], default=8)
     result.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
-    result.add_argument("--sampling-backend", choices=("host", "bpu"), default="host")
+    result.add_argument("--sampling-backend", choices=("host", "bpu"), default="bpu")
     result.add_argument("--sampling-temperature", type=float, default=0.7)
     result.add_argument("--sampling-top-p", type=float, default=0.9)
     result.add_argument("--sampling-repetition-penalty", type=float, default=1.1)
