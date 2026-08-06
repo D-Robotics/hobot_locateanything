@@ -73,16 +73,6 @@ target_link_libraries(vision_runner PRIVATE locateanything_hbm)
 add_executable(language_runner src/language_runner.cpp)
 target_link_libraries(language_runner PRIVATE locateanything_hbm)
 
-add_executable(image_source src/image_source_node.cpp)
-target_include_directories(image_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(image_source ${OpenCV_LIBS})
-ament_target_dependencies(image_source hbm_img_msgs rclcpp)
-
-add_executable(video_source src/video_source_node.cpp)
-target_include_directories(video_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(video_source ${OpenCV_LIBS})
-ament_target_dependencies(video_source hbm_img_msgs rclcpp std_msgs)
-
 add_executable(inference src/inference_node.cpp)
 target_link_libraries(inference locateanything_inference)
 ament_target_dependencies(inference
@@ -95,8 +85,6 @@ ament_target_dependencies(console ament_index_cpp)
 install(TARGETS
   vision_runner
   language_runner
-  image_source
-  video_source
   inference
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
