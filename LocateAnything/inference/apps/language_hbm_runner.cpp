@@ -1451,8 +1451,13 @@ bool RunPayload(rt::HbmSession* session, rt::EmbedLookup* embed,
 }  // namespace
 
 int main(int argc, char** argv) {
+  const char *separator = std::strrchr(argv[0], '/');
+  const char *program = separator == nullptr ? argv[0] : separator + 1;
+  const bool help = argc == 2 &&
+                    (std::strcmp(argv[1], "--help") == 0 ||
+                     std::strcmp(argv[1], "-h") == 0);
   if (argc < 5) {
-    std::fprintf(stderr,
+    std::fprintf(help ? stdout : stderr,
                  "usage: %s --model LANGUAGE.hbm --embed embed_tokens.bin "
                  "[--mode all|prefill|decode|decode_ar] "
                  "[--tokens prompt.i32.bin --visual visual.f16.bin] "
@@ -1461,8 +1466,8 @@ int main(int argc, char** argv) {
                  "[--backend-mask MASK] "
                  "[--expected-prefill-chunk N --expected-cache-len N] "
                  "[--structured-output] [--server]\n",
-                 argv[0]);
-    return 1;
+                 program);
+    return help ? 0 : 1;
   }
   std::string model_path;
   std::string embed_path;

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <fstream>
 #include <iostream>
@@ -21,6 +22,8 @@ const std::vector<int32_t> kInputShape{1, 2304, 588};
 const std::vector<int32_t> kOutputShape{1, 576, 2048};
 
 void Usage(const char *program) {
+  const char *separator = std::strrchr(program, '/');
+  program = separator == nullptr ? program : separator + 1;
   std::fprintf(stderr,
                "usage: %s --model VISION.hbm --input vision_input.f16.bin "
                "--output vision_output.f16.bin [--backend-mask MASK]\n"
@@ -158,6 +161,11 @@ InferenceResult RunOne(rt::HbmSession *session, const std::string &input_path,
 }  // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && (std::strcmp(argv[1], "--help") == 0 ||
+                    std::strcmp(argv[1], "-h") == 0)) {
+    Usage(argv[0]);
+    return 0;
+  }
   std::string model_path;
   std::string input_path;
   std::string output_path;
