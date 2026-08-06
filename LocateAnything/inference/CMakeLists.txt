@@ -20,6 +20,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(Threads REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 find_path(HOBOT_INCLUDE_DIR hobot/dnn/hb_dnn.h
   PATHS /usr/include /usr/local/include)
@@ -79,7 +80,7 @@ ament_target_dependencies(inference
   ament_index_cpp cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
 
 add_executable(console src/console.cpp)
-target_link_libraries(console locateanything_inference)
+target_link_libraries(console locateanything_inference yaml-cpp::yaml-cpp)
 ament_target_dependencies(console ament_index_cpp)
 
 install(TARGETS

@@ -120,7 +120,8 @@ InferenceSession::~InferenceSession() = default;
 InferenceSession::InferenceSession(InferenceSession&&) noexcept = default;
 InferenceSession& InferenceSession::operator=(InferenceSession&&) noexcept = default;
 
-void InferenceSession::Initialize() {
+void InferenceSession::Initialize(
+    const std::function<void(const std::string&)>& progress_callback) {
   if (impl_->initialized) return;
   const InferenceOptions& options = impl_->options;
   if (options.max_new_tokens <= 0 ||
@@ -144,12 +145,16 @@ void InferenceSession::Initialize() {
       options.vision_runner,
       {"--model", options.vision_model, "--backend-mask",
        std::to_string(options.vision_backend_mask), "--server"},
-      "visual");
+      "visual", [&] {
+        if (progress_callback) progress_callback("Vision HBM");
+      });
   impl_->language.Start(
       options.language_runner,
       {"--model", options.language_model, "--embed", options.embeddings,
        "--backend-mask", std::to_string(options.language_backend_mask), "--server"},
-      "language");
+      "language", [&] {
+        if (progress_callback) progress_callback("Language HBM");
+      });
   impl_->initialized = true;
 }
 

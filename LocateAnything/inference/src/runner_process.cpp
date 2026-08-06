@@ -1,8 +1,11 @@
 #include "runner_process.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #ifndef _WIN32
@@ -43,11 +46,13 @@ RunnerProcess& RunnerProcess::operator=(RunnerProcess&&) noexcept = default;
 
 void RunnerProcess::Start(const std::string& program,
                           const std::vector<std::string>& arguments,
-                          const std::string& ready_kind) {
+                          const std::string& ready_kind,
+                          const std::function<void()>& wait_callback) {
 #ifdef _WIN32
   (void)program;
   (void)arguments;
   (void)ready_kind;
+  (void)wait_callback;
   throw std::runtime_error("HBM runner processes are supported on Linux only");
 #else
   if (impl_->pid > 0) throw std::logic_error("runner process is already active");
@@ -89,6 +94,21 @@ void RunnerProcess::Start(const std::string& program,
   }
   setvbuf(impl_->input, nullptr, _IOLBF, 0);
 
+  std::atomic<bool> waiting{true};
+  std::thread progress;
+  if (wait_callback) {
+    progress = std::thread([&] {
+      while (waiting.load(std::memory_order_relaxed)) {
+        wait_callback();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    });
+  }
+  auto stop_progress = [&] {
+    waiting.store(false, std::memory_order_relaxed);
+    if (progress.joinable()) progress.join();
+  };
+
   const std::string expected = "LAHBM/1\tREADY\t" + ready_kind;
   char* buffer = nullptr;
   size_t capacity = 0;
@@ -96,6 +116,7 @@ void RunnerProcess::Start(const std::string& program,
     const ssize_t length = getline(&buffer, &capacity, impl_->output);
     if (length < 0) {
       free(buffer);
+      stop_progress();
       Stop();
       throw std::runtime_error("HBM runner exited before it became ready");
     }
@@ -104,6 +125,7 @@ void RunnerProcess::Start(const std::string& program,
     if (line == expected) break;
   }
   free(buffer);
+  stop_progress();
 #endif
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,7 +18,8 @@ class RunnerProcess {
 
   void Start(const std::string& program,
              const std::vector<std::string>& arguments,
-             const std::string& ready_kind);
+             const std::string& ready_kind,
+             const std::function<void()>& wait_callback = {});
   std::vector<std::string> Request(const std::string& request_id,
                                    const std::string& frame);
   void Stop();

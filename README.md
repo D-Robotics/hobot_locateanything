@@ -86,6 +86,18 @@ source install/setup.bash
 ros2 run locateanything console
 ```
 
+Console 默认读取安装目录中的 `config/locateanything.yaml`。可以指定其他配置，
+并用命令行参数覆盖其中的常用设置：
+
+```bash
+ros2 run locateanything console \
+  --config /path/to/locateanything.yaml \
+  --max-new-tokens 4096 \
+  --output-directory /path/to/outputs
+```
+
+运行 `ros2 run locateanything console --help` 查看全部启动参数。
+
 进入 Console 后先加载媒体，再输入任务：
 
 ```text

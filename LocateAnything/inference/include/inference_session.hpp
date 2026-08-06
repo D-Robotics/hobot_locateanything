@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -43,7 +44,8 @@ class InferenceSession {
   InferenceSession(const InferenceSession&) = delete;
   InferenceSession& operator=(const InferenceSession&) = delete;
 
-  void Initialize();
+  void Initialize(
+      const std::function<void(const std::string&)>& progress_callback = {});
   InferenceOutput Infer(const cv::Mat& bgr, const std::string& command,
                         uint64_t frame_index = 0);
 

@@ -21,6 +21,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
+#include <yaml-cpp/yaml.h>
 
 #include "inference_session.hpp"
 
@@ -89,7 +90,13 @@ void PrintBanner(const Colors& color) {
       "  ██║     ██║   ██║██║     ███████║   ██║   █████╗  ",
       "  ██║     ██║   ██║██║     ██╔══██║   ██║   ██╔══╝  ",
       "  ███████╗╚██████╔╝╚██████╗██║  ██║   ██║   ███████╗",
-      "  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝"};
+      "  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝",
+      "  █████╗ ███╗   ██╗██╗   ██╗████████╗██╗  ██╗██╗███╗   ██╗ ██████╗",
+      " ██╔══██╗████╗  ██║╚██╗ ██╔╝╚══██╔══╝██║  ██║██║████╗  ██║██╔════╝",
+      " ███████║██╔██╗ ██║ ╚████╔╝    ██║   ███████║██║██╔██╗ ██║██║  ███╗",
+      " ██╔══██║██║╚██╗██║  ╚██╔╝     ██║   ██╔══██║██║██║╚██╗██║██║   ██║",
+      " ██║  ██║██║ ╚████║   ██║      ██║   ██║  ██║██║██║ ╚████║╚██████╔╝",
+      " ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝"};
   for (const char* line : lines) {
     std::cout << color.bold << color.cyan << line << color.reset << '\n';
   }
@@ -115,12 +122,19 @@ void PrintHelp(const Colors& color) {
 }
 
 struct ConsoleOptions {
+  fs::path config;
   fs::path model_directory;
+  fs::path tokenizer_directory;
   fs::path output_directory = "outputs";
+  std::string vision_model = "LocateAnything-3B_vision.hbm";
+  std::string language_model = "LocateAnything-3B_language.hbm";
+  std::string embeddings = "LocateAnything-3B_embed_tokens.bin";
   std::string generation_mode = "hybrid";
+  std::string l2m_sizes = "6:6:6:6";
   int max_new_tokens = 4096;
   uint32_t vision_backend_mask = 15;
   uint32_t language_backend_mask = 15;
+  float nms_iou = 0.9f;
 };
 
 uint32_t ParseMask(const std::string& value) {
@@ -134,21 +148,85 @@ uint32_t ParseMask(const std::string& value) {
 
 void PrintUsage() {
   std::cout
-      << "usage: console [--model-directory DIR] [--output-directory DIR] "
+      << "usage: console [--config FILE] [--model-directory DIR] "
+         "[--output-directory DIR] "
          "[--generation-mode hybrid|slow] [--max-new-tokens N] "
          "[--vision-backend-mask MASK] [--language-backend-mask MASK]\n";
 }
 
+void LoadConfig(const fs::path& path, ConsoleOptions* options) {
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(path.string());
+  } catch (const YAML::Exception& error) {
+    throw std::runtime_error("cannot read console config " + path.string() +
+                             ": " + error.what());
+  }
+  const YAML::Node parameters = root["locateanything"]["ros__parameters"];
+  if (!parameters || !parameters.IsMap()) {
+    throw std::runtime_error(
+        "console config must contain locateanything.ros__parameters");
+  }
+  auto read_string = [&](const char* name, std::string* target) {
+    if (parameters[name]) *target = parameters[name].as<std::string>();
+  };
+  auto read_path = [&](const char* name, fs::path* target, bool allow_empty) {
+    if (!parameters[name]) return;
+    const std::string value = parameters[name].as<std::string>();
+    if (!value.empty() || allow_empty) *target = value;
+  };
+  read_path("model_directory", &options->model_directory, false);
+  read_path("tokenizer_directory", &options->tokenizer_directory, true);
+  read_path("output_directory", &options->output_directory, false);
+  read_string("vision_model", &options->vision_model);
+  read_string("language_model", &options->language_model);
+  read_string("embeddings", &options->embeddings);
+  read_string("generation_mode", &options->generation_mode);
+  read_string("l2m_sizes", &options->l2m_sizes);
+  if (parameters["max_new_tokens"]) {
+    options->max_new_tokens = parameters["max_new_tokens"].as<int>();
+  }
+  if (parameters["vision_backend_mask"]) {
+    options->vision_backend_mask =
+        parameters["vision_backend_mask"].as<uint32_t>();
+  }
+  if (parameters["language_backend_mask"]) {
+    options->language_backend_mask =
+        parameters["language_backend_mask"].as<uint32_t>();
+  }
+  if (parameters["nms_iou"]) {
+    options->nms_iou = parameters["nms_iou"].as<float>();
+  }
+}
+
 ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_share) {
   ConsoleOptions options;
+  options.config = package_share / "config/locateanything.yaml";
   options.model_directory = package_share / "models";
+  for (int index = 1; index < argc; ++index) {
+    const std::string argument = argv[index];
+    if (argument == "--help" || argument == "-h") {
+      PrintUsage();
+      std::exit(0);
+    }
+    if (argument == "--config" || argument == "-c") {
+      if (++index >= argc) {
+        throw std::invalid_argument(argument + " requires a value");
+      }
+      options.config = argv[index];
+    }
+  }
+  options.config = fs::absolute(options.config);
+  LoadConfig(options.config, &options);
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     auto value = [&]() -> std::string {
       if (++index >= argc) throw std::invalid_argument(argument + " requires a value");
       return argv[index];
     };
-    if (argument == "--model-directory") {
+    if (argument == "--config" || argument == "-c") {
+      value();
+    } else if (argument == "--model-directory") {
       options.model_directory = value();
     } else if (argument == "--output-directory") {
       options.output_directory = value();
@@ -160,12 +238,12 @@ ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_sha
       options.vision_backend_mask = ParseMask(value());
     } else if (argument == "--language-backend-mask") {
       options.language_backend_mask = ParseMask(value());
-    } else if (argument == "--help" || argument == "-h") {
-      PrintUsage();
-      std::exit(0);
     } else {
       throw std::invalid_argument("unknown argument: " + argument);
     }
+  }
+  if (!(options.nms_iou > 0.0f && options.nms_iou <= 1.0f)) {
+    throw std::invalid_argument("nms_iou must be in (0, 1]");
   }
   if (options.max_new_tokens <= 0) {
     throw std::invalid_argument("--max-new-tokens must be positive");
@@ -174,6 +252,9 @@ ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_sha
     throw std::invalid_argument("--generation-mode must be hybrid or slow");
   }
   options.model_directory = fs::absolute(options.model_directory);
+  if (!options.tokenizer_directory.empty()) {
+    options.tokenizer_directory = fs::absolute(options.tokenizer_directory);
+  }
   options.output_directory = fs::absolute(options.output_directory);
   return options;
 }
@@ -252,9 +333,12 @@ class Console {
 
   int Run() {
     PrintBanner(color_);
-    std::cout << color_.yellow << "Initializing Vision and Language HBM..."
-              << color_.reset << std::endl;
-    session_.Initialize();
+    const auto initialization_started = std::chrono::steady_clock::now();
+    PrintInitializationProgress("Starting", initialization_started);
+    session_.Initialize([&](const std::string& stage) {
+      PrintInitializationProgress(stage, initialization_started);
+    });
+    PrintInitializationComplete(initialization_started);
     std::cout << color_.green << "Ready" << color_.reset
               << "  S600/Nash-P  |  " << options_.generation_mode
               << "  |  max tokens " << options_.max_new_tokens << '\n';
@@ -307,19 +391,60 @@ class Console {
   }
 
  private:
+  void PrintInitializationProgress(
+      const std::string& stage,
+      const std::chrono::steady_clock::time_point started) {
+    const double elapsed = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+    if (color_.reset.empty()) {
+      if (stage != loading_stage_) {
+        loading_stage_ = stage;
+        std::cout << "Loading " << stage << "..." << std::endl;
+      }
+      return;
+    }
+    constexpr int width = 28;
+    constexpr int marker = 6;
+    const int travel = width - marker;
+    const int tick = static_cast<int>(elapsed * 10.0);
+    int position = tick % (travel * 2);
+    if (position > travel) position = travel * 2 - position;
+    std::string bar(width, ' ');
+    std::fill_n(bar.begin() + position, marker - 1, '=');
+    bar[static_cast<size_t>(position + marker - 1)] = '>';
+    std::cout << "\r\033[2K" << color_.yellow << "Loading " << std::left
+              << std::setw(12) << stage << color_.reset << " [" << bar << "] "
+              << std::right << std::fixed << std::setprecision(1) << elapsed
+              << " s" << std::flush;
+  }
+
+  void PrintInitializationComplete(
+      const std::chrono::steady_clock::time_point started) const {
+    const double elapsed = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+    if (!color_.reset.empty()) std::cout << "\r\033[2K";
+    std::cout << color_.green << "HBM loaded" << color_.reset
+              << "  [============================] " << std::fixed
+              << std::setprecision(1) << elapsed << " s\n";
+  }
+
   locateanything::InferenceOptions BuildInferenceOptions(
       const fs::path& package_prefix, const fs::path& package_share) const {
     locateanything::InferenceOptions inference;
+    setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1);
     const fs::path runners = package_prefix / "lib/locateanything";
     inference.vision_runner = (runners / "vision_runner").string();
     inference.language_runner = (runners / "language_runner").string();
     inference.vision_model =
-        (options_.model_directory / "LocateAnything-3B_vision.hbm").string();
+        (options_.model_directory / options_.vision_model).string();
     inference.language_model =
-        (options_.model_directory / "LocateAnything-3B_language.hbm").string();
+        (options_.model_directory / options_.language_model).string();
     inference.embeddings =
-        (options_.model_directory / "LocateAnything-3B_embed_tokens.bin").string();
-    fs::path tokenizer = options_.model_directory / "tokenizer";
+        (options_.model_directory / options_.embeddings).string();
+    fs::path tokenizer = options_.tokenizer_directory;
+    if (tokenizer.empty()) tokenizer = options_.model_directory / "tokenizer";
     if (!fs::is_directory(tokenizer)) tokenizer = package_share / "models/tokenizer";
     inference.tokenizer_directory = tokenizer.string();
     inference.temporary_directory = (options_.output_directory / ".runtime").string();
@@ -327,6 +452,7 @@ class Console {
     inference.max_new_tokens = options_.max_new_tokens;
     inference.vision_backend_mask = options_.vision_backend_mask;
     inference.language_backend_mask = options_.language_backend_mask;
+    inference.nms_iou = options_.nms_iou;
     return inference;
   }
 
@@ -455,6 +581,7 @@ class Console {
   Request last_request_;
   bool has_last_request_ = false;
   uint64_t request_index_ = 0;
+  std::string loading_stage_;
 };
 
 }  // namespace
