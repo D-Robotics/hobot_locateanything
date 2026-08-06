@@ -96,39 +96,36 @@ ros2 run locateanything console
 /detect person
 ```
 
-也可以用一条 launch 命令直接完成本地图片或完整视频推理：
+实时 TROS 推理只启动 LA 自身，并通过三个参数指定配置、输入话题和任务：
 
 ```bash
-ros2 launch locateanything image.launch.xml \
-  source:=/path/to/image.jpg prompt:="/detect person,motorcycle"
-
-ros2 launch locateanything video.launch.xml \
-  source:=/path/to/video.mp4 prompt:="/detect person"
-```
-
-视频默认处理全部帧，上一帧推理完成后才发送下一帧；加入 `loop:=True`
-可以循环播放。
-
-USB 摄像头使用一条命令同时启动 TROS 摄像头、共享内存和 LA：
-
-```bash
-ros2 launch locateanything usb.launch.xml \
-  device:=/dev/video0 prompt:="/detect person"
-```
-
-默认分辨率为 1920 x 1080、30 FPS，也可以显式修改：
-
-```bash
-ros2 launch locateanything usb.launch.xml \
-  device:=/dev/video0 width:=1280 height:=720 fps:=30 \
+ros2 launch locateanything locateanything.launch.xml \
+  config:=/path/to/locateanything.yaml \
+  input:=/hbmem_img \
   prompt:="/detect person,motorcycle"
 ```
 
-MIPI 摄像头同样使用一条命令启动完整链路：
+`config` 默认使用安装目录中的 `config/locateanything.yaml`，因此采用默认配置时
+只需要指定输入话题和任务：
 
 ```bash
-ros2 launch locateanything mipi.launch.xml \
-  prompt:="/detect person"
+ros2 launch locateanything locateanything.launch.xml \
+  input:=/hbmem_img prompt:="/detect person"
+```
+
+USB 和 MIPI 摄像头由 TROS 系统独立启动并发布 `/hbmem_img`。LA 不管理
+摄像头进程，也不限制同一视频流被其他节点订阅。例如 USB 摄像头可以独立运行：
+
+```bash
+ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
+  usb_video_device:=/dev/video0 usb_zero_copy:=True
+```
+
+MIPI 摄像头同样独立运行：
+
+```bash
+ros2 launch mipi_cam mipi_cam.launch.py \
+  mipi_io_method:=shared_mem mipi_frame_ts_type:=realtime
 ```
 
 默认任务为 `/detect person`。运行期间需要切换任务时，再从另一个终端发布：
@@ -138,17 +135,13 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect person,motorcycle'}"
 ```
 
-`locateanything.launch.xml` 仍保留为仅启动 LA 推理节点的底层入口，供用户
-连接自定义 TROS 图像节点；一般使用图片、视频、USB 或 MIPI 的组合 launch
-即可，不需要手动启动多个节点。
-
 ### 4. 输入与处理策略
 
-图片和视频 Source 节点、USB 相机以及 MIPI 相机都通过共享内存 NV12 话题
-`/hbmem_img` 接入同一个 LA 推理节点。本地视频保证所有帧都经过模型；USB
-和 MIPI 保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
+LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由启动参数 `input` 指定，
+共享内存或普通 ROS Image 传输由配置项 `use_shared_memory` 决定。USB 和 MIPI
+保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
 
-四种输入均逐帧创建独立的 Language 状态，不跨帧复用 KV Cache。
+每帧创建独立的 Language 状态，不跨帧复用 KV Cache。
 
 ### 5. 获取结果
 

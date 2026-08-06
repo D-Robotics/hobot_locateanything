@@ -1,18 +1,10 @@
 <launch>
   <arg name="config" default="$(find-pkg-share locateanything)/config/locateanything.yaml"/>
-  <arg name="image_topic" default="/image"/>
-  <arg name="shared_image_topic" default="/hbmem_img"/>
-  <arg name="use_shared_memory" default="true"/>
-  <arg name="model_directory" default=""/>
-  <arg name="output_directory" default="inference/outputs"/>
+  <arg name="input" default="/hbmem_img"/>
   <arg name="prompt" default="/detect person"/>
   <node pkg="locateanything" exec="inference" name="locateanything" output="screen">
     <param from="$(var config)"/>
-    <param name="image_topic" value="$(var image_topic)" type="str"/>
-    <param name="shared_image_topic" value="$(var shared_image_topic)" type="str"/>
-    <param name="use_shared_memory" value="$(var use_shared_memory)" type="bool"/>
-    <param name="model_directory" value="$(var model_directory)" type="str"/>
-    <param name="output_directory" value="$(var output_directory)" type="str"/>
+    <param name="input_topic" value="$(var input)" type="str"/>
     <param name="default_prompt" value="$(var prompt)" type="str"/>
   </node>
 </launch>

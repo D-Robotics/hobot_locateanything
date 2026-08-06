@@ -1,13 +1,10 @@
 locateanything:
   ros__parameters:
-    image_topic: /image
-    shared_image_topic: /hbmem_img
     use_shared_memory: true
     prompt_topic: /locateanything/prompt
     result_topic: /locateanything/result
     annotated_topic: /locateanything/annotated
     frame_complete_topic: /locateanything/frame_complete
-    default_prompt: /detect person
     model_directory: ""
     tokenizer_directory: ""
     vision_model: LocateAnything-3B_vision.hbm

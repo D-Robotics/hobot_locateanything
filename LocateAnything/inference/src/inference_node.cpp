@@ -73,10 +73,8 @@ struct PendingFrame {
 class LocateAnythingNode : public rclcpp::Node {
  public:
   LocateAnythingNode() : Node("locateanything") {
-    const std::string image_topic =
-        declare_parameter<std::string>("image_topic", "/image");
-    const std::string shared_image_topic =
-        declare_parameter<std::string>("shared_image_topic", "/hbmem_img");
+    const std::string input_topic =
+        declare_parameter<std::string>("input_topic", "/hbmem_img");
     const bool use_shared_memory =
         declare_parameter<bool>("use_shared_memory", false);
     const std::string prompt_topic =
@@ -155,7 +153,7 @@ class LocateAnythingNode : public rclcpp::Node {
     if (use_shared_memory) {
       shared_image_subscription_ =
           create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
-              shared_image_topic, rclcpp::SensorDataQoS(),
+              input_topic, rclcpp::SensorDataQoS(),
               [this](const hbm_img_msgs::msg::HbmMsg1080P& message) {
                 try {
                   const auto encoding_end = std::find(
@@ -177,7 +175,7 @@ class LocateAnythingNode : public rclcpp::Node {
               });
     } else {
       image_subscription_ = create_subscription<sensor_msgs::msg::Image>(
-          image_topic, rclcpp::SensorDataQoS(),
+          input_topic, rclcpp::SensorDataQoS(),
           [this](const sensor_msgs::msg::Image::ConstSharedPtr message) {
             try {
               cv::Mat image;
@@ -196,10 +194,8 @@ class LocateAnythingNode : public rclcpp::Node {
           });
     }
     worker_ = std::thread([this] { Run(); });
-    const std::string& active_image_topic =
-        use_shared_memory ? shared_image_topic : image_topic;
     RCLCPP_INFO(get_logger(), "ready: image=%s prompt=%s",
-                active_image_topic.c_str(), prompt_topic.c_str());
+                input_topic.c_str(), prompt_topic.c_str());
   }
 
   ~LocateAnythingNode() override {
