@@ -38,7 +38,8 @@ struct PbdDiagnostics {
 HybridDecision DecodePbd(const Tensor &logits,
                          const std::vector<int32_t> &generated,
                          const PbdDecodeConfig &config = {},
-                         PbdDiagnostics *diagnostics = nullptr);
+                         PbdDiagnostics *diagnostics = nullptr,
+                         int32_t row_start = 0);
 HybridDecision DecodePbdGreedy(const Tensor &logits,
                                const std::vector<int32_t> &generated);
 int32_t DecodeArGreedy(const Tensor &logits,

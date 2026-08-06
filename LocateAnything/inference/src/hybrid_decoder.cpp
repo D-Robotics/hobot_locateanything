@@ -259,6 +259,7 @@ class PbdRowExecutor {
   void Decode(const Tensor &logits,
               const std::vector<int32_t> &history_tokens,
               const PbdDecodeConfig &config, bool collect_diagnostics,
+              int32_t row_start,
               std::array<PbdRowResult, 6> *results) {
     std::lock_guard<std::mutex> call_lock(call_mutex_);
     {
@@ -267,6 +268,7 @@ class PbdRowExecutor {
       history_tokens_ = &history_tokens;
       config_ = config;
       collect_diagnostics_ = collect_diagnostics;
+      row_start_ = row_start;
       results_ = results;
       pending_workers_ = 5;
       ++generation_;
@@ -274,7 +276,8 @@ class PbdRowExecutor {
     job_ready_.notify_all();
 
     (*results)[5] =
-        DecodePbdRow(logits, 5, history_tokens, config, collect_diagnostics);
+        DecodePbdRow(logits, row_start + 5, history_tokens, config,
+                     collect_diagnostics);
 
     std::unique_lock<std::mutex> lock(job_mutex_);
     job_done_.wait(lock, [this] { return pending_workers_ == 0; });
@@ -291,6 +294,7 @@ class PbdRowExecutor {
       const std::vector<int32_t> *history_tokens = nullptr;
       PbdDecodeConfig config;
       bool collect_diagnostics = false;
+      int32_t row_start = 0;
       std::array<PbdRowResult, 6> *results = nullptr;
       {
         std::unique_lock<std::mutex> lock(job_mutex_);
@@ -303,11 +307,12 @@ class PbdRowExecutor {
         history_tokens = history_tokens_;
         config = config_;
         collect_diagnostics = collect_diagnostics_;
+        row_start = row_start_;
         results = results_;
       }
 
       (*results)[static_cast<size_t>(row)] =
-          DecodePbdRow(*logits, row, *history_tokens, config,
+          DecodePbdRow(*logits, row_start + row, *history_tokens, config,
                        collect_diagnostics);
 
       {
@@ -329,6 +334,7 @@ class PbdRowExecutor {
   std::array<PbdRowResult, 6> *results_ = nullptr;
   size_t generation_ = 0;
   int32_t pending_workers_ = 0;
+  int32_t row_start_ = 0;
   bool collect_diagnostics_ = false;
   bool stopping_ = false;
 };
@@ -494,8 +500,12 @@ bool IsCoordinateToken(int32_t token) {
 HybridDecision DecodePbd(const Tensor &logits,
                          const std::vector<int32_t> &generated,
                          const PbdDecodeConfig &config,
-                         PbdDiagnostics *diagnostics) {
-  if (logits.dtype != 4 || logits.shape != std::vector<int32_t>{1, 6, kVocab}) {
+                         PbdDiagnostics *diagnostics,
+                         int32_t row_start) {
+  if (logits.dtype != 4 || logits.shape.size() != 3 ||
+      logits.shape[0] != 1 || logits.shape[2] != kVocab || row_start < 0 ||
+      row_start + 6 > logits.shape[1] ||
+      logits.data.size() < static_cast<size_t>(logits.shape[1]) * kVocab * 2) {
     return {"im_end", {kImEnd}, false, true};
   }
   if (config.temperature <= 0.0f || config.top_p <= 0.0f ||
@@ -505,7 +515,7 @@ HybridDecision DecodePbd(const Tensor &logits,
   const std::vector<int32_t> &history_tokens = BuildHistoryTokens(generated);
   std::array<PbdRowResult, 6> row_results;
   PbdRows().Decode(logits, history_tokens, config, diagnostics != nullptr,
-                   &row_results);
+                   row_start, &row_results);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
   std::vector<std::vector<float>> probabilities;

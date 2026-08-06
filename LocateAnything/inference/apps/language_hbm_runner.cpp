@@ -818,24 +818,6 @@ bool SelectLogitsRow(const rt::Tensor& logits, int32_t row,
   return true;
 }
 
-bool SelectLogitsRows(const rt::Tensor& logits, int32_t row_start,
-                      int32_t row_count, rt::Tensor* selected) {
-  if (logits.dtype != kF16 || logits.shape.size() != 3 ||
-      logits.shape[0] != 1 || logits.shape[2] != kVocab ||
-      row_start < 0 || row_count <= 0 ||
-      row_start + row_count > logits.shape[1] ||
-      logits.data.size() != static_cast<size_t>(ElementCount(logits.shape)) * 2) {
-    return false;
-  }
-  selected->shape = {1, row_count, kVocab};
-  selected->dtype = kF16;
-  const size_t row_bytes = static_cast<size_t>(kVocab) * sizeof(uint16_t);
-  const auto begin = logits.data.begin() +
-                     static_cast<size_t>(row_start) * row_bytes;
-  selected->data.assign(begin, begin + static_cast<size_t>(row_count) * row_bytes);
-  return true;
-}
-
 int32_t PbdLogitStart(const rt::Tensor& logits, int32_t prefix_len) {
   if (logits.shape.size() != 3 || logits.shape[1] != 6) return prefix_len;
   return 0;
@@ -1074,12 +1056,11 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
         }
         *history_len += prefix_len;
       }
-      rt::Tensor pbd_logits;
-      if (!SelectLogitsRows(outputs[0], PbdLogitStart(outputs[0], prefix_len),
-                            6, &pbd_logits)) return false;
+      const int32_t pbd_logit_start = PbdLogitStart(outputs[0], prefix_len);
       const auto pbd_decode_started = std::chrono::steady_clock::now();
       const rt::HybridDecision decision = rt::DecodePbd(
-          pbd_logits, generated, rt::PbdDecodeConfig{});
+          outputs[0], generated, rt::PbdDecodeConfig{}, nullptr,
+          pbd_logit_start);
       if (metrics != nullptr) {
         metrics->host_decode_ms += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - pbd_decode_started).count();
