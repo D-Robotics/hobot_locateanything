@@ -12,7 +12,7 @@ from compiler.scripts.common.coordinates import LanguageCoordinateAuditor
 from compiler.scripts.common.quantization import QuantizationEmulator, tensor_comparison
 
 
-CHUNK_SIZE = 1024
+CHUNK_SIZE = 768
 CACHE_LEN = 4096
 PBD_QUERY_LEN = 6
 AR_QUERY_LEN = 1

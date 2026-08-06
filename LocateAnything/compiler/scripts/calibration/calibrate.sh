@@ -17,7 +17,7 @@ Required variables:
 Model defaults:
   MODEL_PATH          compiler/models/LocateAnything-3B
   CALIBRATION_COMPONENT  all
-  CHUNK_SIZE          1024
+  CHUNK_SIZE          768
   CACHE_LEN           4096
   LANGUAGE_W_BITS     8
   LM_HEAD_W_BITS      8
@@ -40,7 +40,7 @@ MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/compiler/models/LocateAnything-3B"}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation calibration output directory}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-float16}
-CHUNK_SIZE=${CHUNK_SIZE:-1024}
+CHUNK_SIZE=${CHUNK_SIZE:-768}
 CACHE_LEN=${CACHE_LEN:-4096}
 CALIBRATION_COMPONENT=${CALIBRATION_COMPONENT:-all}
 VISION_W_BITS=${VISION_W_BITS:-8}

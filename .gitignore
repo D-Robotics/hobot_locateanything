@@ -2,6 +2,10 @@
 /LocateAnything/artifacts/**
 /LocateAnything/workspace/**
 
+# Local compiler backups and investigation outputs
+/local_backups/
+/local_results/
+
 # Compiler-owned inputs and outputs
 /LocateAnything/compiler/models/*
 !/LocateAnything/compiler/models/.gitignore

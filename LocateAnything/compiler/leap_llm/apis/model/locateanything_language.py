@@ -75,7 +75,7 @@ class LocateAnythingLanguageApi:
         self,
         input_model_path: str,
         output_model_path: str,
-        chunk_size: int = 1024,
+        chunk_size: int = 768,
         batch_size: int = 1,
         cache_len: int = 4096,
         decode_seq_len: int = 6,
@@ -322,9 +322,13 @@ class LocateAnythingLanguageApi:
         for stage_name, inputs in stage_inputs.items():
             print(f"[LocateAnythingLanguageApi] export {stage_name}...")
             bc_path = str(Path(self.output_lm_model_path).with_suffix(f".{stage_name}.bc"))
-            bc = self.text_model.export_module(
-                inputs, stage_name, bc_path, high_precision_qpp=True,
-            )
+            self.text_model.set_export_stage(stage_name)
+            try:
+                bc = self.text_model.export_module(
+                    inputs, stage_name, bc_path, high_precision_qpp=True,
+                )
+            finally:
+                self.text_model.set_export_stage(None)
             bc_modules.append(bc)
 
         if self.export_only:

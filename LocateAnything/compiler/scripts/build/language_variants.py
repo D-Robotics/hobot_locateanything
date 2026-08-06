@@ -57,7 +57,15 @@ def expected_contract(
     q_len = int(value)
     if prefix not in {"decode_pbd_", "decode_ar_"}:
         raise ValueError(f"unsupported Language graph: {name}")
-    return (1, q_len, 152681), (1, q_len, 2, 128)
+    if prefix == "decode_pbd_":
+        # The prefix rows are the only PBD KV rows committed by the host;
+        # the six MASK/speculative rows are transient.
+        return (1, 6, VOCAB_SIZE), (1, q_len - 6, NUM_KV_HEADS, HEAD_DIM)
+    if prefix == "decode_ar_":
+        # AR bridge graphs commit every accepted token, but only the final
+        # hidden state is needed for the next vocabulary decision.
+        return (1, 1, VOCAB_SIZE), (1, q_len, NUM_KV_HEADS, HEAD_DIM)
+    raise ValueError(f"unsupported Language graph: {name}")
 
 
 def query_length(name: str, contract: LanguageContract) -> int:
@@ -368,7 +376,7 @@ def parse_args() -> argparse.Namespace:
         default=[1, 2, 4],
     )
     parser.add_argument("--jobs", type=int, default=16)
-    parser.add_argument("--chunk-size", type=int, default=1024)
+    parser.add_argument("--chunk-size", type=int, default=768)
     parser.add_argument("--cache-len", type=int, default=4096)
     parser.add_argument("--language-w-bits", type=int, choices=(4, 8), default=8)
     parser.add_argument("--lm-head-w-bits", type=int, choices=(4, 8), default=8)

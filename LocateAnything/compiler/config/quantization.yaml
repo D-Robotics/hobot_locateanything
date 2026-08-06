@@ -14,7 +14,9 @@ calibration:
   statistics_dtype: float16
 
 language:
-  chunk_size: 1024
+  # The default task prompts fit within 768 positions after the 576 visual
+  # tokens. Increase this explicitly when compiling for longer prompts.
+  chunk_size: 768
   cache_len: 4096
 
 quantization:

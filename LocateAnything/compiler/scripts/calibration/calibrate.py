@@ -749,7 +749,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--component", choices=["all", "vision", "language"], default="all"
     )
-    result.add_argument("--chunk-size", type=int, default=1024)
+    result.add_argument("--chunk-size", type=int, default=768)
     result.add_argument("--cache-len", type=int, default=4096)
     result.add_argument("--vision-w-bits", type=int, choices=[8], default=8)
     result.add_argument("--language-w-bits", type=int, choices=[4, 8], default=8)

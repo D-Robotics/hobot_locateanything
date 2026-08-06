@@ -836,6 +836,18 @@ bool SelectLogitsRows(const rt::Tensor& logits, int32_t row_start,
   return true;
 }
 
+int32_t PbdLogitStart(const rt::Tensor& logits, int32_t prefix_len) {
+  if (logits.shape.size() != 3 || logits.shape[1] != 6) return prefix_len;
+  return 0;
+}
+
+int32_t ArLogitRow(const rt::Tensor& logits, int32_t accepted) {
+  if (logits.shape.size() != 3 || logits.shape[1] != 1) {
+    return accepted - 1;
+  }
+  return 0;
+}
+
 int32_t CacheCapacity(const CacheState& cache);
 
 bool RunHybridGenerationBase(rt::HbmSession* session,
@@ -1063,7 +1075,8 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
         *history_len += prefix_len;
       }
       rt::Tensor pbd_logits;
-      if (!SelectLogitsRows(outputs[0], prefix_len, 6, &pbd_logits)) return false;
+      if (!SelectLogitsRows(outputs[0], PbdLogitStart(outputs[0], prefix_len),
+                            6, &pbd_logits)) return false;
       const auto pbd_decode_started = std::chrono::steady_clock::now();
       const rt::HybridDecision decision = rt::DecodePbd(
           pbd_logits, generated, rt::PbdDecodeConfig{});
@@ -1114,7 +1127,8 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
         if (metrics != nullptr) ++metrics->ar_calls;
         *history_len += accepted;
         rt::Tensor next_logits;
-        if (!SelectLogitsRow(bridge[0], accepted - 1, &next_logits)) return false;
+        if (!SelectLogitsRow(bridge[0], ArLogitRow(bridge[0], accepted),
+                             &next_logits)) return false;
         pending_ar = {std::move(next_logits)};
         use_pbd = false;
       } else {

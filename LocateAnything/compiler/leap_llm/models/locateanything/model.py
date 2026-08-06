@@ -259,7 +259,7 @@ class LocateAnything(nn.Module):
         image_height: int = 672,
         image_width: int = 672,
         decode_seq_len: int = 6,
-        chunk_size: int = 1024,
+        chunk_size: int = 768,
         cache_len: int = 4096,
         batch_size: int = 1,
         w_bits: int = 8,

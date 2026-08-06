@@ -90,6 +90,9 @@ class LocateAnythingTextModel(Model):
         self.use_plugin = use_plugin
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
         self.config = config
+        # The export driver sets this for one graph at a time.  Keeping the
+        # contract here avoids duplicating stage-specific slicing in wrappers.
+        self._export_stage: str | None = None
 
         self.embed_tokens = Embedding(config.vocab_size, config.hidden_size)
         self.norm = RMSNorm(
@@ -153,6 +156,37 @@ class LocateAnythingTextModel(Model):
         with torch.no_grad():
             self.lm_head.weight.data.copy_(self.embed_tokens.weight.data)
 
+    def set_export_stage(self, stage: str | None) -> None:
+        """Select the static output contract used by the next BC export."""
+        self._export_stage = stage
+
+    def _export_output_range(self, num_tokens: int) -> tuple[int, int]:
+        """Return the hidden-state rows that require a vocabulary projection."""
+        stage = self._export_stage or ""
+        if stage == "prefill":
+            return num_tokens - 1, num_tokens
+        if stage.startswith("decode_pbd_q"):
+            return num_tokens - self.config.block_size, num_tokens
+        if stage.startswith("decode_ar_q"):
+            return num_tokens - 1, num_tokens
+        return 0, num_tokens
+
+    def _export_cache_rows(self, cache: list, num_tokens: int) -> list:
+        """Drop PBD MASK rows that are never committed to the KV cache."""
+        stage = self._export_stage or ""
+        if not stage.startswith("decode_pbd_q"):
+            return cache
+        prefix_len = int(stage.rsplit("q", 1)[1]) - self.config.block_size
+        if prefix_len <= 0:
+            return cache
+        head_dim = self.hidden_size // self.config.num_attention_heads
+        num_kv = self.config.num_key_value_heads
+        end = [1, prefix_len, num_kv, head_dim]
+        return [
+            leap.slice(value, [0, 0, 0, 0], end, [1, 1, 1, 1])
+            for value in cache
+        ]
+
     # ------------------------------------------------------------------
     # leap DSL build() — 1D rope only.
     # ------------------------------------------------------------------
@@ -199,18 +233,23 @@ class LocateAnythingTextModel(Model):
             new_values.append(nv)
 
         hidden_states = self.norm(hidden_states)
-        if (
-            getattr(self.config, "prefill_last_token_only", True)
-            and num_tokens == self.config.prefill_seq_len
-        ):
+        start, end = self._export_output_range(num_tokens)
+        if start < 0 or end > num_tokens or start >= end:
+            raise ValueError(
+                f"invalid {self._export_stage!r} output range "
+                f"[{start}, {end}) for q_len={num_tokens}"
+            )
+        if start != 0 or end != num_tokens:
             hidden_states = leap.slice(
                 hidden_states,
-                [0, num_tokens - 1, 0],
-                [bs, num_tokens, self.hidden_size],
+                [0, start, 0],
+                [bs, end, self.hidden_size],
                 [1, 1, 1],
             )
         logits = self.lm_head(hidden_states)
         logits = self.dequant(logits)
+        new_keys = self._export_cache_rows(new_keys, num_tokens)
+        new_values = self._export_cache_rows(new_values, num_tokens)
         return (logits, *new_keys, *new_values)
 
     # ------------------------------------------------------------------
