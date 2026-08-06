@@ -270,6 +270,7 @@ def run(args: argparse.Namespace) -> int:
             "replay_seed": args.replay_seed,
             "decode_context_policy": DECODE_CONTEXT_POLICY,
             "graph_set": graph_set.name,
+            "detailed_statistics": args.detailed_statistics,
         },
     }
     identity_path = output_dir / "calibration_run_identity.json"
@@ -300,6 +301,7 @@ def run(args: argparse.Namespace) -> int:
             "legacy_checkpoint",
             "image_token_id",
             "graph_set",
+            "detailed_statistics",
         )
         mismatches = [
             field
@@ -356,7 +358,12 @@ def run(args: argparse.Namespace) -> int:
     if args.component in {"all", "vision"}:
         from leap_llm.apis.model.locateanything_vision import LocateAnythingVisionApi
 
-        print("\n================== VISION ACTIVATION STATISTICS ==================", flush=True)
+        vision_progress = (
+            "Vision activation statistics"
+            if args.detailed_statistics
+            else "Vision calibration scales"
+        )
+        print(f"\n================== {vision_progress.upper()} ==================", flush=True)
         vision_api = LocateAnythingVisionApi(
             str(args.model_path.resolve()), str(output_dir / "vision_api"),
             image_width=672, image_height=672, device=args.device,
@@ -366,10 +373,14 @@ def run(args: argparse.Namespace) -> int:
         )
         vision = vision_api.model.to(device=device, dtype=dtype).eval()
         vision.compile_mode(False)
-        vision_tracker = ActivationTracker(vision, component="vision")
+        vision_tracker = ActivationTracker(
+            vision,
+            component="vision",
+            detailed_statistics=args.detailed_statistics,
+        )
         vision_required_point_count = vision_tracker.tracked_module_count
         with torch.no_grad():
-            for index, record in enumerate(progress(records, "Vision activation statistics"), 1):
+            for index, record in enumerate(progress(records, vision_progress), 1):
                 payload = load_tensor_payload(record)
                 vision_tracker.stage = "vision"
                 actual = vision(payload["vision_input"].to(device=device, dtype=dtype))
@@ -388,7 +399,12 @@ def run(args: argparse.Namespace) -> int:
         torch.cuda.empty_cache()
 
     if args.component in {"all", "language"}:
-        print("\n================== LANGUAGE ACTIVATION STATISTICS ==================", flush=True)
+        language_progress = (
+            "Language activation statistics"
+            if args.detailed_statistics
+            else "Language calibration scales"
+        )
+        print(f"\n================== {language_progress.upper()} ==================", flush=True)
         language_api = LocateAnythingLanguageApi(
             str(args.model_path.resolve()), str(output_dir / "language_api"),
             chunk_size=args.chunk_size, cache_len=args.cache_len, decode_seq_len=6,
@@ -399,7 +415,11 @@ def run(args: argparse.Namespace) -> int:
         )
         language = language_api.text_model.to(device=device, dtype=dtype).eval()
         language.compile_mode(False)
-        language_tracker = ActivationTracker(language, component="language")
+        language_tracker = ActivationTracker(
+            language,
+            component="language",
+            detailed_statistics=args.detailed_statistics,
+        )
         language_required_point_count = language_tracker.tracked_module_count
         num_layers = language.config.num_hidden_layers
         num_kv = language.config.num_key_value_heads
@@ -408,7 +428,7 @@ def run(args: argparse.Namespace) -> int:
             (1, args.cache_len, num_kv, head_dim), device=device, dtype=dtype
         ) for _ in range(num_layers * 2)]
         with torch.no_grad():
-            for index, record in enumerate(progress(records, "Language activation statistics"), 1):
+            for index, record in enumerate(progress(records, language_progress), 1):
                 payload = load_tensor_payload(record)
                 replay_contexts = select_decode_replay_contexts(
                     payload,
@@ -561,6 +581,7 @@ def run(args: argparse.Namespace) -> int:
             "ar_query_len": 1,
             "graph_set": graph_set.name,
             "vision_weight_bits": args.vision_w_bits,
+            "detailed_statistics": args.detailed_statistics,
         },
     }
     if vision_snapshots:
@@ -614,6 +635,7 @@ def run(args: argparse.Namespace) -> int:
         "activation_statistics_audit_passed": all(
             audit["passed"] for audit in audits.values()
         ),
+        "detailed_statistics": args.detailed_statistics,
     }
     if language_snapshots:
         coverage["decode_context_coverage"] = summarize_decode_context_coverage(
@@ -696,23 +718,24 @@ def run(args: argparse.Namespace) -> int:
             output_dir / f"scale_convergence_{legacy_checkpoint}_vs_{full_samples}.json",
             legacy_convergence,
         )
-    activation_report = generate_activation_report(
-        output_dir,
-        activation_rows,
-        convergence,
-        coverage,
-        metadata={
-            "generated_manifest": str(manifest),
-            "sample_count": full_samples,
-            "task_counts": task_counts,
-        },
-    )
-    plot_status = activation_report.get("plots", {})
-    if plot_status.get("status") != "generated":
-        raise RuntimeError(
-            "calibration report generation did not complete: "
-            + str(plot_status.get("reason") or "required figures are missing")
+    if args.detailed_statistics:
+        activation_report = generate_activation_report(
+            output_dir,
+            activation_rows,
+            convergence,
+            coverage,
+            metadata={
+                "generated_manifest": str(manifest),
+                "sample_count": full_samples,
+                "task_counts": task_counts,
+            },
         )
+        plot_status = activation_report.get("plots", {})
+        if plot_status.get("status") != "generated":
+            raise RuntimeError(
+                "calibration report generation did not complete: "
+                + str(plot_status.get("reason") or "required figures are missing")
+            )
     print(json.dumps(coverage, sort_keys=True), flush=True)
     if not coverage["all_stages_executed"]:
         raise RuntimeError("not all required calibration graph paths were executed")
@@ -763,6 +786,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--image-token-id", type=int, default=151665)
     result.add_argument("--hidden-rotation-path")
     result.add_argument("--replay-seed", type=int, default=20260729)
+    result.add_argument(
+        "--detailed-statistics",
+        action="store_true",
+        help="collect distribution diagnostics and render activation reports",
+    )
     result.add_argument("--resume", action="store_true")
     return result
 

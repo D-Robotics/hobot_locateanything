@@ -1061,11 +1061,15 @@ class ActivationTracker:
         model: Any,
         component: str = "unknown",
         fixed_clipping_ranges: Mapping[str, float] | None = None,
+        detailed_statistics: bool = True,
     ) -> None:
         self.component = component
         self.stage = "unassigned"
+        self.detailed_statistics = detailed_statistics
         self.executions: dict[str, Counter[str]] = defaultdict(Counter)
         self._statistics: dict[tuple[str, str, str], _StreamingActivationStatistics] = {}
+        self._observed_elements: Counter[str] = Counter()
+        self._nonfinite_counts: dict[str, torch.Tensor] = {}
         self._fixed_clipping_ranges = dict(fixed_clipping_ranges or {})
         self._tracked_modules: dict[str, Any] = {}
         self._handles = []
@@ -1081,14 +1085,48 @@ class ActivationTracker:
 
     def _activation_hook(self, name: str):
         def hook(_module, inputs, _output):
-            key = (self.component, self.stage, name)
-            statistics = self._statistics.setdefault(key, _StreamingActivationStatistics())
-            statistics.record_execution()
             self.executions[name][self.stage] += 1
-            fixed_range = self._fixed_clipping_ranges.get(name)
+            statistics = None
+            if self.detailed_statistics:
+                key = (self.component, self.stage, name)
+                statistics = self._statistics.setdefault(
+                    key, _StreamingActivationStatistics()
+                )
+                statistics.record_execution()
             for value in _input_tensors(inputs):
-                statistics.update(value, fixed_range)
+                if statistics is not None:
+                    statistics.update(value, self._fixed_clipping_ranges.get(name))
+                    continue
+                value = value.detach()
+                self._observed_elements[name] += value.numel()
+                nonfinite = (~torch.isfinite(value)).sum(dtype=torch.int64)
+                previous = self._nonfinite_counts.get(name)
+                self._nonfinite_counts[name] = (
+                    nonfinite if previous is None else previous + nonfinite
+                )
         return hook
+
+    def _minimal_diagnostics(self) -> dict[str, dict[str, int]]:
+        diagnostics = {
+            name: {
+                "observed_elements": int(observed),
+                "finite_elements": int(observed),
+                "nonfinite_count": 0,
+            }
+            for name, observed in self._observed_elements.items()
+        }
+        counts_by_device: dict[
+            torch.device, list[tuple[str, torch.Tensor]]
+        ] = defaultdict(list)
+        for name, value in self._nonfinite_counts.items():
+            counts_by_device[value.device].append((name, value))
+        for entries in counts_by_device.values():
+            values = torch.stack([value.reshape(()) for _, value in entries])
+            for (name, _), count in zip(entries, values.detach().cpu().tolist()):
+                count = int(count)
+                diagnostics[name]["nonfinite_count"] = count
+                diagnostics[name]["finite_elements"] -= count
+        return diagnostics
 
     @staticmethod
     def _finalized_range(module: Any) -> float | None:
@@ -1105,6 +1143,8 @@ class ActivationTracker:
         return result
 
     def activation_statistics(self, model: Any | None = None) -> list[dict[str, Any]]:
+        if not self.detailed_statistics:
+            return []
         modules = dict(model.named_modules()) if model is not None else self._tracked_modules
         rows: list[dict[str, Any]] = []
         for (component, stage, name), statistics in sorted(self._statistics.items()):
@@ -1130,16 +1170,28 @@ class ActivationTracker:
 
     def snapshot(self, model: Any) -> dict[str, Any]:
         activation_points: dict[str, Any] = {}
+        minimal_diagnostics = (
+            {} if self.detailed_statistics else self._minimal_diagnostics()
+        )
         for name, module in model.named_modules():
             if name not in self._tracked_modules:
                 continue
-            statistics = self._aggregate(name)
             finalized_range = self._finalized_range(module)
-            diagnostics = statistics.as_dict(finalized_range)
-            for metric_name in (
-                "min", "max", "absmax", "mean", "std", "p99_abs", "p999_abs"
-            ):
-                diagnostics[f"activation_{metric_name}"] = diagnostics.pop(metric_name)
+            if self.detailed_statistics:
+                diagnostics = self._aggregate(name).as_dict(finalized_range)
+                for metric_name in (
+                    "min", "max", "absmax", "mean", "std", "p99_abs", "p999_abs"
+                ):
+                    diagnostics[f"activation_{metric_name}"] = diagnostics.pop(metric_name)
+            else:
+                diagnostics = minimal_diagnostics.get(
+                    name,
+                    {
+                        "observed_elements": 0,
+                        "finite_elements": 0,
+                        "nonfinite_count": 0,
+                    },
+                )
             if hasattr(module, "absmax"):
                 value = float(torch.as_tensor(module.absmax).detach().cpu().item())
                 activation_points[name] = {

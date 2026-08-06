@@ -12,6 +12,8 @@ calibration:
   seed: 20260729
   prepare_dtype: bfloat16
   statistics_dtype: float16
+  # Optional distribution diagnostics; build scales do not depend on them.
+  detailed_statistics: false
 
 language:
   # The default task prompts fit within 768 positions after the 576 visual

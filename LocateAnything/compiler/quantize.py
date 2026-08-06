@@ -110,7 +110,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
 
     calibration = _mapping(config.get("calibration"), "calibration")
     required_calibration = {
-        "slow_samples", "max_new_tokens", "seed", "prepare_dtype", "statistics_dtype"
+        "slow_samples", "max_new_tokens", "seed", "prepare_dtype", "statistics_dtype",
+        "detailed_statistics",
     }
     if set(calibration) != required_calibration:
         missing = sorted(required_calibration - set(calibration))
@@ -125,6 +126,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError("calibration.prepare_dtype must be bfloat16 or float16")
     if calibration.get("statistics_dtype") not in {"float16", "bfloat16"}:
         raise ConfigurationError("calibration.statistics_dtype must be float16 or bfloat16")
+    if type(calibration.get("detailed_statistics")) is not bool:
+        raise ConfigurationError("calibration.detailed_statistics must be true or false")
 
     language = _mapping(config.get("language"), "language")
     required_language = {"chunk_size", "cache_len"}
@@ -343,6 +346,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
         "VISION_W_BITS": str(quantization["vision_weight_bits"]),
         "LANGUAGE_W_BITS": str(quantization["language_weight_bits"]),
         "LM_HEAD_W_BITS": str(quantization["lm_head_weight_bits"]),
+        "DETAILED_STATISTICS": "1" if calibration["detailed_statistics"] else "0",
         "MAX_SAMPLES": str(requested_samples),
         "CHECKPOINT_SAMPLES": str(requested_checkpoint),
         "IMAGE_TOKEN_ID": str(IMAGE_TOKEN_ID),

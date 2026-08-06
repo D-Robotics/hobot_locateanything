@@ -187,6 +187,8 @@ python -m zipfile -e compiler/datasets/calibration/download/source.zip \
 ```
 
 也可以使用自有校准数据，并在 `compiler/config/quantization.yaml` 中修改数据路径。
+默认只收集构建所需的量化 Scale 和校验信息；需要完整激活分布报告时，将
+`calibration.detailed_statistics` 设为 `true`。
 
 ### 3. 校准并编译 HBM
 

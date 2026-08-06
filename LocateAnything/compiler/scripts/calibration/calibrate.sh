@@ -25,6 +25,7 @@ Model defaults:
 
 Optional variables include REPO_ROOT, PYTHON_BIN, REPLAY_SCRIPT, DEVICE, DTYPE,
 IMAGE_TOKEN_ID, HIDDEN_ROTATION_PATH, JOB_NAME, LOG_PATH, EXIT_PATH, and META_PATH.
+Set DETAILED_STATISTICS=1 to collect distribution diagnostics and render reports.
 Set PREFLIGHT_ONLY=1 to validate inputs without a GPU run.
 EOF
   exit 0
@@ -53,6 +54,7 @@ IMAGE_TOKEN_ID=${IMAGE_TOKEN_ID:-151665}
 HIDDEN_ROTATION_PATH=${HIDDEN_ROTATION_PATH:-}
 PREFLIGHT_ONLY=${PREFLIGHT_ONLY:-0}
 RESUME=${RESUME:-0}
+DETAILED_STATISTICS=${DETAILED_STATISTICS:-0}
 
 [[ "$DTYPE" == "float16" || "$DTYPE" == "bfloat16" ]] || {
   echo "DTYPE must be float16 or bfloat16; got $DTYPE"
@@ -61,6 +63,11 @@ RESUME=${RESUME:-0}
 
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || {
   echo "RESUME must be 0 or 1"
+  exit 1
+}
+
+[[ "$DETAILED_STATISTICS" == "0" || "$DETAILED_STATISTICS" == "1" ]] || {
+  echo "DETAILED_STATISTICS must be 0 or 1"
   exit 1
 }
 mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/compiler/outputs/logs"
@@ -112,6 +119,7 @@ write_initial_metadata() {
     "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
     "$VISION_W_BITS" "$LANGUAGE_W_BITS" "$LM_HEAD_W_BITS" \
     "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" "$LOG_PATH" \
+    "$DETAILED_STATISTICS" \
     "$PREFLIGHT_ONLY" "$REPO_ROOT" <<'PY'
 import json, os, socket, sys
 from pathlib import Path
@@ -119,7 +127,7 @@ from pathlib import Path
 (path, started_at, generated, selected, upstream, model, output, replay, device, dtype, chunk, cache,
  max_samples, checkpoint, image_token, component, vision_w_bits, language_w_bits,
  lm_head_w_bits, replay_seed,
- rotation, log_path, preflight_only, repo_root) = sys.argv[1:]
+ rotation, log_path, detailed_statistics, preflight_only, repo_root) = sys.argv[1:]
 sys.path.insert(0, repo_root)
 from compiler.leap_llm.language_graphs import language_graph_set
 profile = language_graph_set()
@@ -155,6 +163,7 @@ value = {
     "lm_head_w_bits": int(lm_head_w_bits),
     "replay_seed": int(replay_seed),
     "graph_set": profile.name,
+    "detailed_statistics": detailed_statistics == "1",
     "hidden_rotation_path": rotation or None,
     "expected_graph_paths": expected_graph_paths,
     "log_path": log_path,
@@ -247,7 +256,7 @@ if [[ "$environment_status" -ne 0 ]]; then
 fi
 
 echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
-echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT graph_set=fused_decode device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES vision_w_bits=$VISION_W_BITS language_w_bits=$LANGUAGE_W_BITS lm_head_w_bits=$LM_HEAD_W_BITS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
+echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT graph_set=fused_decode device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES vision_w_bits=$VISION_W_BITS language_w_bits=$LANGUAGE_W_BITS lm_head_w_bits=$LM_HEAD_W_BITS detailed_statistics=$DETAILED_STATISTICS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
 
 "$PYTHON_BIN" - "$REPLAY_SCRIPT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
   "$LOCATEANYTHING_SOURCE" "$MODEL_PATH" \
@@ -331,6 +340,9 @@ replay_args=(
   --image-token-id "$IMAGE_TOKEN_ID"
   --replay-seed "$REPLAY_SEED"
 )
+if [[ "$DETAILED_STATISTICS" == "1" ]]; then
+  replay_args+=(--detailed-statistics)
+fi
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   replay_args+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
 fi
