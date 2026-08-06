@@ -1,7 +1,0 @@
-#!/bin/sh
-set -eu
-
-SELF=$(readlink -f "$0")
-BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
-DEPLOY_ROOT=$(CDPATH= cd -- "$BIN_DIR/.." && pwd)
-exec python3 "$DEPLOY_ROOT/python/cli.py" "$@"

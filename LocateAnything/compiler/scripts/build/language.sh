@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compile LocateAnything Language with Decoder W8 and lm_head W8 via oellm_build.
 # Uses the LocateAnythingLanguageApi registered under model_name locateanything-lm-3b
-# in the LA subsystem of the OELLM ecosystem. Environment variables override defaults.
+# in the LA subsystem of the OELLM ecosystem. Run through compiler/quantize.py.
 
 set -euo pipefail
 
@@ -11,55 +11,42 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 LEAP_LLM_SRC="${LEAP_LLM_SRC:-$REPO_ROOT/compiler}"
 
 MODEL_NAME="${MODEL_NAME:-locateanything-lm-3b}"
-MARCH="${MARCH:-nash-p}"
-W_BITS="${W_BITS:-8}"
-LM_HEAD_W_BITS="${LM_HEAD_W_BITS:-8}"
-AR_WV_MATMUL_DTYPE="${AR_WV_MATMUL_DTYPE:-int8}"
-CHUNK_SIZE="${CHUNK_SIZE:-1024}"
-CACHE_LEN="${CACHE_LEN:-4096}"
-DECODE_SEQ_LEN="${DECODE_SEQ_LEN:-6}"   # PBD q_len=6
+MARCH="${MARCH:?set by compiler/quantize.py}"
+W_BITS="${W_BITS:?set by compiler/quantize.py}"
+LM_HEAD_W_BITS="${LM_HEAD_W_BITS:?set by compiler/quantize.py}"
+CHUNK_SIZE="${CHUNK_SIZE:?set by compiler/quantize.py}"
+CACHE_LEN="${CACHE_LEN:?set by compiler/quantize.py}"
+DECODE_SEQ_LEN="${DECODE_SEQ_LEN:?set by compiler/quantize.py}"
 EXPECTED_SAMPLES="${EXPECTED_SAMPLES:?set EXPECTED_SAMPLES to the calibrated dataset size}"
-DEVICE="${DEVICE:-cuda:0}"
-PREFILL_CORE_NUM="${PREFILL_CORE_NUM:-4}"
-DECODE_CORE_NUM="${DECODE_CORE_NUM:-4}"
-AR_CORE_NUM="${AR_CORE_NUM:-$DECODE_CORE_NUM}"
-JOBS="${JOBS:-16}"
+DEVICE="${DEVICE:?set by compiler/quantize.py}"
+PREFILL_CORE_NUM="${PREFILL_CORE_NUM:?set by compiler/quantize.py}"
+DECODE_CORE_NUM="${DECODE_CORE_NUM:?set by compiler/quantize.py}"
+AR_CORE_NUM="${AR_CORE_NUM:?set by compiler/quantize.py}"
+JOBS="${JOBS:?set by compiler/quantize.py}"
 HIDDEN_ROTATION_PATH="${HIDDEN_ROTATION_PATH:-}"
 DISABLE_HIDDEN_ROTATION="${DISABLE_HIDDEN_ROTATION:-0}"
-BUILD_TARGET="${BUILD_TARGET:-}"
-EXPORT_ONLY_INPUT="${EXPORT_ONLY:-}"
-LANGUAGE_GRAPH_SET="${LANGUAGE_GRAPH_SET:-standard}"
-WAIT="${WAIT:-1}"
-DETACH="${DETACH:-0}"
-RESUME="${RESUME:-0}"
+BUILD_TARGET="${BUILD_TARGET:?set by compiler/quantize.py}"
+WAIT="${WAIT:?set by compiler/quantize.py}"
+DETACH="${DETACH:?set by compiler/quantize.py}"
+RESUME="${RESUME:?set by compiler/quantize.py}"
 
-BUILD_ID="${BUILD_ID:-standard}"
-INPUT_MODEL_PATH="${INPUT_MODEL_PATH:-$REPO_ROOT/models/LocateAnything-3B}"
-OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:-$REPO_ROOT/outputs/builds/locateanything-3b/$BUILD_ID/language}"
+INPUT_MODEL_PATH="${INPUT_MODEL_PATH:?set by compiler/quantize.py}"
+OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:?set by compiler/quantize.py}"
 CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration index}"
 GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration index}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
 CALIBRATION_COVERAGE_JSON="${CALIBRATION_COVERAGE_JSON:-}"
-CONDA_ENV="${CONDA_ENV:-oellm_clean}"
 
-LOG_DIR="${LOG_DIR:-$REPO_ROOT/outputs/logs/locateanything-3b/$BUILD_ID}"
-LOG_FILE="${LOG_FILE:-$LOG_DIR/language.log}"
+LOG_DIR="${LOG_DIR:?set by compiler/quantize.py}"
+LOG_FILE="${LOG_FILE:?set by compiler/quantize.py}"
 ENVIRONMENT_PATH="${ENVIRONMENT_PATH:-$LOG_DIR/language_environment.json}"
 ENVIRONMENT_SCRIPT="${ENVIRONMENT_SCRIPT:-$REPO_ROOT/compiler/scripts/common/environment.py}"
 
-if [[ -z "$BUILD_TARGET" ]]; then
-  [[ "$EXPORT_ONLY_INPUT" == "1" ]] && BUILD_TARGET=bc || BUILD_TARGET=hbm
-fi
 case "$BUILD_TARGET" in
-  bc) EXPECTED_EXPORT_ONLY=1 ;;
-  hbm) EXPECTED_EXPORT_ONLY=0 ;;
+  bc) EXPORT_ONLY=1 ;;
+  hbm) EXPORT_ONLY=0 ;;
   *) echo "BUILD_TARGET must be bc or hbm; got $BUILD_TARGET"; exit 1 ;;
 esac
-if [[ -n "$EXPORT_ONLY_INPUT" && "$EXPORT_ONLY_INPUT" != "$EXPECTED_EXPORT_ONLY" ]]; then
-  echo "EXPORT_ONLY=$EXPORT_ONLY_INPUT conflicts with BUILD_TARGET=$BUILD_TARGET"
-  exit 1
-fi
-EXPORT_ONLY="$EXPECTED_EXPORT_ONLY"
 [[ "$WAIT" == "0" || "$WAIT" == "1" ]] || { echo "WAIT must be 0 or 1"; exit 1; }
 [[ "$DETACH" == "0" || "$DETACH" == "1" ]] || { echo "DETACH must be 0 or 1"; exit 1; }
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || { echo "RESUME must be 0 or 1"; exit 1; }
@@ -78,35 +65,23 @@ if [[ "$DETACH" == "1" || "$WAIT" == "0" ]]; then
   exit 0
 fi
 
-CONDA_SH="${CONDA_SH:-$HOME/miniforge3/etc/profile.d/conda.sh}"
-[[ -f "$CONDA_SH" ]] || { echo "conda.sh not found: $CONDA_SH"; exit 1; }
-# shellcheck disable=SC1090
-source "$CONDA_SH"
-conda activate "$CONDA_ENV"
-
 cd "$LEAP_LLM_SRC"
 
 [[ -d "$INPUT_MODEL_PATH" ]] || { echo "input model missing: $INPUT_MODEL_PATH"; exit 1; }
 [[ -f "$CALIB_JSON" ]] || { echo "calib json missing: $CALIB_JSON"; exit 1; }
 [[ -f "$GENERATED_JSON" ]] || { echo "prepared calibration manifest missing: $GENERATED_JSON"; exit 1; }
-[[ "$W_BITS" == "8" ]] || { echo "LocateAnything Language release requires W_BITS=8"; exit 1; }
-[[ "$LM_HEAD_W_BITS" == "8" ]] || { echo "LocateAnything Language release requires LM_HEAD_W_BITS=8"; exit 1; }
-[[ "$AR_WV_MATMUL_DTYPE" == "int8" || "$AR_WV_MATMUL_DTYPE" == "float16" ]] || {
-  echo "AR_WV_MATMUL_DTYPE must be int8 or float16; got $AR_WV_MATMUL_DTYPE"
+[[ "$W_BITS" == "4" || "$W_BITS" == "8" ]] || {
+  echo "W_BITS must be 4 or 8; got $W_BITS"
   exit 1
 }
-[[ "$CHUNK_SIZE" == "1024" && "$CACHE_LEN" == "4096" && "$DECODE_SEQ_LEN" == "6" ]] || {
-  echo "LocateAnything Language release requires CHUNK_SIZE=1024 CACHE_LEN=4096 DECODE_SEQ_LEN=6"
+[[ "$LM_HEAD_W_BITS" == "4" || "$LM_HEAD_W_BITS" == "8" ]] || {
+  echo "LM_HEAD_W_BITS must be 4 or 8; got $LM_HEAD_W_BITS"
   exit 1
 }
-[[ "$LANGUAGE_GRAPH_SET" == "standard" || "$LANGUAGE_GRAPH_SET" == "fused_decode" ]] || {
-  echo "LANGUAGE_GRAPH_SET must be standard or fused_decode; got $LANGUAGE_GRAPH_SET"
+[[ "$DECODE_SEQ_LEN" == "6" ]] || {
+  echo "the default fused graph catalog requires DECODE_SEQ_LEN=6"
   exit 1
 }
-if [[ "$AR_WV_MATMUL_DTYPE" == "float16" && "$LANGUAGE_GRAPH_SET" != "standard" ]]; then
-  echo "AR WV Float16 is currently validated only for LANGUAGE_GRAPH_SET=standard"
-  exit 1
-fi
 [[ "$PREFILL_CORE_NUM" == "1" || "$PREFILL_CORE_NUM" == "2" || "$PREFILL_CORE_NUM" == "4" ]] || { echo "PREFILL_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
@@ -152,9 +127,8 @@ python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
   --coverage-json "$CALIBRATION_COVERAGE_JSON" \
   --image-width 672 --image-height 672 \
   --chunk-size "$CHUNK_SIZE" --cache-len "$CACHE_LEN" --decode-seq-len "$DECODE_SEQ_LEN" \
+  --language-w-bits "$W_BITS" \
   --lm-head-w-bits "$LM_HEAD_W_BITS" \
-  --ar-wv-matmul-dtype "$AR_WV_MATMUL_DTYPE" \
-  --graph-set "$LANGUAGE_GRAPH_SET" \
   "${VALIDATION_ARGS[@]}"
 
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"
@@ -166,7 +140,7 @@ if pgrep -f "oellm_build.*--model_name $MODEL_NAME" >/dev/null; then
 fi
 
 echo "cwd:           $(pwd)"
-echo "conda env:     $CONDA_ENV"
+echo "python:        $PYTHON_BIN"
 echo "input:         $INPUT_MODEL_PATH"
 echo "output:        $OUTPUT_MODEL_PATH"
 echo "calib:         $CALIB_JSON"
@@ -174,17 +148,13 @@ echo "generated:     $GENERATED_JSON"
 echo "scale:         $CALIBRATION_SCALE_MANIFEST"
 echo "coverage:      $CALIBRATION_COVERAGE_JSON"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
-echo "AR WV MatMul:  $AR_WV_MATMUL_DTYPE"
-echo "Language graphs: $LANGUAGE_GRAPH_SET"
+echo "Language graphs: fused_decode (13 graphs)"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
 echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
 echo "log:           $LOG_FILE"
 echo
 
-EXTRA_ARGS=(
-  --graph-set "$LANGUAGE_GRAPH_SET"
-  --ar_wv_matmul_dtype "$AR_WV_MATMUL_DTYPE"
-)
+EXTRA_ARGS=()
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
   EXTRA_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
 fi
@@ -196,16 +166,10 @@ HBM_STEM="${MODEL_BASENAME}_language_chunk_${CHUNK_SIZE}_cache_${CACHE_LEN}_deco
 if [[ "$AR_CORE_NUM" != "$DECODE_CORE_NUM" ]]; then
   HBM_STEM="${HBM_STEM}_ar${AR_CORE_NUM}"
 fi
-if [[ "$LANGUAGE_GRAPH_SET" == "fused_decode" ]]; then
-  HBM_STEM="${HBM_STEM}_fused_decode"
-fi
-if [[ "$AR_WV_MATMUL_DTYPE" == "float16" ]]; then
-  HBM_STEM="${HBM_STEM}_ar_wv_float16"
-fi
+HBM_STEM="${HBM_STEM}_fused_decode"
 HBM_PATH="$OUTPUT_MODEL_PATH/${HBM_STEM}.hbm"
 EMBEDDING_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_embed_tokens.bin"
 EXPECTED_EMBEDDING_BYTES=$((152681 * 2048 * 2))
-BC_MANIFEST="${HBM_PATH%.hbm}.bc_manifest.json"
 STAGE_ARGS=(
   --bc_dir "$OUTPUT_MODEL_PATH"
   --output_dir "$OUTPUT_MODEL_PATH"
@@ -217,60 +181,26 @@ STAGE_ARGS=(
   --decode_core_num "$DECODE_CORE_NUM"
   --ar_core_nums "$AR_CORE_NUM"
   --jobs "$JOBS"
-  --graph-set "$LANGUAGE_GRAPH_SET"
+  --chunk-size "$CHUNK_SIZE"
+  --cache-len "$CACHE_LEN"
+  --language-w-bits "$W_BITS"
+  --lm-head-w-bits "$LM_HEAD_W_BITS"
 )
 mapfile -t LANGUAGE_GRAPHS < <(
-  "$PYTHON_BIN" -m leap_llm.language_graphs "$LANGUAGE_GRAPH_SET"
+  "$PYTHON_BIN" -m leap_llm.language_graphs
 )
 [[ "${#LANGUAGE_GRAPHS[@]}" -gt 0 ]] || {
-  echo "Language graph set resolved to an empty catalog: $LANGUAGE_GRAPH_SET"
+  echo "Language graph catalog is empty"
   exit 1
 }
-PROVENANCE_ARGS=(
-  --manifest "$BC_MANIFEST"
-  --component language
-  --model_path "$INPUT_MODEL_PATH"
-  --scale_manifest "$CALIBRATION_SCALE_MANIFEST"
-  --field "chunk_size=$CHUNK_SIZE"
-  --field "cache_len=$CACHE_LEN"
-  --field "pbd_query_len=$DECODE_SEQ_LEN"
-  --field "ar_query_len=1"
-  --field "decoder_w_bits=$W_BITS"
-  --field "lm_head_w_bits=$LM_HEAD_W_BITS"
-  --field "ar_wv_matmul_dtype=$AR_WV_MATMUL_DTYPE"
-  --field "graph_set=$LANGUAGE_GRAPH_SET"
-  --field "march=$MARCH"
-  --artifact "embed_tokens=$EMBEDDING_PATH"
-)
-for graph in "${LANGUAGE_GRAPHS[@]}"; do
-  PROVENANCE_ARGS+=(--artifact "$graph=${HBM_PATH%.hbm}.${graph}.bc")
-done
-if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
-  PROVENANCE_ARGS+=(--hidden_rotation_path "$HIDDEN_ROTATION_PATH")
-fi
-if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
-  PROVENANCE_ARGS+=(--disable_hidden_rotation)
-fi
-
 validate_bc() {
-  env PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" python \
+  env PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" \
     "$REPO_ROOT/compiler/scripts/build/language_variants.py" \
     "${STAGE_ARGS[@]}" --check_only
 }
 
-check_bc() {
-  python "$REPO_ROOT/compiler/scripts/build/artifact_manifest.py" \
-    check "${PROVENANCE_ARGS[@]}" && validate_bc
-}
-
-record_bc() {
-  validate_bc
-  python "$REPO_ROOT/compiler/scripts/build/artifact_manifest.py" \
-    write "${PROVENANCE_ARGS[@]}"
-}
-
 export_bc() {
-  echo "[build:language] exporting the ${LANGUAGE_GRAPH_SET} Language BC graph family"
+  echo "[build:language] exporting the fused_decode Language BC graph family"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" oellm_build \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
@@ -294,26 +224,26 @@ export_bc() {
 run_build() (
   set -e
   if [[ "$BUILD_TARGET" == "bc" ]]; then
-    if [[ "$RESUME" == "1" ]] && check_bc; then
-      echo "[RESUME] Language BC contract already complete: $OUTPUT_MODEL_PATH"
+    if [[ "$RESUME" == "1" ]] && validate_bc; then
+      echo "[RESUME] Language BC graphs already complete: $OUTPUT_MODEL_PATH"
       return 0
     fi
     export_bc
-    record_bc
+    validate_bc
     return 0
   fi
 
-  if check_bc; then
+  if validate_bc; then
     echo "[REUSE] Language HBM build will consume existing ${#LANGUAGE_GRAPHS[@]}-graph BC family"
   else
-    echo "[build:language] compatible BC family not found; exporting it first"
+    echo "[build:language] complete BC graph family not found; exporting it first"
     export_bc
-    record_bc
+    validate_bc
   fi
 
   RESUME_ARGS=()
   [[ "$RESUME" == "1" ]] && RESUME_ARGS+=(--resume)
-  env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" python \
+  env PYTHONUNBUFFERED=1 PYTHONPATH="$LEAP_LLM_SRC${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" \
     "$REPO_ROOT/compiler/scripts/build/language_variants.py" \
     "${STAGE_ARGS[@]}" "${RESUME_ARGS[@]}"
 )

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Convert and compile LocateAnything Language graph sets.
+"""Convert and compile the LocateAnything Language graph catalog.
 
-The standard set contains Prefill, PBD q=6, and AR q=1. The fused-decode set
-also contains PBD q=7..12 and causal AR bridge q=2..5 graphs. Shared PBD graphs
-are compiled once; the AR graph family is compiled for each requested core count.
+The default fused-decode catalog contains Prefill, PBD q=6..12, and AR q=1..5.
+Shared PBD graphs are compiled once; the AR graph family is compiled for each
+requested core count.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,34 +23,34 @@ from hbdk4.compiler import load, save
 from hbdk4.compiler.hbm import Hbm, Hbo
 
 from leap_llm.nn.utils import Model
-from leap_llm.language_graphs import (
-    LANGUAGE_GRAPH_SET_NAMES,
-    LANGUAGE_GRAPH_SETS,
-    language_graph_set,
-)
+from leap_llm.language_graphs import language_graph_set
 from compiler.scripts.common.progress import StageProgress  # noqa: E402
 
 
 BASE_EXPECTED = {
-    "prefill": ((1, 1, 152681), (1, 1024, 2, 128)),
     "decode": ((1, 6, 152681), (1, 6, 2, 128)),
     "decode_ar": ((1, 1, 152681), (1, 1, 2, 128)),
 }
-KNOWN_STAGES = {
-    graph
-    for graph_set in LANGUAGE_GRAPH_SETS.values()
-    for graph in graph_set.graphs
-}
+KNOWN_STAGES = set(language_graph_set().graphs)
 VOCAB_SIZE = 152681
 HIDDEN_SIZE = 2048
 NUM_LAYERS = 36
-CACHE_LEN = 4096
 NUM_KV_HEADS = 2
 HEAD_DIM = 128
 CACHE_TENSOR_COUNT = NUM_LAYERS * 2
 
 
-def expected_contract(name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+@dataclass(frozen=True)
+class LanguageContract:
+    chunk_size: int
+    cache_len: int
+
+
+def expected_contract(
+    name: str, contract: LanguageContract
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if name == "prefill":
+        return (1, 1, VOCAB_SIZE), (1, contract.chunk_size, NUM_KV_HEADS, HEAD_DIM)
     if name in BASE_EXPECTED:
         return BASE_EXPECTED[name]
     prefix, value = name.rsplit("q", 1)
@@ -60,9 +60,9 @@ def expected_contract(name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
     return (1, q_len, 152681), (1, q_len, 2, 128)
 
 
-def query_length(name: str) -> int:
+def query_length(name: str, contract: LanguageContract) -> int:
     if name == "prefill":
-        return 1024
+        return contract.chunk_size
     if name == "decode":
         return 6
     if name == "decode_ar":
@@ -80,9 +80,9 @@ def graph_label(name: str) -> str:
     if name == "decode_ar":
         return "Decode AR q=1"
     if name.startswith("decode_pbd_q"):
-        return f"Decode PBD q={query_length(name)}"
+        return f"Decode PBD q={int(name.rsplit('q', 1)[1])}"
     if name.startswith("decode_ar_q"):
-        return f"Decode AR q={query_length(name)}"
+        return f"Decode AR q={int(name.rsplit('q', 1)[1])}"
     raise ValueError(f"unsupported Language graph: {name}")
 
 
@@ -110,16 +110,17 @@ def _descriptor_contract(value: Any) -> tuple[tuple[int, ...], str]:
 
 def expected_io_contract(
     name: str,
+    contract: LanguageContract,
     *,
     cache_dtype: str = "float32",
 ) -> tuple[list[tuple[tuple[int, ...], str]], list[tuple[tuple[int, ...], str]]]:
-    q_len = query_length(name)
-    logits_shape, update_shape = expected_contract(name)
-    cache_shape = (1, CACHE_LEN, NUM_KV_HEADS, HEAD_DIM)
+    q_len = query_length(name, contract)
+    logits_shape, update_shape = expected_contract(name, contract)
+    cache_shape = (1, contract.cache_len, NUM_KV_HEADS, HEAD_DIM)
     inputs = [
         ((1, q_len, HIDDEN_SIZE), "float16"),
         ((1, 1, q_len), "int32"),
-        ((1, q_len, CACHE_LEN), "float16"),
+        ((1, q_len, contract.cache_len), "float16"),
         *[(cache_shape, cache_dtype) for _ in range(CACHE_TENSOR_COUNT)],
     ]
     outputs = [
@@ -132,6 +133,7 @@ def expected_io_contract(
 def validate_graph_contract(
     function: Any,
     name: str,
+    contract: LanguageContract,
     *,
     cache_dtype: str = "float32",
 ) -> None:
@@ -141,7 +143,7 @@ def validate_graph_contract(
             f"Language graph name mismatch: expected {name}, got {actual_name}"
         )
     expected_inputs, expected_outputs = expected_io_contract(
-        name, cache_dtype=cache_dtype
+        name, contract, cache_dtype=cache_dtype
     )
     if len(function.inputs) != len(expected_inputs):
         raise RuntimeError(
@@ -177,11 +179,11 @@ def heading(value: str) -> None:
 
 def discover_bc(
     bc_dir: Path,
+    contract: LanguageContract,
     *,
     artifact_prefix: str | None = None,
-    graph_set: str = "standard",
 ) -> dict[str, Path]:
-    expected = set(language_graph_set(graph_set).graphs)
+    expected = set(language_graph_set().graphs)
     discovered: dict[str, Path] = {}
     if artifact_prefix:
         candidates = [
@@ -205,7 +207,7 @@ def discover_bc(
             continue
         if name in discovered:
             raise RuntimeError(f"duplicate {name} BC: {discovered[name]} and {path}")
-        validate_graph_contract(function, name)
+        validate_graph_contract(function, name, contract)
         logits_shape = tuple(function.outputs[0].type.shape)
         cache_shape = tuple(function.outputs[1].type.shape)
         discovered[name] = path.resolve()
@@ -217,46 +219,12 @@ def discover_bc(
     missing = sorted(expected - set(discovered))
     if missing:
         raise RuntimeError(f"missing BC graphs in {bc_dir}: {missing}")
-    unexpected = sorted(set(discovered) - expected)
-    if unexpected:
-        raise RuntimeError(
-            f"{graph_set} Language BC contains unexpected graphs: {unexpected}"
-        )
     return discovered
 
 
-def atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def write_compile_manifest(
-    path: Path,
-    source_bc: dict[str, Path],
-    args: argparse.Namespace,
-) -> None:
-    payload = {
-        "schema_version": 3,
-        "source_bc": {
-            name: {
-                "path": str(source),
-                "bytes": source.stat().st_size,
-            }
-            for name, source in source_bc.items()
-        },
-        "march": args.march,
-        "prefill_core_num": args.prefill_core_num,
-        "decode_core_num": args.decode_core_num,
-        "ar_core_nums": args.ar_core_nums,
-        "jobs": args.jobs,
-        "graph_set": args.graph_set,
-        "hbm_path": str(args.hbm_path) if args.hbm_path else None,
-    }
-    atomic_json(path, payload)
-
-
-def valid_function(path: Path, expected_name: str) -> bool:
+def valid_function(
+    path: Path, expected_name: str, contract: LanguageContract
+) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
@@ -264,15 +232,17 @@ def valid_function(path: Path, expected_name: str) -> bool:
         functions = list(module.functions)
         if len(functions) != 1:
             return False
-        validate_graph_contract(functions[0], expected_name, cache_dtype="int8")
+        validate_graph_contract(
+            functions[0], expected_name, contract, cache_dtype="int8"
+        )
         return True
     except Exception:
         return False
 
 
 def convert_stage(source: Path, destination: Path, name: str,
-                  march: str, resume: bool) -> None:
-    if resume and valid_function(destination, name):
+                  march: str, resume: bool, contract: LanguageContract) -> None:
+    if resume and valid_function(destination, name, contract):
         print(f"[RESUME] converted {name}: {destination}", flush=True)
         return
     heading(f"CONVERT {name.upper()}")
@@ -288,7 +258,7 @@ def convert_stage(source: Path, destination: Path, name: str,
     function.remove_io_op(["Dequantize", "Quantize"])
     # Removing the boundary quantization wrappers exposes the integer KV cache
     # contract consumed by HBO compilation and the linked HBM.
-    validate_graph_contract(function, name, cache_dtype="int8")
+    validate_graph_contract(function, name, contract, cache_dtype="int8")
     temporary = destination.with_name(destination.stem + ".partial.bc")
     save(converted, str(temporary))
     os.replace(temporary, destination)
@@ -315,7 +285,9 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
     functions = list(module.functions)
     if len(functions) != 1:
         raise RuntimeError(f"{converted_bc} contains {len(functions)} functions")
-    validate_graph_contract(functions[0], name, cache_dtype="int8")
+    validate_graph_contract(
+        functions[0], name, args.contract, cache_dtype="int8"
+    )
     temporary = destination.with_name(destination.stem + ".partial.hbo")
     kwargs = {
         "march": args.march,
@@ -339,7 +311,9 @@ def compile_stage(converted_bc: Path, destination: Path, name: str,
     print(f"[PASS] HBO {name} core={core_num}: {destination}", flush=True)
 
 
-def hbm_contract_matches(path: Path, expected_names: list[str]) -> bool:
+def hbm_contract_matches(
+    path: Path, expected_names: list[str], contract: LanguageContract
+) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
@@ -349,19 +323,22 @@ def hbm_contract_matches(path: Path, expected_names: list[str]) -> bool:
             return False
         for name in expected_names:
             graph = graphs[name]
-            validate_graph_contract(graph, name, cache_dtype="int8")
+            validate_graph_contract(graph, name, contract, cache_dtype="int8")
         return True
     except Exception:
         return False
 
 
-def valid_hbm(path: Path, expected_names: list[str]) -> bool:
-    return hbm_contract_matches(path, expected_names)
+def valid_hbm(
+    path: Path, expected_names: list[str], contract: LanguageContract
+) -> bool:
+    return hbm_contract_matches(path, expected_names, contract)
 
 
 def link_variant(hbos: list[Path], destination: Path,
-                 resume: bool, expected_names: list[str]) -> None:
-    if resume and valid_hbm(destination, expected_names):
+                 resume: bool, expected_names: list[str],
+                 contract: LanguageContract) -> None:
+    if resume and valid_hbm(destination, expected_names, contract):
         print(f"[RESUME] HBM: {destination}", flush=True)
         return
     if resume and destination.is_file() and destination.stat().st_size > 0:
@@ -374,7 +351,7 @@ def link_variant(hbos: list[Path], destination: Path,
     temporary = destination.with_name(destination.stem + ".partial.hbm")
     Model.link_models([Hbo(str(path)) for path in hbos], str(temporary))
     os.replace(temporary, destination)
-    if not hbm_contract_matches(destination, expected_names):
+    if not hbm_contract_matches(destination, expected_names, contract):
         raise RuntimeError(f"linked HBM graph contract mismatch: {destination}")
     print(f"[PASS] HBM: {destination}", flush=True)
 
@@ -391,15 +368,13 @@ def parse_args() -> argparse.Namespace:
         default=[1, 2, 4],
     )
     parser.add_argument("--jobs", type=int, default=16)
+    parser.add_argument("--chunk-size", type=int, default=1024)
+    parser.add_argument("--cache-len", type=int, default=4096)
+    parser.add_argument("--language-w-bits", type=int, choices=(4, 8), default=8)
+    parser.add_argument("--lm-head-w-bits", type=int, choices=(4, 8), default=8)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--convert_only", action="store_true")
     parser.add_argument("--check_only", action="store_true")
-    parser.add_argument(
-        "--graph-set",
-        dest="graph_set",
-        choices=LANGUAGE_GRAPH_SET_NAMES,
-        default="standard",
-    )
     parser.add_argument(
         "--hbm_path", type=Path,
         help="Exact release HBM path; also selects its matching BC prefix.",
@@ -418,6 +393,15 @@ def main() -> int:
     if args.embedding_path:
         args.embedding_path = args.embedding_path.resolve()
     args.ar_core_nums = sorted(set(args.ar_core_nums))
+    if (
+        not 128 <= args.chunk_size <= 2048
+        or not 256 <= args.cache_len <= 4096
+        or args.cache_len <= args.chunk_size
+        or args.chunk_size % 64
+        or args.cache_len % 64
+    ):
+        raise RuntimeError("chunk/cache lengths must be multiples of 64 with cache > chunk")
+    args.contract = LanguageContract(args.chunk_size, args.cache_len)
     if args.hbm_path and len(args.ar_core_nums) != 1:
         raise RuntimeError("--hbm_path requires exactly one --ar_core_nums value")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -426,20 +410,18 @@ def main() -> int:
         converted_dir = args.hbm_path.parent
         hbo_dir = args.hbm_path.parent
         artifact_prefix = args.hbm_path.stem
-        manifest_path = args.hbm_path.with_suffix(".compile_manifest.json")
     else:
         converted_dir = args.output_dir / "converted_bc"
         hbo_dir = args.output_dir / "hbo"
         converted_dir.mkdir(exist_ok=True)
         hbo_dir.mkdir(exist_ok=True)
         artifact_prefix = None
-        manifest_path = args.output_dir / "compile_manifest.json"
 
     heading("SOURCE CONTRACT")
     source_bc = discover_bc(
         args.bc_dir,
+        args.contract,
         artifact_prefix=artifact_prefix,
-        graph_set=args.graph_set,
     )
     if args.embedding_path:
         if not args.embedding_path.is_file():
@@ -455,9 +437,7 @@ def main() -> int:
     if args.check_only:
         heading("SOURCE CONTRACT PASSED")
         return 0
-    write_compile_manifest(manifest_path, source_bc, args)
-
-    stage_order = list(language_graph_set(args.graph_set).graphs)
+    stage_order = list(language_graph_set().graphs)
     pbd_stages = [
         graph for graph in stage_order
         if graph == "decode" or graph.startswith("decode_pbd_q")
@@ -479,7 +459,10 @@ def main() -> int:
         }
     for name in stage_order:
         with progress.stage(f"Convert {graph_label(name)}"):
-            convert_stage(source_bc[name], converted[name], name, args.march, args.resume)
+            convert_stage(
+                source_bc[name], converted[name], name, args.march,
+                args.resume, args.contract,
+            )
     if args.convert_only:
         heading("CONVERT ONLY COMPLETED")
         return 0
@@ -519,12 +502,11 @@ def main() -> int:
             with progress.stage(f"Compile {graph_label(name)} HBO"):
                 compile_stage(converted[name], ar_hbo, name, ar_core, args)
             ar_hbos[name] = ar_hbo
-        graph_set_suffix = "_fused_decode" if args.graph_set == "fused_decode" else ""
         hbm = args.hbm_path or args.output_dir / (
-            "LocateAnything-3B_language_chunk_1024_cache_4096_"
-            "decoder_w8_lmhead_w8_nash-p_"
+            f"LocateAnything-3B_language_chunk_{args.chunk_size}_cache_{args.cache_len}_"
+            f"decoder_w{args.language_w_bits}_lmhead_w{args.lm_head_w_bits}_{args.march}_"
             f"prefill{args.prefill_core_num}_pbd{args.decode_core_num}_ar{ar_core}"
-            f"{graph_set_suffix}.hbm"
+            "_fused_decode.hbm"
         )
         all_hbos = {**shared_hbos, **ar_hbos}
         with progress.stage(f"Link Language HBM (AR cores={ar_core})"):
@@ -533,6 +515,7 @@ def main() -> int:
                 hbm,
                 args.resume,
                 stage_order,
+                args.contract,
             )
 
     heading("ALL VARIANTS COMPLETED")

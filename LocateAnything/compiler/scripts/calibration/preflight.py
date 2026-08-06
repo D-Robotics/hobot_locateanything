@@ -23,8 +23,21 @@ from compiler.configuration import (  # noqa: E402
     ConfigurationFileError,
     load_config_file,
 )
+from compiler.leap_llm.model_contract import (  # noqa: E402
+    HIDDEN_SIZE,
+    IMAGE_HEIGHT,
+    IMAGE_TOKEN_ID,
+    IMAGE_WIDTH,
+    LETTERBOX_FILL,
+    PATCH_COUNT,
+    PATCH_SIZE,
+    RESIZE_MODE,
+    SPATIAL_MERGE,
+    VISUAL_TOKEN_COUNT,
+    VOCAB_SIZE,
+)
 
-RUNTIME_TOKENIZER_JSON = PROJECT_ROOT / "deploy" / "tokenizer" / "tokenizer.json"
+RUNTIME_TOKENIZER_JSON = PROJECT_ROOT / "inference" / "tokenizer" / "tokenizer.json"
 
 REQUIRED_MODULES = {
     "torch": ("torch", None),
@@ -102,83 +115,37 @@ def load_contract(path: Path) -> dict[str, Any]:
         raise PreflightError(f"cannot read release config {path}: {exc}") from exc
 
 
-def integer_counts(value: Any, name: str) -> dict[str, int]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise PreflightError(f"{name} must be a mapping")
-    counts: dict[str, int] = {}
-    for key, count in value.items():
-        if type(count) is not int or count < 0:
-            raise PreflightError(f"{name}.{key} must be a non-negative integer")
-        counts[str(key)] = count
-    return counts
-
-
 def calibration_profile(config: Mapping[str, Any]) -> dict[str, Any]:
     calibration = config.get("calibration")
-    model = config.get("model")
+    if not isinstance(calibration, dict):
+        raise PreflightError("config requires a calibration mapping")
     language = config.get("language")
-    if not all(isinstance(value, dict) for value in (calibration, model, language)):
-        raise PreflightError("config requires calibration, model, and language mappings")
-    assert isinstance(calibration, dict)
-    assert isinstance(model, dict)
-    assert isinstance(language, dict)
-
-    task_counts = integer_counts(calibration.get("task_counts"), "calibration.task_counts")
-    role_counts = integer_counts(
-        calibration.get("source_role_counts"), "calibration.source_role_counts"
-    )
-    strata = integer_counts(
-        calibration.get("coco_stratum_counts"), "calibration.coco_stratum_counts"
-    )
-    sample_setting = calibration.get("sample_count", "auto")
-    samples = None if sample_setting == "auto" else int(sample_setting)
-    if samples is not None and samples <= 0:
-        raise PreflightError("calibration.sample_count must be positive or auto")
-    if task_counts and samples is not None and sum(task_counts.values()) != samples:
-        raise PreflightError("calibration.task_counts must sum to sample_count")
-    if role_counts and samples is not None and sum(role_counts.values()) != samples:
-        raise PreflightError("calibration.source_role_counts must sum to sample_count")
-    if strata and role_counts and sum(strata.values()) != role_counts.get("coco_detection"):
-        raise PreflightError("COCO strata must sum to the COCO source-role count")
-
-    width = int(model.get("image_width", 0))
-    height = int(model.get("image_height", 0))
-    resize_mode = str(model.get("resize_mode") or "")
-    letterbox_fill = int(model.get("letterbox_fill", -1))
-    patch = int(model.get("patch_size", 0))
-    merge = int(model.get("spatial_merge", 0))
-    if min(width, height, patch, merge) <= 0 or width % patch or height % patch:
-        raise PreflightError("invalid fixed Vision dimensions")
-    patches = (width // patch) * (height // patch)
-    visual_tokens = patches // (merge * merge)
-    prefill = int(language.get("chunk_size", 0))
-    if patches != 2304 or visual_tokens != 576 or prefill != 1024:
-        raise PreflightError("release processor contract requires 2304 patches/576 tokens/q1024")
-    if resize_mode != "letterbox" or letterbox_fill != 128:
-        raise PreflightError("release image preprocessing requires letterbox with fill=128")
+    if not isinstance(language, dict):
+        raise PreflightError("config requires a language mapping")
 
     max_new_tokens = int(calibration.get("max_new_tokens", 0))
-    if max_new_tokens != 1024:
-        raise PreflightError("release prepare max_new_tokens must be 1024")
+    if max_new_tokens <= 0:
+        raise PreflightError("prepare max_new_tokens must be positive")
+    prefill_limit = int(language.get("chunk_size", 0))
+    if prefill_limit <= 0:
+        raise PreflightError("language.chunk_size must be positive")
     return {
-        "sample_count": samples,
-        "task_counts": task_counts,
-        "source_role_counts": role_counts,
-        "coco_stratum_counts": strata,
-        "image_width": width,
-        "image_height": height,
-        "resize_mode": resize_mode,
-        "letterbox_fill": letterbox_fill,
-        "patch_size": patch,
-        "merge_size": merge,
-        "patch_count": patches,
-        "visual_tokens": visual_tokens,
-        "hidden_size": int(model.get("hidden_size", 0)),
-        "vocab_size": int(model.get("vocab_size", 0)),
-        "image_token_id": int(calibration.get("image_token_id", -1)),
-        "prefill_limit": prefill,
+        "sample_count": None,
+        "task_counts": {},
+        "source_role_counts": {},
+        "coco_stratum_counts": {},
+        "image_width": IMAGE_WIDTH,
+        "image_height": IMAGE_HEIGHT,
+        "resize_mode": RESIZE_MODE,
+        "letterbox_fill": LETTERBOX_FILL,
+        "patch_size": PATCH_SIZE,
+        "merge_size": SPATIAL_MERGE,
+        "patch_count": PATCH_COUNT,
+        "visual_tokens": VISUAL_TOKEN_COUNT,
+        "hidden_size": HIDDEN_SIZE,
+        "vocab_size": VOCAB_SIZE,
+        "image_token_id": IMAGE_TOKEN_ID,
+        "prefill_limit": prefill_limit,
         "max_new_tokens": max_new_tokens,
     }
 
@@ -466,7 +433,7 @@ def audit_model(path: Path, profile: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def audit_upstream(path: Path) -> dict[str, Any]:
+def audit_source(path: Path) -> dict[str, Any]:
     path = path.resolve()
     required = {
         "worker": path / "locateanything_worker.py",
@@ -475,7 +442,7 @@ def audit_upstream(path: Path) -> dict[str, Any]:
     }
     missing = [str(item) for item in required.values() if not item.is_file()]
     if missing:
-        raise PreflightError(f"upstream source files are missing: {missing}")
+        raise PreflightError(f"LocateAnything source files are missing: {missing}")
     signatures = {
         "worker": ("class LocateAnythingWorker", "AutoProcessor.from_pretrained"),
         "processor": ("class LocateAnythingProcessor", "def py_apply_chat_template"),
@@ -485,7 +452,7 @@ def audit_upstream(path: Path) -> dict[str, Any]:
         text = required[name].read_text(encoding="utf-8")
         if any(needle not in text for needle in needles):
             raise PreflightError(
-                f"upstream {name} static API does not match the Prepare adapter"
+                f"LocateAnything {name} interface does not match the Prepare adapter"
             )
     return {
         "passed": True,
@@ -827,7 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--selected-jsonl", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, required=True)
-    parser.add_argument("--upstream-repo", type=Path, required=True)
+    parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--report-json", type=Path, required=True)
     return parser
 
@@ -839,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
         dependencies = audit_dependencies()
         manifest, records = audit_manifest(args.selected_jsonl, profile)
         model = audit_model(args.model_path, profile)
-        upstream = audit_upstream(args.upstream_repo)
+        source = audit_source(args.source_dir)
         processor = audit_processor(
             args.model_path,
             records,
@@ -858,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
             "dependencies": dependencies,
             "manifest": manifest,
             "model": model,
-            "upstream": upstream,
+            "locateanything_source": source,
             "processor": processor,
         }
         atomic_json(args.report_json.resolve(), report)

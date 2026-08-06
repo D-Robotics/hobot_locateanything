@@ -106,7 +106,6 @@ class Qwen2PBDTextConfig:
     batch_size: int = 1
     w_bits: int = 8
     lm_head_w_bits: int = 8
-    ar_wv_matmul_dtype: str = "int8"
     has_scale: bool = False
 
 

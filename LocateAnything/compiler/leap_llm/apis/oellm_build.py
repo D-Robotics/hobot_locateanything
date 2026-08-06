@@ -12,9 +12,6 @@ from leap_llm.apis.model.model_factory import (
     get_supported_marches,
     get_supported_models,
 )
-from leap_llm.language_graphs import LANGUAGE_GRAPH_SET_NAMES
-
-
 DEFAULT_COMPILE_KWARGS = {
     "march": "nash-p",
     "jobs": 16,
@@ -106,12 +103,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=validate_device, default=["cpu"])
     parser.add_argument("--w_bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--lm_head_w_bits", type=int, choices=[4, 8], default=8)
-    parser.add_argument(
-        "--ar_wv_matmul_dtype",
-        choices=("int8", "float16"),
-        default="int8",
-        help="Operand and result dtype for the AR q1 WV MatMul.",
-    )
     parser.add_argument("--vit_core_num", type=parse_core_list, default=[1])
     parser.add_argument("--prefill_core_num", type=parse_core_list, default=[1])
     parser.add_argument("--decode_core_num", type=parse_core_list, default=[1])
@@ -122,13 +113,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--calibration_scale_manifest", type=validated_path(), default=None
     )
     parser.add_argument("--hidden_rotation_path", type=validated_path(), default=None)
-    parser.add_argument(
-        "--graph-set",
-        dest="graph_set",
-        choices=LANGUAGE_GRAPH_SET_NAMES,
-        default="standard",
-        help="LocateAnything Language graph set.",
-    )
     parser.add_argument("--disable_hidden_rotation", action="store_true")
     parser.add_argument("--export_only", action="store_true")
     return parser
@@ -176,22 +160,12 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
         if args.ar_core_num is None:
             args.ar_core_num = list(args.decode_core_num)
         require_single_core("ar_core_num")
-        release = (args.chunk_size, args.cache_len, args.decode_seq_len)
-        if release != (1024, 4096, 6):
+        if args.decode_seq_len != 6:
             parser.error(
-                "LocateAnything Language release requires "
-                "--chunk_size 1024 --cache_len 4096 --decode_seq_len 6"
+                "the default LocateAnything fused graph catalog requires "
+                "--decode_seq_len 6"
             )
-        if args.w_bits != 8 or args.lm_head_w_bits != 8:
-            parser.error(
-                "LocateAnything Language release requires "
-                "--w_bits 8 --lm_head_w_bits 8"
-            )
-        if args.ar_wv_matmul_dtype == "float16" and args.graph_set != "standard":
-            parser.error(
-                "--ar_wv_matmul_dtype float16 is currently validated only for "
-                "--graph-set standard"
-            )
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -28,12 +27,6 @@ IO_DTYPE = "float16"
 
 def heading(value: str) -> None:
     print(f"\n================== {value} ==================", flush=True)
-
-
-def atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
 
 
 def canonical_dtype(value: Any) -> str:
@@ -136,21 +129,6 @@ def valid_hbm(path: Path) -> bool:
     return hbm_contract_matches(path)
 
 
-def write_compile_manifest(path: Path, source: Path, args: argparse.Namespace) -> None:
-    payload = {
-        "schema_version": 3,
-        "source_bc": {
-            "path": str(source),
-            "bytes": source.stat().st_size,
-        },
-        "march": args.march,
-        "core_num": args.core_num,
-        "jobs": args.jobs,
-        "hbm_path": str(args.hbm_path),
-    }
-    atomic_json(path, payload)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bc_path", type=Path, required=True)
@@ -175,8 +153,6 @@ def main() -> int:
         heading("SOURCE CONTRACT PASSED")
         return 0
 
-    manifest = args.hbm_path.with_suffix(".compile_manifest.json")
-    write_compile_manifest(manifest, args.bc_path, args)
     progress = StageProgress(3, "Vision build")
 
     converted_path = args.hbm_path.with_suffix(".visual_convert.bc")

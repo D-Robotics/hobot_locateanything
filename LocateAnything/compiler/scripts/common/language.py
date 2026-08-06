@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,35 +40,20 @@ LIMITATION = (
 )
 
 
-def language_linear_weight_bits(module_name: str, default_bits: int) -> int:
-    override = os.environ.get("LA_LANGUAGE_LINEAR_BITS", "").strip()
-    if override:
-        if override not in {"4", "8"}:
-            raise ValueError("LA_LANGUAGE_LINEAR_BITS must be 4 or 8")
-        return int(override)
-    pattern = os.environ.get("LA_LANGUAGE_W8_REGEX", "").strip()
-    if pattern and re.search(pattern, module_name):
-        return 8
+def language_linear_weight_bits(_module_name: str, default_bits: int) -> int:
+    """Return the configured decoder weight width for a module.
+
+    The compiler entry point passes the fixed W8 policy.
+    Keeping this callback deterministic prevents an unrelated shell environment
+    from silently changing a calibration run.
+    """
     return default_bits
-
-
-def language_quantization_policy() -> dict[str, Any]:
-    return {
-        "decoder_weight_bits": DECODER_WEIGHT_BITS,
-        "lm_head_weight_bits": LM_HEAD_WEIGHT_BITS,
-        "linear_bits_override": os.environ.get(
-            "LA_LANGUAGE_LINEAR_BITS", ""
-        ).strip() or None,
-        "w8_regex": os.environ.get("LA_LANGUAGE_W8_REGEX", "").strip() or None,
-        "dynamic_a8_patterns": list(DYNAMIC_A8_PATTERNS),
-    }
 
 
 def create_language_model(
     model_path: Path,
     output_dir: Path,
     device: str,
-    ar_wv_matmul_dtype: str = "int8",
 ) -> tuple[Any, Any, Any]:
     import torch
     from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
@@ -87,7 +71,6 @@ def create_language_model(
         lm_head_w_bits=LM_HEAD_WEIGHT_BITS,
         apply_hidden_rotation=True,
         export_only=True,
-        ar_wv_matmul_dtype=ar_wv_matmul_dtype,
     )
     model = api.text_model.to(device=device, dtype=torch.float16).eval()
     model.compile_mode(False)

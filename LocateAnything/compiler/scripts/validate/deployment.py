@@ -21,7 +21,6 @@ from compiler.scripts.common.identity import (  # noqa: E402
     release_checkpoint_errors as frozen_checkpoint_errors,
 )
 from compiler.leap_llm.language_graphs import (  # noqa: E402
-    LANGUAGE_GRAPH_SET_NAMES,
     language_graph_set,
     normalize_graph_set_metadata,
 )
@@ -35,8 +34,8 @@ DEFAULT_ROTATION_NAME = "signed normalized Sylvester Hadamard rotation (2048x204
 LEGACY_ROTATION_NAMES = {"built-in qwen2.5-vl S600 reference Hadamard"}
 
 
-def component_stages(component: str, graph_set: str) -> tuple[str, ...]:
-    language_stages = language_graph_set(graph_set).calibration_stages
+def component_stages(component: str) -> tuple[str, ...]:
+    language_stages = language_graph_set().calibration_stages
     return {
         "full": ("vision", *language_stages),
         "vision": ("vision",),
@@ -46,7 +45,6 @@ def component_stages(component: str, graph_set: str) -> tuple[str, ...]:
 
 def component_stage_counts(
     component: str,
-    graph_set: str,
     *,
     sample_count: int,
     language_context_count: int,
@@ -56,7 +54,7 @@ def component_stage_counts(
         counts["vision"] = sample_count
     if component in {"full", "language"}:
         counts.update(
-            language_graph_set(graph_set).calibration_execution_counts(
+            language_graph_set().calibration_execution_counts(
                 language_context_count
             )
         )
@@ -195,24 +193,15 @@ def main() -> int:
     parser.add_argument("--chunk-size", type=int, required=True)
     parser.add_argument("--cache-len", type=int, required=True)
     parser.add_argument("--decode-seq-len", type=int, required=True)
+    parser.add_argument("--vision-w-bits", type=int, choices=[8], default=8)
+    parser.add_argument("--language-w-bits", type=int, choices=[4, 8], default=8)
     parser.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
-    parser.add_argument(
-        "--ar-wv-matmul-dtype",
-        choices=("int8", "float16"),
-        default="int8",
-    )
     parser.add_argument("--expected-samples", type=int)
     parser.add_argument("--hidden-rotation-path", type=Path)
     parser.add_argument("--disable-hidden-rotation", action="store_true")
-    parser.add_argument(
-        "--graph-set",
-        dest="graph_set",
-        choices=LANGUAGE_GRAPH_SET_NAMES,
-        default="standard",
-    )
     args = parser.parse_args()
     required_groups = COMPONENT_GROUPS[args.component]
-    required_stages = component_stages(args.component, args.graph_set)
+    required_stages = component_stages(args.component)
 
     errors: list[str] = []
     selected = read_jsonl(args.selected_jsonl, errors, "selected manifest")
@@ -224,7 +213,7 @@ def main() -> int:
         (
             component
             for component in COMPONENT_GROUPS
-            for stages in (component_stages(component, args.graph_set),)
+            for stages in (component_stages(component),)
             if declared_stages == list(stages)
         ),
         None,
@@ -235,9 +224,7 @@ def main() -> int:
         calibration_stages = required_stages
     else:
         calibration_groups = COMPONENT_GROUPS[calibration_component]
-        calibration_stages = component_stages(
-            calibration_component, args.graph_set
-        )
+        calibration_stages = component_stages(calibration_component)
         missing_groups = sorted(set(required_groups) - set(calibration_groups))
         if missing_groups:
             errors.append(
@@ -437,19 +424,15 @@ def main() -> int:
         if language_context_count != scale.get("language_context_count", 0):
             errors.append("calibration coverage/scale Language context count mismatch")
         if "language" in calibration_groups:
-            profile = language_graph_set(args.graph_set)
+            profile = language_graph_set()
             expected_language_profile = {
-                "language_decoder_weight_bits": 8,
+                "language_decoder_weight_bits": args.language_w_bits,
                 "language_lm_head_weight_bits": args.lm_head_w_bits,
                 "text_mask_token_id": 151676,
                 "pbd_block_size": 6,
                 "graph_set": profile.name,
-                "pbd_total_query_lengths": (
-                    list(range(6, 13)) if profile.uses_fused_decode else [6]
-                ),
-                "ar_total_query_lengths": (
-                    list(range(1, 6)) if profile.uses_fused_decode else [1]
-                ),
+                "pbd_total_query_lengths": list(range(6, 13)),
+                "ar_total_query_lengths": list(range(1, 6)),
                 "ar_q1_calls_per_context": profile.sequential_ar_q1_tokens,
                 "pbd_q6_role": "post_prefill_bootstrap_only",
                 "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
@@ -466,9 +449,9 @@ def main() -> int:
                     "graph_set", actual_profile.get("graph_profile")
                 )
                 if stored_name is not None:
-                    actual_profile["graph_set"] = language_graph_set(
-                        normalize_graph_set_metadata(stored_name)
-                    ).name
+                    actual_profile["graph_set"] = normalize_graph_set_metadata(
+                        stored_name
+                    )
                 mismatches = {
                     key: actual_profile.get(key)
                     for key, expected in expected_language_profile.items()
@@ -569,7 +552,6 @@ def main() -> int:
             stage_counts = {}
         expected_stage_counts = component_stage_counts(
             calibration_component,
-            args.graph_set,
             sample_count=len(generated),
             language_context_count=language_context_count,
         )
@@ -620,13 +602,20 @@ def main() -> int:
                 )
 
     if (args.image_width, args.image_height) != (672, 672):
-        errors.append("LA release profile requires 672x672 letterbox")
-    if (args.chunk_size, args.cache_len) != (1024, 4096):
-        errors.append("LA release profile requires chunk=1024 and cache=4096")
+        errors.append("LocateAnything-3B requires a 672x672 input canvas")
+    if (
+        not 128 <= args.chunk_size <= 2048
+        or not 256 <= args.cache_len <= 4096
+        or args.chunk_size % 64
+        or args.cache_len % 64
+        or args.cache_len <= args.chunk_size
+    ):
+        errors.append(
+            "chunk_size and cache_len must be multiples of 64, with cache_len "
+            "greater than chunk_size"
+        )
     if args.decode_seq_len != 6:
         errors.append("LA release profile requires PBD decode_seq_len=6")
-    if args.ar_wv_matmul_dtype == "float16" and args.graph_set != "standard":
-        errors.append("AR WV Float16 is validated only for graph_set=standard")
 
     if errors:
         for error in errors:
@@ -640,8 +629,10 @@ def main() -> int:
     print(f"[PASS] coverage={args.coverage_json}")
     print(
         f"[PASS] component={args.component} "
-        "profile=672x672 chunk=1024 cache=4096 pbd=6 "
-        f"ar_wv_matmul_dtype={args.ar_wv_matmul_dtype}"
+        f"profile=672x672 chunk={args.chunk_size} cache={args.cache_len} "
+        f"vision_w{args.vision_w_bits} language_w{args.language_w_bits} "
+        f"lm_head_w{args.lm_head_w_bits} pbd={args.decode_seq_len} "
+        "graph_set=fused_decode"
     )
     return 0
 

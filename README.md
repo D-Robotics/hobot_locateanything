@@ -13,177 +13,182 @@
 ```text
 LocateAnything/
 ├── compiler/                    # 校准、量化和 BC/HBO/HBM 编译
-├── deploy/                      # S600 运行时、CLI 和部署脚本
-├── models/
-│   └── LocateAnything-3B/       # 用户下载的模型文件
-├── datasets/
-│   └── calibration/             # 用户准备或下载的校准数据
-├── outputs/                     # 编译和推理时自动生成
+│   ├── config/                  # 编译配置
+│   ├── datasets/                # 校准数据
+│   ├── models/                  # Float 模型
+│   └── outputs/                 # 编译产物和日志
+├── inference/                   # S600 TROS C++ 推理包
+│   ├── apps/                    # Vision/Language HBM runner
+│   ├── include/                 # C++ 推理模块接口
+│   ├── ros/                     # TROS 推理节点和媒体输入节点
+│   ├── config/                  # ROS 参数
+│   ├── launch/                  # XML launch 文件
+│   ├── models/                  # HBM 和 Embedding
+│   ├── tokenizer/               # LocateAnything Tokenizer
+│   └── outputs/                 # 推理结果
 └── README.md
 ```
 
-`models/`、`datasets/` 和 `outputs/` 的内容不提交到 Git。
+编译和推理相互独立。推理端全部使用 C++，不依赖 Python 运行时。
 
-## 模型配置
+## 默认配置
 
 | 项目 | 配置 |
 |---|---|
 | 输入尺寸 | 672 x 672，保持宽高比并填充 |
-| Vision | MoonViT，W8 |
-| Language | Qwen2.5 decoder，W8 |
+| Vision | W8 |
+| Language | W8 |
 | LM Head | W8 |
 | Prefill | 1024 tokens |
 | KV Cache | 4096 tokens |
 | PBD | q=6 |
-| AR | q=1 |
-| BPU | 4 cores |
+| Language 图 | fused decode，Prefill + PBD q6-q12 + AR q1-q5 |
+| 最大生成长度 | 4096 tokens |
 
-Language 图集合由一个配置项选择：
-
-- `standard`：Prefill、PBD q6、AR q1；
-- `fused_decode`：在 standard 基础上增加融合解码图。
-
-对应配置为 `compiler/configs/standard.yaml` 和 `compiler/configs/fused_decode.yaml`。
+默认配置提供完整的 fused decode 流程。常用编译参数集中在
+`LocateAnything/compiler/config/quantization.yaml`，推理参数集中在
+`LocateAnything/inference/config/locateanything.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
 
 ## 直接部署 HBM
 
-### 1. 获取代码
+### 1. 获取代码和模型
 
 ```bash
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
 cd oe_locateanything/LocateAnything
 
-sudo apt-get update
-sudo apt-get install -y cmake ffmpeg
-python3 -m venv --system-site-packages .venv-s600
-source .venv-s600/bin/activate
-python -m pip install -r deploy/requirements.txt
+mkdir -p inference/models/LocateAnything-3B
+hf download <模型仓库> --local-dir inference/models/LocateAnything-3B
 ```
 
-### 2. 下载 HBM
-
-将项目提供的 Vision HBM、Language HBM 和 Embedding 下载到固定目录：
-
-```bash
-python -m pip install -U huggingface_hub
-mkdir -p models/LocateAnything-3B
-
-export HF_MODEL_REPO="<项目提供的 HBM 模型仓库>"
-hf download "$HF_MODEL_REPO" \
-  --local-dir models/LocateAnything-3B
-```
-
-目录中应包含：
+模型目录应包含：
 
 ```text
-models/LocateAnything-3B/
+inference/models/LocateAnything-3B/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 └── LocateAnything-3B_embed_tokens.bin
 ```
 
-### 3. 编译 S600 运行时
+### 2. 构建 TROS C++ 包
 
 ```bash
-cmake -S deploy -B deploy/build -DCMAKE_BUILD_TYPE=Release
-cmake --build deploy/build \
-  --target vision_hbm_runner language_hbm_runner \
-  -j4
+source /opt/ros/jazzy/setup.bash
+source /opt/tros/jazzy/setup.bash
+
+mkdir -p ~/tros_ws/src
+ln -s "$(pwd)/inference" ~/tros_ws/src/locateanything_tros
+cd ~/tros_ws
+colcon build --packages-select locateanything_tros --symlink-install
+source install/setup.bash
+cd -
 ```
 
-### 4. 运行
+### 3. 启动推理节点
 
 ```bash
-sh deploy/scripts/install.sh
-export PATH="$HOME/.local/bin:$PATH"
-
-LocateAnything \
-  -i /path/to/image.jpg \
-  -p '/detect person,motorcycle' \
-  --output-dir outputs/predict/demo
+ros2 launch locateanything_tros locateanything.launch.xml
 ```
 
-输出保存在：
+默认任务为 `/detect person`。运行时可通过 Prompt 话题切换任务：
+
+```bash
+ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
+  "{data: '/detect person,motorcycle'}"
+```
+
+### 4. 输入图片、视频或 USB 相机
+
+本地图片：
+
+```bash
+ros2 launch locateanything_tros image.launch.xml \
+  source:=/path/to/image.jpg
+```
+
+本地视频（AVI、MP4 等 OpenCV 支持的格式）：
+
+```bash
+ros2 launch locateanything_tros video.launch.xml \
+  source:=/path/to/video.mp4
+```
+
+USB 相机直接使用 TROS 的 `hobot_usb_cam`：
+
+```bash
+ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
+  usb_video_device:=/dev/video0 usb_image_width:=1920 \
+  usb_image_height:=1080 usb_framerate:=30 usb_zero_copy:=True
+```
+
+图片、视频和 USB 相机使用 TROS 节点发布共享内存 NV12 图像到
+`/hbmem_img`。本地视频在上一帧完成后再发布下一帧，保证所有帧都经过模型；
+USB 和 MIPI 相机保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
+
+### 5. 接入 MIPI 相机
+
+MIPI 相机直接使用 TROS 的 `mipi_cam` 共享内存图像：
+
+```bash
+ros2 launch mipi_cam mipi_cam.launch.py \
+  mipi_io_method:=shared_mem mipi_frame_ts_type:=realtime
+```
+
+图片、视频、USB 和 MIPI 使用同一推理节点，不跨帧复用 Language KV Cache。
+
+### 6. 获取结果
+
+| 话题 | 消息类型 | 内容 |
+|---|---|---|
+| `/locateanything/result` | `std_msgs/msg/String` | 检测框、点坐标和各阶段耗时 JSON |
+| `/locateanything/annotated` | `sensor_msgs/msg/Image` | 已绘制预测结果的图像 |
+
+结果同时保存到配置项 `output_directory` 指定的目录：
 
 ```text
-outputs/predict/demo/
-└── request_0001/
-    ├── prediction.json
-    ├── annotated.png
-    ├── timings.json
-    └── logs/runtime.log
+inference/outputs/
+├── predictions.jsonl
+└── frames/
+    ├── frame_000001.jpg
+    └── ...
 ```
-
-视频推理：
-
-```text
-/video /path/to/video.mp4
-/detect person,motorcycle
-```
-
-视频结果保存在 `outputs/video/`。每帧独立推理，不跨帧复用 KV cache。
 
 ## 从零校准和编译
 
-从零编译需要 x86_64 CUDA 主机、D-Robotics S600 OELLM SDK、LocateAnything 原始模型和校准数据。
+从零编译需要 CUDA 主机、D-Robotics S600 OE_LLM SDK、LocateAnything 原始模型和校准数据。
 
-### 1. 安装 S600 编译环境
+### 1. 安装编译环境
 
 ```bash
 mkdir -p ~/oellm/s600_sdk
 cd ~/oellm
-
 wget https://d-robotics-aitoolchain.oss-cn-beijing.aliyuncs.com/llm_s600/1.0.5/D-Robotics_LLM_S600_1.0.5_SDK.tar.gz
 tar -xzf D-Robotics_LLM_S600_1.0.5_SDK.tar.gz -C s600_sdk
 
 source ~/miniforge3/etc/profile.d/conda.sh
 conda create -n oellm_clean python=3.10 -y
 conda activate oellm_clean
-
 cd ~/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
 python -m pip install -r oellm_build/requirements.txt
 python -m pip install oellm_build/hbdk4_compiler-*.whl
-python -m pip install oellm_build/hbdk4_runtime_aarch64_unknown_linux_gnu_nash-*.whl
 ```
 
-### 2. 准备源码和模型
+### 2. 准备模型和校准数据
 
 ```bash
-git clone https://github.com/LiuAnclouds/oe_locateanything.git
-cd oe_locateanything/LocateAnything
-
-mkdir -p models/LocateAnything-3B datasets/upstream
+cd /path/to/oe_locateanything/LocateAnything
+mkdir -p compiler/models/LocateAnything-3B compiler/datasets/calibration/download
 hf download nvidia/LocateAnything-3B \
-  --local-dir models/LocateAnything-3B
-git clone https://github.com/NVlabs/Eagle.git \
-  datasets/upstream/Eagle
-export LA_UPSTREAM_SOURCE="$PWD/datasets/upstream/Eagle/Embodied"
-```
-
-### 3. 准备校准数据
-
-```bash
-mkdir -p datasets/calibration/download
+  --local-dir compiler/models/LocateAnything-3B
 hf download xkj521999/OE_LA_Calibration_data source.zip \
-  --repo-type dataset \
-  --local-dir datasets/calibration/download
-
-mkdir -p datasets/calibration/locateanything/source
-python -m zipfile -e datasets/calibration/download/source.zip \
-  datasets/calibration/locateanything/source
+  --repo-type dataset --local-dir compiler/datasets/calibration/download
+python -m zipfile -e compiler/datasets/calibration/download/source.zip \
+  compiler/datasets/calibration/locateanything/source
 ```
 
-校准源数据应位于：
+也可以使用自有校准数据，并在 `compiler/config/quantization.yaml` 中修改数据路径。
 
-```text
-datasets/calibration/locateanything/source/
-├── selected.jsonl
-└── images/
-```
-
-也可以使用自有校准数据，只需提供相同的 `selected.jsonl` 记录格式。
-
-### 4. 执行 standard 编译
+### 3. 校准并编译 HBM
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -191,7 +196,7 @@ conda activate oellm_clean
 python -m pip install -r compiler/requirements-host.txt
 python -m pip install -e compiler --no-deps
 
-CONFIG=compiler/configs/standard.yaml
+CONFIG=compiler/config/quantization.yaml
 python compiler/quantize.py --config "$CONFIG" prepare --resume
 python compiler/quantize.py --config "$CONFIG" calibrate --component all --resume
 python compiler/quantize.py --config "$CONFIG" build --component all --target bc --resume
@@ -199,50 +204,7 @@ python compiler/quantize.py --config "$CONFIG" build --component all --target hb
 python compiler/quantize.py --config "$CONFIG" verify --component all --stage specification
 ```
 
-生成内容统一在 `outputs/`：
-
-```text
-outputs/
-├── calibration/locateanything/
-├── builds/locateanything-3b/standard/
-└── logs/locateanything-3b/standard/
-```
-
-### 5. 编译 fused_decode
-
-```bash
-CONFIG=compiler/configs/fused_decode.yaml
-python compiler/quantize.py --config "$CONFIG" calibrate --component language --resume
-python compiler/quantize.py --config "$CONFIG" build --component language --target bc --resume
-python compiler/quantize.py --config "$CONFIG" build --component language --target hbm --resume
-python compiler/quantize.py --config "$CONFIG" verify --component language --stage specification
-```
-
-### 6. 将 HBM 部署到 S600
-
-```bash
-BUILD_DIR=outputs/builds/locateanything-3b/standard
-VISION_HBM=$(find "$BUILD_DIR/vision" -maxdepth 1 -name '*_vision_*.hbm' -print -quit)
-LANGUAGE_HBM=$(find "$BUILD_DIR/language" -maxdepth 1 -name '*_language_*.hbm' -print -quit)
-EMBED_BIN=$(find "$BUILD_DIR/language" -maxdepth 1 -name '*_embed_tokens.bin' -print -quit)
-
-bash deploy/scripts/deploy.sh \
-  --vision-hbm "$VISION_HBM" \
-  --language-hbm "$LANGUAGE_HBM" \
-  --embed-bin "$EMBED_BIN" \
-  --ssh-target sunrise@S600_IP \
-  --execute
-```
-
-脚本将模型文件写入 S600 项目的 `models/LocateAnything-3B/`，然后重新构建 `deploy/build/`。
-
-## Hugging Face 资源
-
-- Dataset 仓库：保存原始校准数据 `source.zip`；
-- Model 仓库：保存 Vision HBM、Language HBM 和 Embedding；
-- `generated/`、统计数据、编译中间文件和推理结果均由用户在本地生成。
-
-模型文件和校准数据不随 GitHub 源码发布。
+编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/LocateAnything-3B/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
 
@@ -257,5 +219,3 @@ bash deploy/scripts/deploy.sh \
 /layout title,table,figure
 /point <target>
 ```
-
-检测任务会自动保存标注图片和 JSON 结果。

@@ -431,7 +431,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-path", type=Path)
     parser.add_argument("--selected-jsonl", type=Path)
-    parser.add_argument("--upstream-repo", type=Path)
+    parser.add_argument("--source-dir", type=Path)
     parser.add_argument("--resource-path", type=Path, default=Path.cwd())
     parser.add_argument("--requested-jobs", type=int)
     parser.add_argument(
@@ -465,7 +465,7 @@ def main() -> int:
     paths = {
         "model": path_state(args.model_path),
         "selected_jsonl": path_state(args.selected_jsonl),
-        "upstream_repo": path_state(args.upstream_repo),
+        "locateanything_source": path_state(args.source_dir),
     }
     modules = {name: module_available(name) for name in required_modules}
     version_requirements = dict(RUNTIME_DISTRIBUTIONS)

@@ -183,16 +183,19 @@ def progress(records: list[dict[str, Any]], description: str):
 
 
 def run(args: argparse.Namespace) -> int:
-    graph_set = language_graph_set(args.graph_set)
-    if args.lm_head_w_bits != 8:
-        raise RuntimeError("release activation calibration requires lm_head W8")
-    if args.dtype != "float16":
-        raise RuntimeError("release activation calibration requires float16")
+    graph_set = language_graph_set()
     if args.max_samples <= 0:
         raise RuntimeError("activation calibration requires a positive sample count")
-    if args.chunk_size != 1024 or args.cache_len != 4096:
+    if (
+        not 128 <= args.chunk_size <= 2048
+        or not 256 <= args.cache_len <= 4096
+        or args.chunk_size % 64
+        or args.cache_len % 64
+        or args.cache_len <= args.chunk_size
+    ):
         raise RuntimeError(
-            "release activation calibration requires chunk_size=1024 and cache_len=4096"
+            "chunk_size and cache_len must be multiples of 64, with cache_len greater "
+            "than chunk_size"
         )
     if args.image_token_id != 151665:
         raise RuntimeError(
@@ -207,7 +210,7 @@ def run(args: argparse.Namespace) -> int:
         generated_jsonl=args.generated_jsonl,
         model_path=args.model_path,
         prepare_source_path=Path(__file__).with_name("prepare.py"),
-        upstream_repo=args.upstream_repo,
+        upstream_repo=args.source_dir,
         expected_sample_count=args.max_samples,
     )
     if prepare_errors:
@@ -257,6 +260,8 @@ def run(args: argparse.Namespace) -> int:
             "component": args.component,
             "chunk_size": args.chunk_size,
             "cache_len": args.cache_len,
+            "vision_w_bits": args.vision_w_bits,
+            "language_w_bits": args.language_w_bits,
             "lm_head_w_bits": args.lm_head_w_bits,
             "sample_count": len(records),
             "convergence_checkpoints": configured_checkpoints,
@@ -287,6 +292,8 @@ def run(args: argparse.Namespace) -> int:
             "component",
             "chunk_size",
             "cache_len",
+            "vision_w_bits",
+            "language_w_bits",
             "lm_head_w_bits",
             "sample_count",
             "convergence_checkpoints",
@@ -352,7 +359,8 @@ def run(args: argparse.Namespace) -> int:
         print("\n================== VISION ACTIVATION STATISTICS ==================", flush=True)
         vision_api = LocateAnythingVisionApi(
             str(args.model_path.resolve()), str(output_dir / "vision_api"),
-            image_width=672, image_height=672, device=args.device, w_bits=8,
+            image_width=672, image_height=672, device=args.device,
+            w_bits=args.vision_w_bits,
             hidden_rotation_path=args.hidden_rotation_path, apply_hidden_rotation=True,
             export_only=True,
         )
@@ -384,10 +392,10 @@ def run(args: argparse.Namespace) -> int:
         language_api = LocateAnythingLanguageApi(
             str(args.model_path.resolve()), str(output_dir / "language_api"),
             chunk_size=args.chunk_size, cache_len=args.cache_len, decode_seq_len=6,
-            device=args.device, w_bits=8, lm_head_w_bits=args.lm_head_w_bits,
+            device=args.device, w_bits=args.language_w_bits,
+            lm_head_w_bits=args.lm_head_w_bits,
             hidden_rotation_path=args.hidden_rotation_path,
             apply_hidden_rotation=True, export_only=True,
-            graph_set=graph_set.name,
         )
         language = language_api.text_model.to(device=device, dtype=dtype).eval()
         language.compile_mode(False)
@@ -552,6 +560,7 @@ def run(args: argparse.Namespace) -> int:
             "pbd_query_len": 6,
             "ar_query_len": 1,
             "graph_set": graph_set.name,
+            "vision_weight_bits": args.vision_w_bits,
         },
     }
     if vision_snapshots:
@@ -559,7 +568,7 @@ def run(args: argparse.Namespace) -> int:
     if language_snapshots:
         scale_manifest["language"] = language_snapshots
         scale_manifest["profile"].update({
-            "language_decoder_weight_bits": 8,
+            "language_decoder_weight_bits": args.language_w_bits,
             "language_lm_head_weight_bits": args.lm_head_w_bits,
             "text_mask_token_id": 151676,
             "pbd_block_size": 6,
@@ -732,17 +741,19 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--generated-jsonl", type=Path, required=True)
     result.add_argument("--selected-jsonl", type=Path, required=True)
-    result.add_argument("--upstream-repo", type=Path, required=True)
+    result.add_argument("--source-dir", type=Path, required=True)
     result.add_argument("--model-path", type=Path, required=True)
     result.add_argument("--output-dir", type=Path, required=True)
     result.add_argument("--device", default="cuda:0")
-    result.add_argument("--dtype", choices=["float16"], default="float16")
+    result.add_argument("--dtype", choices=["float16", "bfloat16"], default="float16")
     result.add_argument(
         "--component", choices=["all", "vision", "language"], default="all"
     )
     result.add_argument("--chunk-size", type=int, default=1024)
     result.add_argument("--cache-len", type=int, default=4096)
-    result.add_argument("--lm-head-w-bits", type=int, choices=[8], default=8)
+    result.add_argument("--vision-w-bits", type=int, choices=[8], default=8)
+    result.add_argument("--language-w-bits", type=int, choices=[4, 8], default=8)
+    result.add_argument("--lm-head-w-bits", type=int, choices=[4, 8], default=8)
     result.add_argument("--max-samples", type=int, required=True)
     result.add_argument(
         "--checkpoint-samples",
@@ -752,12 +763,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--image-token-id", type=int, default=151665)
     result.add_argument("--hidden-rotation-path")
     result.add_argument("--replay-seed", type=int, default=20260729)
-    result.add_argument(
-        "--graph-set",
-        dest="graph_set",
-        choices=("standard", "fused_decode"),
-        default="standard",
-    )
     result.add_argument("--resume", action="store_true")
     return result
 

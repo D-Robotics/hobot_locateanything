@@ -4,7 +4,7 @@ from .conv import Conv1d, Conv2d, Conv3d
 from .embedding import Embedding, FakeQuantEmbedding
 from .layer_norm import LayerNorm, LayerNormSplit
 from .linear import DynamicQuantLinear, FakeQuantLinear
-from .matmul import DynamicQuantMatmul, FakeQuantMatmul, Float16Matmul
+from .matmul import DynamicQuantMatmul, FakeQuantMatmul
 from .ops import (
     Clip,
     FakeQuantAdd,
@@ -20,7 +20,6 @@ __all__ = [
     "FakeQuantEmbedding",
     "FakeQuantLinear",
     "FakeQuantMatmul",
-    "Float16Matmul",
     "FakeQuantRMSNorm",
     "ConstFakeQuant",
     "FakeQuantSoftmax",

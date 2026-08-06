@@ -1,0 +1,33 @@
+paths:
+  checkpoint: ../models/LocateAnything-3B
+  locateanything_source: ../datasets/upstream/Eagle/Embodied
+  calibration_data: ../datasets/calibration/locateanything/source
+  output_dir: ../outputs
+
+calibration:
+  # The supplied dataset is used in full. Use a smaller source dataset when
+  # developing a faster experiment, or pass --max-samples for a one-off run.
+  slow_samples: 128
+  max_new_tokens: 1024
+  seed: 20260729
+  prepare_dtype: bfloat16
+  statistics_dtype: float16
+
+language:
+  chunk_size: 1024
+  cache_len: 4096
+
+quantization:
+  vision_weight_bits: 8
+  language_weight_bits: 8
+  lm_head_weight_bits: 8
+
+build:
+  march: nash-p
+  device: cuda:0
+  jobs: 16
+  cores:
+    vision: 4
+    prefill: 4
+    pbd: 4
+    ar: 4

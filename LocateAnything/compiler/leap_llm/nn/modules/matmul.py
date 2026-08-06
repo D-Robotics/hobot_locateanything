@@ -40,21 +40,6 @@ class FakeQuantMatmul(Module):
         return out
 
 
-class Float16Matmul(Module):
-    """MatMul with an explicit Float16 operand and result contract."""
-
-    def build(self, x, y):
-        x = leap.cast_type(x, output_type=leap.float16)
-        y = leap.cast_type(y, output_type=leap.float16)
-        out = leap.matmul(x, y)
-        return leap.cast_type(out, output_type=leap.float16)
-
-    def forward(self, x, y):
-        x = x.to(dtype=torch.float16)
-        y = y.to(dtype=torch.float16)
-        return torch.matmul(x, y).to(dtype=torch.float16)
-
-
 class DynamicQuantMatmul(Module):
     def __init__(self) -> None:
         super().__init__()

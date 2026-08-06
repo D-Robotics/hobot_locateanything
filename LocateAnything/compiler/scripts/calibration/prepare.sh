@@ -7,7 +7,7 @@ PYTHON_BIN=${PYTHON_BIN:-python3}
 PREPARE_SCRIPT=${PREPARE_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/prepare.py"}
 SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the selected dataset index}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to a new or resume-compatible output directory}
-UPSTREAM_REPO=${UPSTREAM_REPO:?set UPSTREAM_REPO to the Embodied source directory}
+LOCATEANYTHING_SOURCE=${LOCATEANYTHING_SOURCE:?set to the directory containing locateanything_worker.py}
 MODEL_PATH=${MODEL_PATH:?set MODEL_PATH to the LocateAnything-3B checkpoint}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-bfloat16}
@@ -34,13 +34,13 @@ RESUME=${RESUME:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/outputs/logs"
+mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/compiler/outputs/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_prepare"}
-LOG_PATH=${LOG_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.log"}
-EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.exit.txt"}
+LOG_PATH=${LOG_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.log"}
+EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/prepare_job_metadata.json"}
-PID_PATH=${PID_PATH:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.pid"}
-LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/outputs/logs/${JOB_NAME}.launcher.log"}
+PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
+LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
 ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/prepare_environment.json"}
 ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 
@@ -152,7 +152,7 @@ value = {
     "wrapper_pid": os.getppid(),
     "selected_jsonl": "${SELECTED_JSONL}",
     "output_dir": "${OUTPUT_DIR}",
-    "upstream_repo": "${UPSTREAM_REPO}",
+    "locateanything_source": "${LOCATEANYTHING_SOURCE}",
     "model_path": "${MODEL_PATH}",
     "prepare_script": "${PREPARE_SCRIPT}",
     "device": "${DEVICE}",
@@ -184,7 +184,7 @@ set +e
   --profile prepare \
   --model-path "$MODEL_PATH" \
   --selected-jsonl "$SELECTED_JSONL" \
-  --upstream-repo "$UPSTREAM_REPO" \
+  --source-dir "$LOCATEANYTHING_SOURCE" \
   --resource-path "$OUTPUT_DIR" \
   --device "$DEVICE" \
   --require-cuda \
@@ -215,7 +215,7 @@ fi
 PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$PREPARE_SCRIPT" generate \
   --selected-jsonl "$SELECTED_JSONL" \
   --output-dir "$OUTPUT_DIR" \
-  --upstream-repo "$UPSTREAM_REPO" \
+  --source-dir "$LOCATEANYTHING_SOURCE" \
   --model-path "$MODEL_PATH" \
   --device "$DEVICE" \
   --dtype "$DTYPE" \
