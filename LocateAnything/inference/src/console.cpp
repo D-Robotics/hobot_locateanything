@@ -137,21 +137,8 @@ struct ConsoleOptions {
   float nms_iou = 0.9f;
 };
 
-uint32_t ParseMask(const std::string& value) {
-  size_t used = 0;
-  const unsigned long result = std::stoul(value, &used, 0);
-  if (used != value.size() || result == 0 || result > UINT32_MAX) {
-    throw std::invalid_argument("invalid backend mask: " + value);
-  }
-  return static_cast<uint32_t>(result);
-}
-
 void PrintUsage() {
-  std::cout
-      << "usage: console [--config FILE] [--model-directory DIR] "
-         "[--output-directory DIR] "
-         "[--generation-mode hybrid|slow] [--max-new-tokens N] "
-         "[--vision-backend-mask MASK] [--language-backend-mask MASK]\n";
+  std::cout << "usage: console [--config FILE]\n";
 }
 
 void LoadConfig(const fs::path& path, ConsoleOptions* options) {
@@ -220,25 +207,11 @@ ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_sha
   LoadConfig(options.config, &options);
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
-    auto value = [&]() -> std::string {
-      if (++index >= argc) throw std::invalid_argument(argument + " requires a value");
-      return argv[index];
-    };
     if (argument == "--config" || argument == "-c") {
-      value();
-    } else if (argument == "--model-directory") {
-      options.model_directory = value();
-    } else if (argument == "--output-directory") {
-      options.output_directory = value();
-    } else if (argument == "--generation-mode") {
-      options.generation_mode = value();
-    } else if (argument == "--max-new-tokens") {
-      options.max_new_tokens = std::stoi(value());
-    } else if (argument == "--vision-backend-mask") {
-      options.vision_backend_mask = ParseMask(value());
-    } else if (argument == "--language-backend-mask") {
-      options.language_backend_mask = ParseMask(value());
-    } else {
+      ++index;
+      continue;
+    }
+    if (argument != "--help" && argument != "-h") {
       throw std::invalid_argument("unknown argument: " + argument);
     }
   }
@@ -246,10 +219,11 @@ ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_sha
     throw std::invalid_argument("nms_iou must be in (0, 1]");
   }
   if (options.max_new_tokens <= 0) {
-    throw std::invalid_argument("--max-new-tokens must be positive");
+    throw std::invalid_argument("max_new_tokens in config must be positive");
   }
   if (options.generation_mode != "hybrid" && options.generation_mode != "slow") {
-    throw std::invalid_argument("--generation-mode must be hybrid or slow");
+    throw std::invalid_argument(
+        "generation_mode in config must be hybrid or slow");
   }
   options.model_directory = fs::absolute(options.model_directory);
   if (!options.tokenizer_directory.empty()) {
