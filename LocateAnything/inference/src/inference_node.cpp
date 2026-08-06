@@ -14,7 +14,6 @@
 #include <thread>
 
 #include <ament_index_cpp/get_package_prefix.hpp>
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #if __has_include(<cv_bridge/cv_bridge.hpp>)
 #include <cv_bridge/cv_bridge.hpp>
 #else
@@ -89,17 +88,15 @@ class LocateAnythingNode : public rclcpp::Node {
 
     const fs::path package_prefix =
         ament_index_cpp::get_package_prefix("locateanything");
-    const fs::path package_share =
-        ament_index_cpp::get_package_share_directory("locateanything");
     std::string model_directory =
         declare_parameter<std::string>("model_directory", "");
     if (model_directory.empty()) {
-      model_directory = (package_share / "models").string();
+      model_directory = "models";
     }
     std::string tokenizer_directory =
         declare_parameter<std::string>("tokenizer_directory", "");
     if (tokenizer_directory.empty()) {
-      tokenizer_directory = (package_share / "models/tokenizer").string();
+      tokenizer_directory = (fs::path(model_directory) / "tokenizer").string();
     }
     output_directory_ =
         declare_parameter<std::string>("output_directory", "outputs");

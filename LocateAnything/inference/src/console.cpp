@@ -17,7 +17,6 @@
 #include <utility>
 
 #include <ament_index_cpp/get_package_prefix.hpp>
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
@@ -186,10 +185,10 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
   }
 }
 
-ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_share) {
+ConsoleOptions ParseArguments(int argc, char** argv) {
   ConsoleOptions options;
-  options.config = package_share / "config.yaml";
-  options.model_directory = package_share / "models";
+  options.config = "config.yaml";
+  options.model_directory = "models";
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--help" || argument == "-h") {
@@ -300,10 +299,10 @@ void PrintPerformance(const locateanything::InferenceOutput& output,
 
 class Console {
  public:
-  Console(ConsoleOptions options, fs::path package_prefix, fs::path package_share)
+  Console(ConsoleOptions options, fs::path package_prefix)
       : options_(std::move(options)),
         color_(TerminalColors()),
-        session_(BuildInferenceOptions(package_prefix, package_share)) {}
+        session_(BuildInferenceOptions(package_prefix)) {}
 
   int Run() {
     PrintBanner(color_);
@@ -405,7 +404,7 @@ class Console {
   }
 
   locateanything::InferenceOptions BuildInferenceOptions(
-      const fs::path& package_prefix, const fs::path& package_share) const {
+      const fs::path& package_prefix) const {
     locateanything::InferenceOptions inference;
     setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1);
     const fs::path runners = package_prefix / "lib/locateanything";
@@ -419,7 +418,7 @@ class Console {
         (options_.model_directory / options_.embeddings).string();
     fs::path tokenizer = options_.tokenizer_directory;
     if (tokenizer.empty()) tokenizer = options_.model_directory / "tokenizer";
-    if (!fs::is_directory(tokenizer)) tokenizer = package_share / "models/tokenizer";
+    if (!fs::is_directory(tokenizer)) tokenizer = "models/tokenizer";
     inference.tokenizer_directory = tokenizer.string();
     inference.temporary_directory = (options_.output_directory / ".runtime").string();
     inference.generation_mode = options_.generation_mode;
@@ -566,11 +565,9 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, HandleSignal);
     const fs::path package_prefix =
         ament_index_cpp::get_package_prefix("locateanything");
-    const fs::path package_share =
-        ament_index_cpp::get_package_share_directory("locateanything");
-    ConsoleOptions options = ParseArguments(argc, argv, package_share);
+    ConsoleOptions options = ParseArguments(argc, argv);
     fs::create_directories(options.output_directory);
-    return Console(std::move(options), package_prefix, package_share).Run();
+    return Console(std::move(options), package_prefix).Run();
   } catch (const std::exception& error) {
     std::cerr << "[FAIL] " << error.what() << '\n';
     return 1;

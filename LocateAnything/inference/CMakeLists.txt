@@ -89,9 +89,7 @@ install(TARGETS
   inference
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
-install(FILES config.yaml
-  DESTINATION share/${PROJECT_NAME})
-install(DIRECTORY launch models
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()

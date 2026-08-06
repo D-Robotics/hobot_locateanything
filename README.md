@@ -74,9 +74,13 @@ inference/models/
 ```bash
 source /opt/tros/jazzy/setup.bash
 cd inference
-colcon build --merge-install --symlink-install
+colcon build --merge-install
 source install/setup.bash
 ```
+
+`inference/config.yaml` 是唯一配置，模型只放在 `inference/models/`。构建过程不会
+把配置或模型复制、链接到 `install/`。`install/share/locateanything/` 只由 TROS 用于
+包注册和查找 launch 文件，用户无需在该目录中编辑任何内容。
 
 ### 3. 运行推理
 
@@ -91,7 +95,7 @@ Console 默认读取 `inference/config.yaml`，也可以显式指定
 
 ```bash
 ros2 run locateanything console \
-  --config /path/to/locateanything.yaml
+  --config /path/to/config.yaml
 ```
 
 `max_new_tokens`、模型目录、输出目录、生成模式和 BPU 参数均在 YAML 中设置，
@@ -111,7 +115,7 @@ ros2 run locateanything console \
 
 ```bash
 ros2 launch locateanything locateanything.launch.xml \
-  config:=/path/to/locateanything.yaml \
+  config:=/path/to/config.yaml \
   input:=/hbmem_img \
   prompt:="/detect person,motorcycle"
 ```

@@ -1,24 +1,36 @@
 locateanything:
   ros__parameters:
-    # Console 与实时推理共用：模型、解码、BPU 和输出配置。
-    # 空目录表示使用当前 LocateAnything 安装包中的 models 目录。
-    model_directory: ""
+    # -------------------------------------------------------------------------
+    # 共用配置：Console 和实时 TROS 推理都会读取
+    # -------------------------------------------------------------------------
+
+    # 模型文件
+    # 相对路径以启动命令所在目录为基准；推荐从 inference 目录启动。
+    # model_directory 为空时使用 inference/models。
+    # tokenizer_directory 为空时使用 model_directory/tokenizer。
+    model_directory: models
     tokenizer_directory: ""
     vision_model: LocateAnything-3B_vision.hbm
     language_model: LocateAnything-3B_language.hbm
     embeddings: LocateAnything-3B_embed_tokens.bin
 
+    # 生成和后处理
     generation_mode: hybrid
     max_new_tokens: 4096
     nms_iou: 0.9
+
+    # S600 BPU
+    # mask=15 表示使用 4 个 BPU 核；l2m_sizes 依次对应 4 个核。
     vision_backend_mask: 15
     language_backend_mask: 15
     l2m_sizes: "6:6:6:6"
 
-    # 相对路径以启动命令所在目录为基准。
-    output_directory: inference/outputs
+    # 输出目录；相对路径以启动命令所在目录为基准。
+    output_directory: outputs
 
-    # 实时推理独有：TROS 输入传输、结果话题和落盘控制。
+    # -------------------------------------------------------------------------
+    # 实时推理独有：Console 不读取下面这些字段
+    # -------------------------------------------------------------------------
     # input 和默认 prompt 由 locateanything.launch.xml 的启动参数提供。
     use_shared_memory: true
     prompt_topic: /locateanything/prompt
@@ -27,5 +39,7 @@ locateanything:
     frame_complete_topic: /locateanything/frame_complete
     save_outputs: true
 
-    # Console 当前没有独有 YAML 参数。
+    # -------------------------------------------------------------------------
+    # Console 独有：当前没有独有 YAML 字段
+    # -------------------------------------------------------------------------
     # 图片/视频路径和任务在交互界面输入，其他推理设置复用上面的共用配置。
