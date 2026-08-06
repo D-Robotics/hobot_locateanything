@@ -50,7 +50,7 @@ add_library(locateanything_hbm STATIC
   src/kv_cache_ring.cpp
   src/position_ids.cpp)
 target_include_directories(locateanything_hbm PUBLIC include ${HOBOT_INCLUDE_DIR})
-target_link_libraries(locateanything_hbm PUBLIC ${HOBOT_RUNTIME_LIBS})
+target_link_libraries(locateanything_hbm PUBLIC ${HOBOT_RUNTIME_LIBS} Threads::Threads)
 
 add_library(locateanything_inference STATIC
   src/image_preprocessor.cpp

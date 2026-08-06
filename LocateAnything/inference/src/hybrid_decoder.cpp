@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <numeric>
 #include <limits>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace locateanything_runtime {
@@ -63,6 +66,7 @@ struct NucleusDistribution {
 };
 
 std::vector<float> Softmax(const std::vector<float> &logits);
+int32_t Argmax(const std::vector<float> &values);
 
 std::vector<float> Softmax(const std::vector<float> &logits,
                            float maximum) {
@@ -176,6 +180,129 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
     raw[token] = static_cast<float>(raw[token] / cumulative);
   }
   return {std::move(raw), static_cast<int32_t>(retained)};
+}
+
+struct PbdRowResult {
+  std::vector<float> probabilities;
+  std::vector<float> legacy_probabilities;
+  int32_t greedy_token = 0;
+  int32_t retained_tokens = 0;
+};
+
+PbdRowResult DecodePbdRow(const Tensor &logits, int32_t row,
+                          const std::vector<uint8_t> &history,
+                          const PbdDecodeConfig &config,
+                          bool collect_diagnostics) {
+  std::vector<float> adjusted =
+      Row(logits, row, history, config.repetition_penalty);
+  std::vector<float> legacy;
+  if (collect_diagnostics) legacy = Softmax(adjusted);
+  NucleusDistribution nucleus =
+      NucleusSoftmax(adjusted, config.temperature, config.top_p);
+  const int32_t greedy = Argmax(nucleus.probabilities);
+  return {std::move(nucleus.probabilities), std::move(legacy), greedy,
+          nucleus.retained};
+}
+
+class PbdRowExecutor {
+ public:
+  PbdRowExecutor() {
+    workers_.reserve(5);
+    for (int32_t row = 0; row < 5; ++row) {
+      workers_.emplace_back([this, row] { Worker(row); });
+    }
+  }
+
+  ~PbdRowExecutor() {
+    {
+      std::lock_guard<std::mutex> lock(job_mutex_);
+      stopping_ = true;
+    }
+    job_ready_.notify_all();
+    for (std::thread &worker : workers_) worker.join();
+  }
+
+  PbdRowExecutor(const PbdRowExecutor &) = delete;
+  PbdRowExecutor &operator=(const PbdRowExecutor &) = delete;
+
+  void Decode(const Tensor &logits, const std::vector<uint8_t> &history,
+              const PbdDecodeConfig &config, bool collect_diagnostics,
+              std::array<PbdRowResult, 6> *results) {
+    std::lock_guard<std::mutex> call_lock(call_mutex_);
+    {
+      std::lock_guard<std::mutex> lock(job_mutex_);
+      logits_ = &logits;
+      history_ = &history;
+      config_ = config;
+      collect_diagnostics_ = collect_diagnostics;
+      results_ = results;
+      pending_workers_ = 5;
+      ++generation_;
+    }
+    job_ready_.notify_all();
+
+    (*results)[5] =
+        DecodePbdRow(logits, 5, history, config, collect_diagnostics);
+
+    std::unique_lock<std::mutex> lock(job_mutex_);
+    job_done_.wait(lock, [this] { return pending_workers_ == 0; });
+    logits_ = nullptr;
+    history_ = nullptr;
+    results_ = nullptr;
+  }
+
+ private:
+  void Worker(int32_t row) {
+    size_t observed_generation = 0;
+    while (true) {
+      const Tensor *logits = nullptr;
+      const std::vector<uint8_t> *history = nullptr;
+      PbdDecodeConfig config;
+      bool collect_diagnostics = false;
+      std::array<PbdRowResult, 6> *results = nullptr;
+      {
+        std::unique_lock<std::mutex> lock(job_mutex_);
+        job_ready_.wait(lock, [this, observed_generation] {
+          return stopping_ || generation_ != observed_generation;
+        });
+        if (stopping_) return;
+        observed_generation = generation_;
+        logits = logits_;
+        history = history_;
+        config = config_;
+        collect_diagnostics = collect_diagnostics_;
+        results = results_;
+      }
+
+      (*results)[static_cast<size_t>(row)] =
+          DecodePbdRow(*logits, row, *history, config, collect_diagnostics);
+
+      {
+        std::lock_guard<std::mutex> lock(job_mutex_);
+        --pending_workers_;
+        if (pending_workers_ == 0) job_done_.notify_one();
+      }
+    }
+  }
+
+  std::mutex call_mutex_;
+  std::mutex job_mutex_;
+  std::condition_variable job_ready_;
+  std::condition_variable job_done_;
+  std::vector<std::thread> workers_;
+  const Tensor *logits_ = nullptr;
+  const std::vector<uint8_t> *history_ = nullptr;
+  PbdDecodeConfig config_;
+  std::array<PbdRowResult, 6> *results_ = nullptr;
+  size_t generation_ = 0;
+  int32_t pending_workers_ = 0;
+  bool collect_diagnostics_ = false;
+  bool stopping_ = false;
+};
+
+PbdRowExecutor &PbdRows() {
+  static PbdRowExecutor executor;
+  return executor;
 }
 
 std::vector<float> Softmax(const std::vector<float> &logits) {
@@ -346,23 +473,22 @@ HybridDecision DecodePbd(const Tensor &logits,
     return {"im_end", {kImEnd}, false, true};
   }
   const std::vector<uint8_t> &history = BuildHistoryMask(generated);
+  std::array<PbdRowResult, 6> row_results;
+  PbdRows().Decode(logits, history, config, diagnostics != nullptr,
+                   &row_results);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
   std::vector<std::vector<float>> probabilities;
   std::vector<int32_t> greedy;
   for (int32_t row = 0; row < 6; ++row) {
-    std::vector<float> adjusted = Row(logits, row, history,
-                                      config.repetition_penalty);
+    PbdRowResult &result = row_results[static_cast<size_t>(row)];
     if (diagnostics != nullptr) {
-      legacy_probabilities.push_back(Softmax(adjusted));
+      legacy_probabilities.push_back(std::move(result.legacy_probabilities));
+      diagnostics->retained_tokens[static_cast<size_t>(row)] =
+          result.retained_tokens;
     }
-    NucleusDistribution nucleus = NucleusSoftmax(
-        adjusted, config.temperature, config.top_p);
-    greedy.push_back(Argmax(nucleus.probabilities));
-    if (diagnostics != nullptr) {
-      diagnostics->retained_tokens[static_cast<size_t>(row)] = nucleus.retained;
-    }
-    probabilities.push_back(std::move(nucleus.probabilities));
+    greedy.push_back(result.greedy_token);
+    probabilities.push_back(std::move(result.probabilities));
   }
   if (diagnostics != nullptr) {
     diagnostics->valid = true;
