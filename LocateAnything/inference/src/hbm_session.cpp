@@ -21,7 +21,9 @@
 #include "hbm_session.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -287,6 +289,13 @@ HbmSession::~HbmSession() {
 }
 
 Result HbmSession::Load(const std::string &hbm_path) {
+  constexpr char kL2MemoryVariable[] = "HB_DNN_USER_DEFINED_L2M_SIZES";
+  if (std::getenv(kL2MemoryVariable) == nullptr &&
+      setenv(kL2MemoryVariable, "6:6:6:6", 0) != 0) {
+    return Result::Err(errno,
+                       "failed to configure default BPU L2 memory allocation");
+  }
+
   const char *files[1] = {hbm_path.c_str()};
   hbDNNPackedHandle_t packed = nullptr;
   int32_t err = hbDNNInitializeFromFiles(&packed, files, 1);
