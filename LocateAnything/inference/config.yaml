@@ -1,0 +1,31 @@
+locateanything:
+  ros__parameters:
+    # Console 与实时推理共用：模型、解码、BPU 和输出配置。
+    # 空目录表示使用当前 LocateAnything 安装包中的 models 目录。
+    model_directory: ""
+    tokenizer_directory: ""
+    vision_model: LocateAnything-3B_vision.hbm
+    language_model: LocateAnything-3B_language.hbm
+    embeddings: LocateAnything-3B_embed_tokens.bin
+
+    generation_mode: hybrid
+    max_new_tokens: 4096
+    nms_iou: 0.9
+    vision_backend_mask: 15
+    language_backend_mask: 15
+    l2m_sizes: "6:6:6:6"
+
+    # 相对路径以启动命令所在目录为基准。
+    output_directory: inference/outputs
+
+    # 实时推理独有：TROS 输入传输、结果话题和落盘控制。
+    # input 和默认 prompt 由 locateanything.launch.xml 的启动参数提供。
+    use_shared_memory: true
+    prompt_topic: /locateanything/prompt
+    result_topic: /locateanything/result
+    annotated_topic: /locateanything/annotated
+    frame_complete_topic: /locateanything/frame_complete
+    save_outputs: true
+
+    # Console 当前没有独有 YAML 参数。
+    # 图片/视频路径和任务在交互界面输入，其他推理设置复用上面的共用配置。

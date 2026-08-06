@@ -45,7 +45,7 @@ LocateAnything/
 
 默认配置提供完整的 fused decode 流程。常用编译参数集中在
 `LocateAnything/compiler/config/quantization.yaml`，推理参数集中在
-`LocateAnything/inference/config/locateanything.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
+`LocateAnything/inference/config.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
 
 ## 直接部署 HBM
 
@@ -86,7 +86,7 @@ source install/setup.bash
 ros2 run locateanything console
 ```
 
-Console 默认读取安装目录中的 `config/locateanything.yaml`，也可以显式指定
+Console 默认读取 `inference/config.yaml`，也可以显式指定
 另一份完整配置：
 
 ```bash
@@ -116,7 +116,7 @@ ros2 launch locateanything locateanything.launch.xml \
   prompt:="/detect person,motorcycle"
 ```
 
-`config` 默认使用安装目录中的 `config/locateanything.yaml`，因此采用默认配置时
+`config` 默认使用 `inference/config.yaml`，因此采用默认配置时
 只需要指定输入话题和任务：
 
 ```bash

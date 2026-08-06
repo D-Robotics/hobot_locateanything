@@ -1,5 +1,5 @@
 <launch>
-  <arg name="config" default="$(find-pkg-share locateanything)/config/locateanything.yaml"/>
+  <arg name="config" default="$(find-pkg-share locateanything)/config.yaml"/>
   <arg name="input" default="/hbmem_img"/>
   <arg name="prompt" default="/detect person"/>
   <include file="$(find-pkg-share hobot_shm)/launch/hobot_shm.launch.py"/>

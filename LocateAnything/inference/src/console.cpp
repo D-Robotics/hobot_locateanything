@@ -188,7 +188,7 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
 
 ConsoleOptions ParseArguments(int argc, char** argv, const fs::path& package_share) {
   ConsoleOptions options;
-  options.config = package_share / "config/locateanything.yaml";
+  options.config = package_share / "config.yaml";
   options.model_directory = package_share / "models";
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
