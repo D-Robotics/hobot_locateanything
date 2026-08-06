@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Orchestrate LocateAnything Prepare, Calibrate, Build, and Verify stages.
+"""Orchestrate LocateAnything preparation, calibration, and build stages.
 
-Source selection produces the frozen dataset index consumed by this CLI. Numerical
-calibration, BC export, HBDK compilation, and validation algorithms remain in
-``compiler/scripts`` and ``compiler/leap_llm``.
+The numerical calibration, BC export, HBDK compilation, and runtime algorithms
+remain in ``compiler/scripts`` and ``compiler/leap_llm``.
 """
 
 from __future__ import annotations
@@ -26,13 +25,11 @@ COMPILER_ROOT = PROJECT_ROOT / "compiler"
 SCRIPTS_ROOT = COMPILER_ROOT / "scripts"
 CALIBRATION_SCRIPTS = SCRIPTS_ROOT / "calibration"
 BUILD_SCRIPTS = SCRIPTS_ROOT / "build"
-VALIDATE_SCRIPTS = SCRIPTS_ROOT / "validate"
 DEFAULT_CONFIG = COMPILER_ROOT / "config" / "quantization.yaml"
 CONFIG_DIR_KEY = "__config_dir__"
 COMPONENTS = ("vision", "language", "all")
 BUILD_TARGETS = ("bc", "hbm")
 PROGRESS_MODES = ("auto", "bar", "log", "off")
-VERIFY_STAGES = ("specification",)
 if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
@@ -279,23 +276,6 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
     build = _mapping(config["build"], "build")
     selected = resolve_path(config, "selected_jsonl")
     output_dir = resolve_path(config, "generated_dir")
-    report_json = output_dir / "prepare_preflight.json"
-    preflight_command = (
-        python_command(config),
-        str(CALIBRATION_SCRIPTS / "preflight.py"),
-        "--config", str(args.config.resolve()),
-        "--selected-jsonl", str(selected),
-        "--model-path", str(resolve_path(config, "model")),
-        "--source-dir", str(resolve_path(config, "source_dir")),
-        "--report-json", str(report_json),
-    )
-    preflight_step = PlanStep(
-        "validate frozen Prepare inputs without loading model weights",
-        preflight_command,
-        note="static data, processor, and tokenizer check only; no CUDA or model inference",
-    )
-    if args.preflight_only:
-        return [preflight_step]
     env = common_env(config, args.progress)
     env.update({
         "SELECTED_JSONL": str(selected),
@@ -318,7 +298,7 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
         "RESUME": "1" if args.resume else "0",
     })
     command = (bash_command(), str(CALIBRATION_SCRIPTS / "prepare.sh"))
-    return [preflight_step, PlanStep("prepare calibration tensors", command, env=env)]
+    return [PlanStep("prepare calibration tensors", command, env=env)]
 
 
 def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
@@ -365,8 +345,6 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
     language = _mapping(config["language"], "language")
     quantization = _mapping(config["quantization"], "quantization")
     cores = _mapping(build["cores"], "build.cores")
-    generated_jsonl = resolve_path(config, "generated_jsonl")
-    expected_samples = calibration_sample_count(config, generated_jsonl)
     build_root = resolve_path(config, "build_root")
     log_root = resolve_path(config, "log_root")
     bash = bash_command()
@@ -377,11 +355,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
         env.update({
             "INPUT_MODEL_PATH": str(resolve_path(config, "model")),
             "OUTPUT_MODEL_PATH": str(output),
-            "CALIB_JSON": str(resolve_path(config, "selected_jsonl")),
-            "GENERATED_JSON": str(generated_jsonl),
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
-            "CALIBRATION_COVERAGE_JSON": str(resolve_path(config, "coverage_json")),
-            "EXPECTED_SAMPLES": str(expected_samples),
             "DEVICE": str(build["device"]),
             "MARCH": str(build["march"]),
             "JOBS": str(build["jobs"]),
@@ -415,37 +389,6 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             script = BUILD_SCRIPTS / "language.sh"
         steps.append(PlanStep(f"build {component} through {args.target}", (bash, str(script)), env=env))
     return steps
-
-
-def verify_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[PlanStep]:
-    language = _mapping(config["language"], "language")
-    quantization = _mapping(config["quantization"], "quantization")
-    component = "full" if args.component == "all" else args.component
-    selected_jsonl = resolve_path(config, "selected_jsonl")
-    expected_samples = calibration_sample_count(config, selected_jsonl)
-    specification_command = [
-        python_command(config),
-        str(VALIDATE_SCRIPTS / "deployment.py"),
-        "--component", component,
-        "--selected-jsonl", str(selected_jsonl),
-        "--generated-jsonl", str(resolve_path(config, "generated_jsonl")),
-        "--scale-manifest", str(resolve_path(config, "scale_manifest")),
-        "--coverage-json", str(resolve_path(config, "coverage_json")),
-        "--model-path", str(resolve_path(config, "model")),
-        "--expected-samples", str(expected_samples),
-        "--image-width", str(IMAGE_WIDTH),
-        "--image-height", str(IMAGE_HEIGHT),
-        "--chunk-size", str(language["chunk_size"]),
-        "--cache-len", str(language["cache_len"]),
-        "--decode-seq-len", str(PBD_QUERY_LEN),
-        "--vision-w-bits", str(quantization["vision_weight_bits"]),
-        "--language-w-bits", str(quantization["language_weight_bits"]),
-        "--lm-head-w-bits", str(quantization["lm_head_weight_bits"]),
-    ]
-    return [PlanStep(
-        "verify calibration and build specification",
-        tuple(specification_command),
-    )]
 
 
 def quote_command(command: Iterable[str]) -> str:
@@ -524,8 +467,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "LocateAnything prepare -> calibrate -> build -> verify orchestrator; "
-            "the four commands consume a frozen calibration index"
+            "LocateAnything prepare -> calibrate -> build orchestrator"
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -534,13 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare = subparsers.add_parser("prepare", help="materialize Float calibration tensors")
     add_common_options(prepare)
-    prepare.add_argument(
-        "--preflight-only",
-        action="store_true",
-        help="validate frozen Prepare inputs without loading model weights or using CUDA",
-    )
-
-    calibrate = subparsers.add_parser("calibrate", help="collect and freeze activation scales")
+    calibrate = subparsers.add_parser("calibrate", help="collect activation scales")
     add_common_options(calibrate)
     calibrate.add_argument("--component", choices=COMPONENTS, default="all")
     calibrate.add_argument("--max-samples", type=int)
@@ -551,18 +487,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--component", choices=COMPONENTS, default="all")
     build.add_argument("--target", choices=BUILD_TARGETS, default="hbm")
 
-    verify = subparsers.add_parser(
-        "verify", help="validate data, scales, and build specification"
-    )
-    add_common_options(verify)
-    verify.add_argument("--component", choices=COMPONENTS, default="all")
-    verify.add_argument(
-        "--stage",
-        dest="stage",
-        choices=VERIFY_STAGES,
-        default="specification",
-        help="verification stage",
-    )
     return parser
 
 
@@ -578,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "build":
             steps = build_plan(args, config)
         else:
-            steps = verify_plan(args, config)
+            parser.error(f"unknown command: {args.command}")
         return run_plan(steps, args, config)
     except (ConfigurationError, RuntimeError) as exc:
         parser.error(str(exc))

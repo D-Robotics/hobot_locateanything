@@ -29,7 +29,7 @@ from leap_llm.models.locateanything.hidden_rotation import (
     load_hidden_rotation,
     rotate_vision_output_to_hidden_domain,
 )
-from leap_llm.apis.model.state_dict_contract import load_state_dict_fail_closed
+from leap_llm.apis.model.state_dict_contract import load_state_dict_strict
 
 
 def remap_vision_state_dict(raw_sd: dict, num_patches: int, patch_size: int,
@@ -176,7 +176,7 @@ class LocateAnythingVisionApi:
         pe = F.interpolate(pe, size=(self.model.grid_h, self.model.grid_w),
                             mode="bicubic")                     # (1, dim, gH, gW)
         pe = pe.squeeze(0).permute(1, 2, 0).reshape(num_patches, -1)  # (N, dim)
-        load_state_dict_fail_closed(
+        load_state_dict_strict(
             self.model,
             sd,
             component="LocateAnything Vision",

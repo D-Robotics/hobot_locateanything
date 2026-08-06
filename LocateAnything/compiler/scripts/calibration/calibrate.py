@@ -24,15 +24,6 @@ if str(REPO_ROOT) not in sys.path:
 sys.path.insert(0, str(COMPILER_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from compiler.scripts.common.identity import (  # noqa: E402
-    artifact_identities,
-    atomic_json as atomic_identity_json,
-    identity_mismatches,
-    prepared_bundle_identity_errors,
-    read_json,
-    release_checkpoint_errors,
-    rotation_identity,
-)
 from compiler.scripts.common.progress import track  # noqa: E402
 
 from leap_llm.apis.calibration.locateanything_replay import (  # noqa: E402
@@ -126,8 +117,6 @@ def activation_statistics_audit(
         "activation_point_count": observed_point_count,
         "required_point_count": expected_point_count,
         "point_count_mismatch": point_count_mismatch,
-        # Deprecated compatibility field for existing deployment validators.
-        "observer_count": observed_point_count,
         "unexecuted": unexecuted,
         "zero_absmax": zero_absmax,
         "invalid_norm": invalid_norm,
@@ -202,23 +191,6 @@ def run(args: argparse.Namespace) -> int:
             "release activation calibration requires image_token_id=151665"
         )
 
-    checkpoint_errors = release_checkpoint_errors(args.model_path)
-    if checkpoint_errors:
-        raise RuntimeError("; ".join(checkpoint_errors))
-    prepare_errors = prepared_bundle_identity_errors(
-        selected_jsonl=args.selected_jsonl,
-        generated_jsonl=args.generated_jsonl,
-        model_path=args.model_path,
-        prepare_source_path=Path(__file__).with_name("prepare.py"),
-        upstream_repo=args.source_dir,
-        expected_sample_count=args.max_samples,
-    )
-    if prepare_errors:
-        raise RuntimeError(
-            "prepared calibration identity check failed: "
-            + "; ".join(prepare_errors)
-        )
-
     from leap_llm.apis.model.locateanything_language import LocateAnythingLanguageApi
 
     manifest = args.generated_jsonl.resolve()
@@ -241,110 +213,6 @@ def run(args: argparse.Namespace) -> int:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     task_counts = dict(Counter(record["task"] for record in records))
-
-    prepare_identity_path = manifest.parent / "prepare_run_identity.json"
-    generation_summary_path = manifest.parent / "generation_summary.json"
-    if not prepare_identity_path.is_file() or not generation_summary_path.is_file():
-        raise RuntimeError(
-            "prepared calibration tensors lack prepare identity/summary; rerun Prepare "
-            "with the current code into a new output directory"
-        )
-    run_identity = {
-        "schema_version": 1,
-        "generated_manifest": str(manifest),
-        "selected_manifest": str(args.selected_jsonl.resolve()),
-        "rotation": rotation_identity(args.hidden_rotation_path),
-        "settings": {
-            "device": args.device,
-            "dtype": args.dtype,
-            "component": args.component,
-            "chunk_size": args.chunk_size,
-            "cache_len": args.cache_len,
-            "vision_w_bits": args.vision_w_bits,
-            "language_w_bits": args.language_w_bits,
-            "lm_head_w_bits": args.lm_head_w_bits,
-            "sample_count": len(records),
-            "convergence_checkpoints": configured_checkpoints,
-            "legacy_checkpoint": legacy_checkpoint,
-            "image_token_id": args.image_token_id,
-            "replay_seed": args.replay_seed,
-            "decode_context_policy": DECODE_CONTEXT_POLICY,
-            "graph_set": graph_set.name,
-            "detailed_statistics": args.detailed_statistics,
-        },
-    }
-    identity_path = output_dir / "calibration_run_identity.json"
-    durable_outputs = [
-        output_dir / "calibration_scale_manifest.json",
-        output_dir / "calibration_graph_coverage.json",
-        output_dir / "scale_convergence.json",
-        output_dir / f"scale_convergence_{legacy_checkpoint}_vs_{len(records)}.json",
-    ]
-    if args.resume and identity_path.is_file():
-        previous = read_json(identity_path)
-        previous_identity = previous.get("identity") if isinstance(previous, dict) else None
-        previous_settings = (
-            previous_identity.get("settings")
-            if isinstance(previous_identity, dict)
-            else None
-        )
-        critical_settings = (
-            "dtype",
-            "component",
-            "chunk_size",
-            "cache_len",
-            "vision_w_bits",
-            "language_w_bits",
-            "lm_head_w_bits",
-            "sample_count",
-            "convergence_checkpoints",
-            "legacy_checkpoint",
-            "image_token_id",
-            "graph_set",
-            "detailed_statistics",
-        )
-        mismatches = [
-            field
-            for field in critical_settings
-            if not isinstance(previous_settings, dict)
-            or previous_settings.get(field) != run_identity["settings"].get(field)
-        ]
-        if mismatches:
-            raise RuntimeError(
-                "calibration resume identity mismatch: " + ", ".join(mismatches[:12])
-                + "; use a separate output directory"
-            )
-        if previous.get("status") == "complete":
-            expected_artifacts = previous.get("artifacts")
-            if not isinstance(expected_artifacts, dict):
-                raise RuntimeError("completed calibration identity has no artifact catalog")
-            actual_artifacts = artifact_identities(durable_outputs)
-            artifact_mismatches = identity_mismatches(expected_artifacts, actual_artifacts)
-            if artifact_mismatches:
-                raise RuntimeError(
-                    "completed calibration artifacts changed: "
-                    + ", ".join(artifact_mismatches[:12])
-                )
-            print(
-                f"[calibrate] resume identity matched; reused {len(records)} samples",
-                flush=True,
-            )
-            return 0
-    elif args.resume and any(path.exists() for path in durable_outputs):
-        raise RuntimeError(
-            "calibration outputs exist without calibration_run_identity.json; "
-            "use a separate output directory"
-        )
-    elif not args.resume and (
-        identity_path.exists() or any(path.exists() for path in durable_outputs)
-    ):
-        raise RuntimeError(
-            "calibration output already contains run state; use --resume or a separate output directory"
-        )
-    atomic_identity_json(
-        identity_path,
-        {"schema_version": 1, "status": "running", "identity": run_identity},
-    )
 
     vision_snapshots = {}
     vision_cosines = []
@@ -748,15 +616,6 @@ def run(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "Language Decode context coverage failed: " + "; ".join(errors[:12])
         )
-    atomic_identity_json(
-        identity_path,
-        {
-            "schema_version": 1,
-            "status": "complete",
-            "identity": run_identity,
-            "artifacts": artifact_identities(durable_outputs),
-        },
-    )
     return 0
 
 

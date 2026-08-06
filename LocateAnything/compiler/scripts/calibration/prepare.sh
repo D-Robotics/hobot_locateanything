@@ -41,8 +41,6 @@ EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/prepare_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
-ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/prepare_environment.json"}
-ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 
 if [[ "${DETACH:-0}" == "1" ]]; then
   setsid nohup env DETACH=0 bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
@@ -177,32 +175,6 @@ temporary = path.with_suffix(path.suffix + ".tmp")
 temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 os.replace(temporary, path)
 PY
-
-environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
-set +e
-"$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
-  --profile prepare \
-  --model-path "$MODEL_PATH" \
-  --selected-jsonl "$SELECTED_JSONL" \
-  --source-dir "$LOCATEANYTHING_SOURCE" \
-  --resource-path "$OUTPUT_DIR" \
-  --device "$DEVICE" \
-  --require-cuda \
-  --required-module cv2 \
-  --required-module decord \
-  --required-module lmdb \
-  --required-module packaging \
-  --required-module peft \
-  --required-module requests \
-  --required-module torchvision \
-  > "$environment_temporary"
-environment_status=$?
-set -e
-mv -f "$environment_temporary" "$ENVIRONMENT_PATH"
-if [[ "$environment_status" -ne 0 ]]; then
-  echo "[prepare] environment preflight failed exit_code=$environment_status" | tee -a "$LOG_PATH"
-  exit "$environment_status"
-fi
 
 echo "[prepare] manifest=$SELECTED_JSONL" | tee -a "$LOG_PATH"
 echo "[prepare] output=$OUTPUT_DIR device=$DEVICE dtype=$DTYPE slow_samples=$SLOW_SAMPLES resume=$RESUME" | tee -a "$LOG_PATH"

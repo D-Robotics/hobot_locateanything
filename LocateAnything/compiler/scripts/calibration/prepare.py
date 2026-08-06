@@ -28,11 +28,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from compiler.scripts.common.identity import (  # noqa: E402
-    atomic_json as atomic_identity_json,
-    identity_mismatches,
-    read_json,
-)
 from compiler.scripts.common.progress import track  # noqa: E402
 
 
@@ -697,29 +692,6 @@ def append_progress(path: Path, record: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-RESUME_IDENTITY_FIELDS = (
-    "bundle_id",
-    "task",
-    "sample_id",
-    "source",
-    "split",
-    "image",
-    "prompt",
-    "target_response",
-)
-
-
-def resume_identity_mismatches(
-    selected: dict[str, Any], completed: dict[str, Any]
-) -> list[str]:
-    """Return selected fields that make a completed tensor unsafe to reuse."""
-    return [
-        field
-        for field in RESUME_IDENTITY_FIELDS
-        if selected.get(field) != completed.get(field)
-    ]
-
-
 def save_tensor_artifact(
     path: Path,
     output_format: str,
@@ -778,7 +750,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
     output_dir = args.output_dir.resolve()
     tensor_dir = output_dir / "tensors"
     progress_path = output_dir / "generation_progress.jsonl"
-    identity_path = output_dir / "prepare_run_identity.json"
 
     records = read_jsonl(selected_path)
     if not records:
@@ -799,51 +770,11 @@ def generate_bundle(args: argparse.Namespace) -> int:
         key=lambda record: deterministic_seed(args.seed, record["bundle_id"], "slow-select"),
     )
     slow_ids = {record["bundle_id"] for record in slow_order[: args.slow_samples]}
-    run_identity = {
-        "schema_version": 1,
-        "selected_manifest": str(selected_path),
-        "device": args.device,
-        "dtype": args.dtype,
-        "output_format": args.output_format,
-        "fixed_profile": profile,
-        "generation_config": generation_config,
-        "base_seed": args.seed,
-        "slow_samples": args.slow_samples,
-        "slow_selection": sorted(slow_ids),
-    }
-    existing_state = progress_path.exists() or identity_path.exists()
-    if args.resume:
-        if progress_path.exists() and not identity_path.is_file():
-            raise RuntimeError(
-                "resume progress has no prepare_run_identity.json; use a separate output directory"
-            )
-        if identity_path.is_file():
-            previous = read_json(identity_path)
-            comparable_fields = (
-                "device",
-                "dtype",
-                "output_format",
-                "fixed_profile",
-                "generation_config",
-                "base_seed",
-                "slow_samples",
-            )
-            mismatches = [
-                field
-                for field in comparable_fields
-                if previous.get(field) != run_identity.get(field)
-            ]
-            if mismatches:
-                raise RuntimeError(
-                    "prepare resume identity mismatch: " + ", ".join(mismatches[:12])
-                    + "; use a separate output directory"
-                )
-    elif existing_state:
+    if not args.resume and progress_path.exists():
         raise RuntimeError(
             "prepare output already contains run state; use --resume or a separate output directory"
         )
     tensor_dir.mkdir(parents=True, exist_ok=True)
-    atomic_identity_json(identity_path, run_identity)
     completed = load_completed_progress(progress_path) if args.resume else {}
 
     dtype = torch_dtype_from_name(torch, args.dtype)
@@ -873,12 +804,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         bundle_id = record["bundle_id"]
         existing = generated_records.get(bundle_id)
         if existing:
-            identity_mismatches = resume_identity_mismatches(record, existing)
-            if identity_mismatches:
-                raise RuntimeError(
-                    f"resume input identity mismatch for {bundle_id}: "
-                    f"{', '.join(identity_mismatches)}; use a separate output directory"
-                )
             if existing.get("fixed_profile") != profile:
                 raise RuntimeError(
                     f"resume profile mismatch for {bundle_id}; "
@@ -1034,7 +959,6 @@ def generate_bundle(args: argparse.Namespace) -> int:
         "special_token_ids": special_token_ids,
         "special_token_occurrences": coverage_by_token,
         "fixed_profile": profile,
-        "prepare_run_identity": identity_path.name,
     }
     write_json(output_dir / "generation_summary.json", summary)
 

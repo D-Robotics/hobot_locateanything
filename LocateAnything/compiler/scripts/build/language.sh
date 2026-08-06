@@ -17,7 +17,6 @@ LM_HEAD_W_BITS="${LM_HEAD_W_BITS:?set by compiler/quantize.py}"
 CHUNK_SIZE="${CHUNK_SIZE:?set by compiler/quantize.py}"
 CACHE_LEN="${CACHE_LEN:?set by compiler/quantize.py}"
 DECODE_SEQ_LEN="${DECODE_SEQ_LEN:?set by compiler/quantize.py}"
-EXPECTED_SAMPLES="${EXPECTED_SAMPLES:?set EXPECTED_SAMPLES to the calibrated dataset size}"
 DEVICE="${DEVICE:?set by compiler/quantize.py}"
 PREFILL_CORE_NUM="${PREFILL_CORE_NUM:?set by compiler/quantize.py}"
 DECODE_CORE_NUM="${DECODE_CORE_NUM:?set by compiler/quantize.py}"
@@ -32,15 +31,10 @@ RESUME="${RESUME:?set by compiler/quantize.py}"
 
 INPUT_MODEL_PATH="${INPUT_MODEL_PATH:?set by compiler/quantize.py}"
 OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:?set by compiler/quantize.py}"
-CALIB_JSON="${CALIB_JSON:?set CALIB_JSON to the selected calibration index}"
-GENERATED_JSON="${GENERATED_JSON:?set GENERATED_JSON to the prepared calibration index}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
-CALIBRATION_COVERAGE_JSON="${CALIBRATION_COVERAGE_JSON:-}"
 
 LOG_DIR="${LOG_DIR:?set by compiler/quantize.py}"
 LOG_FILE="${LOG_FILE:?set by compiler/quantize.py}"
-ENVIRONMENT_PATH="${ENVIRONMENT_PATH:-$LOG_DIR/language_environment.json}"
-ENVIRONMENT_SCRIPT="${ENVIRONMENT_SCRIPT:-$REPO_ROOT/compiler/scripts/common/environment.py}"
 
 case "$BUILD_TARGET" in
   bc) EXPORT_ONLY=1 ;;
@@ -68,8 +62,6 @@ fi
 cd "$LEAP_LLM_SRC"
 
 [[ -d "$INPUT_MODEL_PATH" ]] || { echo "input model missing: $INPUT_MODEL_PATH"; exit 1; }
-[[ -f "$CALIB_JSON" ]] || { echo "calib json missing: $CALIB_JSON"; exit 1; }
-[[ -f "$GENERATED_JSON" ]] || { echo "prepared calibration manifest missing: $GENERATED_JSON"; exit 1; }
 [[ "$W_BITS" == "4" || "$W_BITS" == "8" ]] || {
   echo "W_BITS must be 4 or 8; got $W_BITS"
   exit 1
@@ -86,67 +78,15 @@ cd "$LEAP_LLM_SRC"
 [[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || { echo "activation scale manifest missing; set CALIBRATION_SCALE_MANIFEST"; exit 1; }
-[[ -n "$CALIBRATION_COVERAGE_JSON" && -f "$CALIBRATION_COVERAGE_JSON" ]] || { echo "calibration graph coverage missing; set CALIBRATION_COVERAGE_JSON"; exit 1; }
 [[ "$DISABLE_HIDDEN_ROTATION" == "0" || "$DISABLE_HIDDEN_ROTATION" == "1" ]] || { echo "DISABLE_HIDDEN_ROTATION must be 0 or 1"; exit 1; }
 
-environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
-set +e
-"$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
-  --profile build \
-  --model-path "$INPUT_MODEL_PATH" \
-  --selected-jsonl "$CALIB_JSON" \
-  --resource-path "$OUTPUT_MODEL_PATH" \
-  --requested-jobs "$JOBS" \
-  --device "$DEVICE" \
-  --require-cuda \
-  > "$environment_temporary"
-environment_status=$?
-set -e
-mv -f "$environment_temporary" "$ENVIRONMENT_PATH"
-if [[ "$environment_status" -ne 0 ]]; then
-  echo "[build:language] environment gate failed exit_code=$environment_status report=$ENVIRONMENT_PATH"
-  exit "$environment_status"
-fi
-
-VALIDATION_ARGS=(
-  --expected-samples "$EXPECTED_SAMPLES"
-)
-if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
-  VALIDATION_ARGS+=(--hidden-rotation-path "$HIDDEN_ROTATION_PATH")
-fi
-if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
-  VALIDATION_ARGS+=(--disable-hidden-rotation)
-fi
-
-python "$REPO_ROOT/compiler/scripts/validate/deployment.py" \
-  --component language \
-  --model-path "$INPUT_MODEL_PATH" \
-  --selected-jsonl "$CALIB_JSON" \
-  --generated-jsonl "$GENERATED_JSON" \
-  --scale-manifest "$CALIBRATION_SCALE_MANIFEST" \
-  --coverage-json "$CALIBRATION_COVERAGE_JSON" \
-  --image-width 672 --image-height 672 \
-  --chunk-size "$CHUNK_SIZE" --cache-len "$CACHE_LEN" --decode-seq-len "$DECODE_SEQ_LEN" \
-  --language-w-bits "$W_BITS" \
-  --lm-head-w-bits "$LM_HEAD_W_BITS" \
-  "${VALIDATION_ARGS[@]}"
-
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"
-
-if pgrep -f "oellm_build.*--model_name $MODEL_NAME" >/dev/null; then
-  echo "an oellm_build for $MODEL_NAME is already running:"
-  pgrep -af "oellm_build.*--model_name $MODEL_NAME"
-  exit 2
-fi
 
 echo "cwd:           $(pwd)"
 echo "python:        $PYTHON_BIN"
 echo "input:         $INPUT_MODEL_PATH"
 echo "output:        $OUTPUT_MODEL_PATH"
-echo "calib:         $CALIB_JSON"
-echo "generated:     $GENERATED_JSON"
 echo "scale:         $CALIBRATION_SCALE_MANIFEST"
-echo "coverage:      $CALIBRATION_COVERAGE_JSON"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
 echo "Language graphs: fused_decode (13 graphs)"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"

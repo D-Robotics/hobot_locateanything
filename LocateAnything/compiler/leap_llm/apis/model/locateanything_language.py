@@ -32,7 +32,7 @@ from leap_llm.models.locateanything.hidden_rotation import (
     load_hidden_rotation,
     rotate_language_to_hidden_domain,
 )
-from leap_llm.apis.model.state_dict_contract import load_state_dict_fail_closed
+from leap_llm.apis.model.state_dict_contract import load_state_dict_strict
 from leap_llm.language_graphs import language_graph_set
 
 
@@ -178,7 +178,7 @@ class LocateAnythingLanguageApi:
 
         sd = load_language_state_dict(input_model_path)
         # A tied lm_head is still a required model parameter. Materialize its
-        # checkpoint value from the embedding before the fail-closed load.
+        # Materialize the tied head before the strict checkpoint load.
         if tc.tie_word_embeddings:
             try:
                 sd["lm_head.weight"] = sd["embed_tokens.weight"]
@@ -186,7 +186,7 @@ class LocateAnythingLanguageApi:
                 raise RuntimeError(
                     "language checkpoint has no embed_tokens.weight for tied lm_head"
                 ) from exc
-        load_state_dict_fail_closed(
+        load_state_dict_strict(
             self.text_model,
             sd,
             component="LocateAnything Language",

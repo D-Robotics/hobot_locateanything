@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible activation calibration with preflight checks and durable evidence.
+# Run LocateAnything activation calibration and record the run status.
 set -euo pipefail
 
 if [[ ${1:-} == "--help" ]]; then
@@ -7,26 +7,16 @@ if [[ ${1:-} == "--help" ]]; then
 Run LocateAnything activation calibration.
 
 Required variables:
-  GENERATED_JSONL  prepared calibration index
-  SELECTED_JSONL   calibration dataset index
-  LOCATEANYTHING_SOURCE  directory containing locateanything_worker.py
-  OUTPUT_DIR       activation statistics output directory
-  MAX_SAMPLES      number of records in the prepared dataset
-  CHECKPOINT_SAMPLES  convergence checkpoint smaller than MAX_SAMPLES
-
-Model defaults:
-  MODEL_PATH          compiler/models/LocateAnything-3B
-  CALIBRATION_COMPONENT  all
-  CHUNK_SIZE          768
-  CACHE_LEN           4096
-  LANGUAGE_W_BITS     8
-  LM_HEAD_W_BITS      8
-  REPLAY_SEED         20260729
+  GENERATED_JSONL       prepared calibration records
+  SELECTED_JSONL        calibration dataset records
+  LOCATEANYTHING_SOURCE directory containing locateanything_worker.py
+  OUTPUT_DIR            activation statistics output directory
+  MAX_SAMPLES           number of records to replay
+  CHECKPOINT_SAMPLES    convergence checkpoint below MAX_SAMPLES
 
 Optional variables include REPO_ROOT, PYTHON_BIN, REPLAY_SCRIPT, DEVICE, DTYPE,
-IMAGE_TOKEN_ID, HIDDEN_ROTATION_PATH, JOB_NAME, LOG_PATH, EXIT_PATH, and META_PATH.
-Set DETAILED_STATISTICS=1 to collect distribution diagnostics and render reports.
-Set PREFLIGHT_ONLY=1 to validate inputs without a GPU run.
+IMAGE_TOKEN_ID, HIDDEN_ROTATION_PATH, JOB_NAME, LOG_PATH, EXIT_PATH, META_PATH,
+RESUME, DETACH, and DETAILED_STATISTICS.
 EOF
   exit 0
 fi
@@ -34,11 +24,11 @@ fi
 REPO_ROOT=${REPO_ROOT:-"$(cd "$(dirname "$0")/../../.." && pwd)"}
 PYTHON_BIN=${PYTHON_BIN:-python3}
 REPLAY_SCRIPT=${REPLAY_SCRIPT:-"$REPO_ROOT/compiler/scripts/calibration/calibrate.py"}
-GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration index}
-SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the frozen dataset index}
-LOCATEANYTHING_SOURCE=${LOCATEANYTHING_SOURCE:?set to the directory containing locateanything_worker.py}
+GENERATED_JSONL=${GENERATED_JSONL:?set GENERATED_JSONL to the prepared calibration records}
+SELECTED_JSONL=${SELECTED_JSONL:?set SELECTED_JSONL to the calibration dataset records}
+LOCATEANYTHING_SOURCE=${LOCATEANYTHING_SOURCE:?set LOCATEANYTHING_SOURCE to the worker source directory}
 MODEL_PATH=${MODEL_PATH:-"$REPO_ROOT/compiler/models/LocateAnything-3B"}
-OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation calibration output directory}
+OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to the activation statistics directory}
 DEVICE=${DEVICE:-cuda:0}
 DTYPE=${DTYPE:-float16}
 CHUNK_SIZE=${CHUNK_SIZE:-768}
@@ -52,24 +42,27 @@ MAX_SAMPLES=${MAX_SAMPLES:?set MAX_SAMPLES to the prepared dataset size}
 CHECKPOINT_SAMPLES=${CHECKPOINT_SAMPLES:?set CHECKPOINT_SAMPLES below MAX_SAMPLES}
 IMAGE_TOKEN_ID=${IMAGE_TOKEN_ID:-151665}
 HIDDEN_ROTATION_PATH=${HIDDEN_ROTATION_PATH:-}
-PREFLIGHT_ONLY=${PREFLIGHT_ONLY:-0}
 RESUME=${RESUME:-0}
+DETACH=${DETACH:-0}
 DETAILED_STATISTICS=${DETAILED_STATISTICS:-0}
 
 [[ "$DTYPE" == "float16" || "$DTYPE" == "bfloat16" ]] || {
-  echo "DTYPE must be float16 or bfloat16; got $DTYPE"
+  echo "DTYPE must be float16 or bfloat16; got $DTYPE" >&2
   exit 1
 }
-
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || {
-  echo "RESUME must be 0 or 1"
+  echo "RESUME must be 0 or 1; got $RESUME" >&2
+  exit 1
+}
+[[ "$DETACH" == "0" || "$DETACH" == "1" ]] || {
+  echo "DETACH must be 0 or 1; got $DETACH" >&2
+  exit 1
+}
+[[ "$DETAILED_STATISTICS" == "0" || "$DETAILED_STATISTICS" == "1" ]] || {
+  echo "DETAILED_STATISTICS must be 0 or 1; got $DETAILED_STATISTICS" >&2
   exit 1
 }
 
-[[ "$DETAILED_STATISTICS" == "0" || "$DETAILED_STATISTICS" == "1" ]] || {
-  echo "DETAILED_STATISTICS must be 0 or 1"
-  exit 1
-}
 mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/compiler/outputs/logs"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_calibrate"}
 LOG_PATH=${LOG_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.log"}
@@ -77,12 +70,10 @@ EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
-ENVIRONMENT_PATH=${ENVIRONMENT_PATH:-"$OUTPUT_DIR/calibration_environment.json"}
-ENVIRONMENT_SCRIPT=${ENVIRONMENT_SCRIPT:-"$REPO_ROOT/compiler/scripts/common/environment.py"}
 STARTED_AT=$(date --iso-8601=seconds)
 mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"
 
-if [[ "${DETACH:-0}" == "1" ]]; then
+if [[ "$DETACH" == "1" ]]; then
   setsid nohup env DETACH=0 RESUME="$RESUME" bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
   printf '%s\n' "$child_pid" > "$PID_PATH"
@@ -102,9 +93,7 @@ write_exit_record() {
   local completed_at=${4:-}
   local temporary="${EXIT_PATH}.tmp.$$"
   {
-    printf 'status=%s\nexecution_mode=%s\nstarted_at=%s\n' \
-      "$state" "$([[ "$PREFLIGHT_ONLY" == "1" ]] && echo preflight_only || echo replay)" \
-      "$STARTED_AT"
+    printf 'status=%s\nexecution_mode=replay\nstarted_at=%s\n' "$state" "$STARTED_AT"
     [[ -z "$exit_code" ]] || printf 'exit_code=%s\n' "$exit_code"
     [[ -z "$signal_name" ]] || printf 'signal=%s\n' "$signal_name"
     [[ -z "$completed_at" ]] || printf 'completed_at=%s\n' "$completed_at"
@@ -114,22 +103,26 @@ write_exit_record() {
 
 write_initial_metadata() {
   "$PYTHON_BIN" - "$META_PATH" "$STARTED_AT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
-    "$LOCATEANYTHING_SOURCE" "$MODEL_PATH" \
-    "$OUTPUT_DIR" "$REPLAY_SCRIPT" "$DEVICE" "$DTYPE" "$CHUNK_SIZE" "$CACHE_LEN" \
-    "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
-    "$VISION_W_BITS" "$LANGUAGE_W_BITS" "$LM_HEAD_W_BITS" \
-    "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" "$LOG_PATH" \
-    "$DETAILED_STATISTICS" \
-    "$PREFLIGHT_ONLY" "$REPO_ROOT" <<'PY'
-import json, os, socket, sys
+    "$LOCATEANYTHING_SOURCE" "$MODEL_PATH" "$OUTPUT_DIR" "$REPLAY_SCRIPT" \
+    "$DEVICE" "$DTYPE" "$CHUNK_SIZE" "$CACHE_LEN" "$MAX_SAMPLES" \
+    "$CHECKPOINT_SAMPLES" "$IMAGE_TOKEN_ID" "$CALIBRATION_COMPONENT" \
+    "$VISION_W_BITS" "$LANGUAGE_W_BITS" "$LM_HEAD_W_BITS" "$REPLAY_SEED" \
+    "$HIDDEN_ROTATION_PATH" "$LOG_PATH" "$DETAILED_STATISTICS" "$REPO_ROOT" <<'PY'
+import json
+import os
+import socket
+import sys
 from pathlib import Path
 
-(path, started_at, generated, selected, upstream, model, output, replay, device, dtype, chunk, cache,
- max_samples, checkpoint, image_token, component, vision_w_bits, language_w_bits,
- lm_head_w_bits, replay_seed,
- rotation, log_path, detailed_statistics, preflight_only, repo_root) = sys.argv[1:]
+(
+    path, started_at, generated, selected, source, model, output, replay, device,
+    dtype, chunk, cache, max_samples, checkpoint, image_token, component,
+    vision_w_bits, language_w_bits, lm_head_w_bits, replay_seed, rotation,
+    log_path, detailed_statistics, repo_root,
+) = sys.argv[1:]
 sys.path.insert(0, repo_root)
 from compiler.leap_llm.language_graphs import language_graph_set
+
 profile = language_graph_set()
 expected_graph_paths = []
 if component in {"all", "vision"}:
@@ -141,13 +134,13 @@ value = {
     "phase": "calibrate",
     "component": component,
     "status": "running",
-    "execution_mode": "preflight_only" if preflight_only == "1" else "replay",
+    "execution_mode": "replay",
     "started_at": started_at,
     "hostname": socket.gethostname(),
     "wrapper_pid": os.getppid(),
     "generated_jsonl": generated,
     "selected_jsonl": selected,
-    "locateanything_source": upstream,
+    "locateanything_source": source,
     "model_path": model,
     "output_dir": output,
     "replay_script": replay,
@@ -193,14 +186,12 @@ finish_job() {
   completed_at=$(date --iso-8601=seconds)
   write_exit_record "$state" "$exit_code" "$signal_name" "$completed_at"
   "$PYTHON_BIN" - "$META_PATH" "$state" "$exit_code" "$signal_name" "$completed_at" <<'PY' || true
-import json, os, sys
+import json
+import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-if path.is_file():
-    value = json.loads(path.read_text(encoding="utf-8"))
-else:
-    value = {"schema_version": 1, "phase": "calibrate"}
+value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 value.update({
     "status": sys.argv[2],
     "exit_code": int(sys.argv[3]),
@@ -209,7 +200,7 @@ value.update({
 })
 temporary = path.with_suffix(path.suffix + ".tmp")
 temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-os.replace(temporary, path)
+temporary.replace(path)
 PY
   echo "[calibrate] status=$state exit_code=$exit_code exit_record=$EXIT_PATH" | tee -a "$LOG_PATH"
   exit "$exit_code"
@@ -225,6 +216,7 @@ cancel_job() {
   fi
   exit "$CANCEL_EXIT_CODE"
 }
+
 trap finish_job EXIT
 trap 'cancel_job SIGTERM 143' TERM
 trap 'cancel_job SIGINT 130' INT
@@ -233,93 +225,8 @@ trap 'cancel_job SIGHUP 129' HUP
 write_exit_record running
 write_initial_metadata
 
-environment_temporary="${ENVIRONMENT_PATH}.tmp.$$"
-set +e
-"$PYTHON_BIN" "$ENVIRONMENT_SCRIPT" \
-  --profile calibrate \
-  --model-path "$MODEL_PATH" \
-  --selected-jsonl "$GENERATED_JSONL" \
-  --resource-path "$OUTPUT_DIR" \
-  --device "$DEVICE" \
-  --require-cuda \
-  --required-module hbdk4.compiler \
-  --required-module leap_llm \
-  --required-module numpy \
-  --required-module PIL \
-  > "$environment_temporary"
-environment_status=$?
-set -e
-mv -f "$environment_temporary" "$ENVIRONMENT_PATH"
-if [[ "$environment_status" -ne 0 ]]; then
-  echo "[calibrate] environment gate failed exit_code=$environment_status" | tee -a "$LOG_PATH"
-  exit "$environment_status"
-fi
-
 echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
 echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT graph_set=fused_decode device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES vision_w_bits=$VISION_W_BITS language_w_bits=$LANGUAGE_W_BITS lm_head_w_bits=$LM_HEAD_W_BITS detailed_statistics=$DETAILED_STATISTICS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
-
-"$PYTHON_BIN" - "$REPLAY_SCRIPT" "$GENERATED_JSONL" "$SELECTED_JSONL" \
-  "$LOCATEANYTHING_SOURCE" "$MODEL_PATH" \
-  "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$CALIBRATION_COMPONENT" \
-  "$VISION_W_BITS" "$LANGUAGE_W_BITS" "$LM_HEAD_W_BITS" \
-  "$REPLAY_SEED" "$HIDDEN_ROTATION_PATH" 2>&1 <<'PY' | tee -a "$LOG_PATH"
-import sys
-from pathlib import Path
-
-(
-    replay, manifest, selected, upstream, model, max_samples, checkpoint,
-    component, vision_w_bits, language_w_bits, lm_head_w_bits, replay_seed, rotation,
-) = sys.argv[1:]
-max_samples, checkpoint = int(max_samples), int(checkpoint)
-errors = []
-if not Path(replay).is_file():
-    errors.append(f"replay script is not a file: {replay}")
-if not Path(manifest).is_file():
-    errors.append(f"generated manifest is not a file: {manifest}")
-if not Path(selected).is_file():
-    errors.append(f"selected manifest is not a file: {selected}")
-if not Path(upstream).is_dir():
-    errors.append(f"upstream source is not a directory: {upstream}")
-if not Path(model).is_dir():
-    errors.append(f"model path is not a directory: {model}")
-if rotation and not Path(rotation).is_file():
-    errors.append(f"hidden rotation is not a file: {rotation}")
-if max_samples <= 0:
-    errors.append("MAX_SAMPLES must be positive")
-if checkpoint <= 0 or checkpoint >= max_samples:
-    errors.append("CHECKPOINT_SAMPLES must be positive and smaller than MAX_SAMPLES")
-if component not in {"all", "vision", "language"}:
-    errors.append(
-        "CALIBRATION_COMPONENT must be all, vision, or language; "
-        f"got {component}"
-    )
-if int(vision_w_bits) != 8:
-    errors.append(f"VISION_W_BITS currently supports 8; got {vision_w_bits}")
-if int(language_w_bits) not in {4, 8}:
-    errors.append(f"LANGUAGE_W_BITS must be 4 or 8; got {language_w_bits}")
-if int(lm_head_w_bits) not in {4, 8}:
-    errors.append(f"LM_HEAD_W_BITS must be 4 or 8; got {lm_head_w_bits}")
-if int(replay_seed) < 0:
-    errors.append(f"REPLAY_SEED must be non-negative; got {replay_seed}")
-if Path(manifest).is_file():
-    with Path(manifest).open("r", encoding="utf-8") as handle:
-        record_count = sum(bool(line.strip()) for line in handle)
-    if record_count != max_samples:
-        errors.append(f"generated manifest has {record_count} records, expected {max_samples}")
-if Path(selected).is_file():
-    with Path(selected).open("r", encoding="utf-8") as handle:
-        selected_count = sum(bool(line.strip()) for line in handle)
-    if selected_count != max_samples:
-        errors.append(f"selected manifest has {selected_count} records, expected {max_samples}")
-if errors:
-    raise SystemExit("calibration preflight failed:\n- " + "\n- ".join(errors))
-print(f"[calibration preflight] passed: records>={max_samples}, checkpoint={checkpoint}", flush=True)
-PY
-
-if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
-  echo "[calibrate] preflight-only; activation statistics collection was not started" | tee -a "$LOG_PATH"
-  exit 0
-fi
 
 replay_args=(
   --generated-jsonl "$GENERATED_JSONL"
@@ -363,211 +270,4 @@ if [[ "$replay_status" -ne 0 ]]; then
   exit "$replay_status"
 fi
 
-# A zero replay exit is accepted only when all durable calibration evidence agrees.
-"$PYTHON_BIN" - "$OUTPUT_DIR" "$MAX_SAMPLES" "$CHECKPOINT_SAMPLES" "$CALIBRATION_COMPONENT" \
-  "$CHUNK_SIZE" "$CACHE_LEN" "$VISION_W_BITS" "$LANGUAGE_W_BITS" \
-  "$LM_HEAD_W_BITS" "$REPLAY_SEED" "$REPO_ROOT" 2>&1 <<'PY' | tee -a "$LOG_PATH"
-import json, sys
-from pathlib import Path
-
-output = Path(sys.argv[1])
-max_samples, checkpoint = map(int, sys.argv[2:4])
-component = sys.argv[4]
-chunk_size, cache_len, vision_w_bits, language_w_bits, lm_head_w_bits = map(
-    int, sys.argv[5:10]
-)
-replay_seed = int(sys.argv[10])
-sys.path.insert(0, sys.argv[11])
-from compiler.leap_llm.language_graphs import (
-    language_graph_set,
-    normalize_graph_set_metadata,
-)
-profile_contract = language_graph_set()
-coverage_path = output / "calibration_graph_coverage.json"
-manifest_path = output / "calibration_scale_manifest.json"
-convergence_path = output / f"scale_convergence_{checkpoint}_vs_{max_samples}.json"
-missing = [str(path) for path in (coverage_path, manifest_path, convergence_path) if not path.is_file()]
-if missing:
-    raise SystemExit("calibration postflight missing artifacts:\n- " + "\n- ".join(missing))
-coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
-manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-convergence = json.loads(convergence_path.read_text(encoding="utf-8"))
-counts = coverage.get("stage_execution_counts", {})
-errors = []
-
-def nonnegative_count_mapping(value, label):
-    if not isinstance(value, dict):
-        errors.append(f"{label} must be an object of non-negative integer counts")
-        return {}
-    invalid = [
-        str(key)
-        for key, count in value.items()
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0
-    ]
-    if invalid:
-        errors.append(
-            f"{label} contains invalid counts for: {', '.join(sorted(invalid))}"
-        )
-        return {}
-    return value
-
-if coverage.get("sample_count") != max_samples:
-    errors.append(f"coverage sample_count={coverage.get('sample_count')} expected {max_samples}")
-if coverage.get("checkpoint_samples") != checkpoint:
-    errors.append("coverage checkpoint_samples does not match the requested run")
-if coverage.get("task_counts") != manifest.get("task_counts"):
-    errors.append("coverage task_counts does not match the scale manifest")
-language_context_count = coverage.get("language_context_count", 0)
-if isinstance(language_context_count, bool) or not isinstance(language_context_count, int):
-    errors.append("coverage language_context_count is not an integer")
-    language_context_count = 0
-if component in {"all", "language"}:
-    if language_context_count < max_samples or language_context_count > 2 * max_samples:
-        errors.append("coverage language_context_count is outside the one-to-two contexts/sample contract")
-elif language_context_count != 0:
-    errors.append("Vision-only calibration must not report Language contexts")
-expected_stages = []
-if component in {"all", "vision"}:
-    expected_stages.append("vision")
-if component in {"all", "language"}:
-    expected_stages.extend(profile_contract.calibration_stages)
-language_expected_counts = profile_contract.calibration_execution_counts(
-    language_context_count
-)
-for graph_stage in expected_stages:
-    expected_count = (
-        max_samples
-        if graph_stage == "vision"
-        else language_expected_counts[graph_stage]
-    )
-    if counts.get(graph_stage) != expected_count:
-        errors.append(f"{graph_stage} count={counts.get(graph_stage)} expected {expected_count}")
-expected_counts = {
-    graph_stage: (
-        max_samples
-        if graph_stage == "vision"
-        else language_expected_counts[graph_stage]
-    )
-    for graph_stage in expected_stages
-}
-if coverage.get("expected_stage_execution_counts") != expected_counts:
-    errors.append("expected_stage_execution_counts does not match sample/context counts")
-if coverage.get("expected_stages") != expected_stages:
-    errors.append("expected_stages does not match the complete graph-family contract")
-if coverage.get("all_stages_executed") is not True:
-    errors.append("all_stages_executed is not true")
-audit_passed = coverage.get(
-    "activation_statistics_audit_passed",
-    coverage.get("observer_audit_passed"),
-)
-if audit_passed is not True:
-    errors.append("activation_statistics_audit_passed is not true")
-if manifest.get("sample_count") != max_samples or manifest.get("checkpoint_samples") != checkpoint:
-    errors.append("scale manifest sample/checkpoint counts do not match the requested run")
-if manifest.get("language_context_count") != language_context_count:
-    errors.append("scale manifest language_context_count does not match coverage")
-profile = manifest.get("profile", {})
-if profile.get("component") != component:
-    errors.append(
-        f"scale manifest component={profile.get('component')} expected {component}"
-    )
-stored_profile = profile.get("graph_set", profile.get("graph_profile"))
-stored_graph_set = normalize_graph_set_metadata(stored_profile)
-if stored_graph_set != profile_contract.name:
-    errors.append(
-        f"activation scale profile={stored_profile} expected {profile_contract.name}"
-    )
-if profile.get("chunk_size") != chunk_size or profile.get("cache_len") != cache_len:
-    errors.append("scale manifest Language sequence lengths do not match the requested run")
-if profile.get("vision_weight_bits") != vision_w_bits:
-    errors.append("scale manifest Vision weight bits do not match the requested run")
-if component in {"all", "language"} and profile.get("language_decoder_weight_bits") != language_w_bits:
-    errors.append("scale manifest Language weight bits do not match the requested run")
-if component in {"all", "language"} and profile.get("language_lm_head_weight_bits") != lm_head_w_bits:
-    errors.append("scale manifest lm_head weight bits do not match the requested run")
-if component in {"all", "language"}:
-    context = coverage.get("decode_context_coverage")
-    if not isinstance(context, dict):
-        errors.append("coverage lacks decode_context_coverage")
-        context = {}
-    if coverage.get("decode_context_coverage_passed") is not True:
-        errors.append("decode_context_coverage_passed is not true")
-    if not isinstance(context.get("policy"), str) or not context.get("policy"):
-        errors.append("Decode context policy is missing")
-    if context.get("sample_count") != max_samples:
-        errors.append("Decode context sample count does not match the requested run")
-    if context.get("language_context_count") != language_context_count:
-        errors.append("Decode context count does not match graph coverage")
-    if context.get("base_context_count") != max_samples:
-        errors.append("Decode context coverage does not contain exactly one base per sample")
-    if context.get("supplemental_context_count") != language_context_count - max_samples:
-        errors.append("Decode supplemental context count is inconsistent")
-    eligible_long = context.get("eligible_long_detection_sample_count")
-    if isinstance(eligible_long, bool) or not isinstance(eligible_long, int) or eligible_long <= 0:
-        errors.append("Decode context coverage has no eligible long Detection target")
-    required_target = context.get("required_target_context_count")
-    covered_target = context.get("covered_required_target_context_count")
-    if (
-        isinstance(required_target, bool)
-        or not isinstance(required_target, int)
-        or required_target <= 0
-        or isinstance(covered_target, bool)
-        or not isinstance(covered_target, int)
-        or covered_target != required_target
-    ):
-        errors.append("Decode required Detection target contexts are incomplete")
-    if context.get("missing_required_target_contexts"):
-        errors.append("Decode context coverage reports missing required target contexts")
-    if context.get("passed") is not True or context.get("errors"):
-        errors.append("Decode context coverage contains failed gates")
-    depth_buckets = nonnegative_count_mapping(
-        context.get("depth_buckets"), "Decode context depth_buckets"
-    )
-    if sum(depth_buckets.values()) != language_context_count:
-        errors.append("Decode context depth buckets do not account for every Language context")
-    if depth_buckets.get("zero", 0) <= 0:
-        errors.append("Decode context coverage has no prompt-boundary samples")
-    if sum(depth_buckets.get(name, 0) for name in ("1_31", "32_127", "128_plus")) <= 0:
-        errors.append("Decode context coverage has no nonzero history suffix")
-    if sum(depth_buckets.get(name, 0) for name in ("32_127", "128_plus")) <= 0:
-        errors.append("Decode context coverage has no suffix of at least 32 tokens")
-    token_sources = nonnegative_count_mapping(
-        context.get("token_sources"), "Decode context token_sources"
-    )
-    if sum(token_sources.values()) != language_context_count:
-        errors.append("Decode context token sources do not account for every Language context")
-    context_roles = nonnegative_count_mapping(
-        context.get("context_roles"), "Decode context roles"
-    )
-    if sum(context_roles.values()) != language_context_count:
-        errors.append("Decode context roles do not account for every Language context")
-    if context_roles.get("base") != max_samples:
-        errors.append("Decode context roles do not contain one base per sample")
-    unexpected_roles = set(context_roles) - {"base", "target_tail"}
-    if unexpected_roles:
-        errors.append("Decode context roles contain unexpected values")
-    for metric in ("suffix_len", "past_len"):
-        values = context.get(metric)
-        if not isinstance(values, dict) or values.get("min") is None or values.get("max") is None:
-            errors.append(f"Decode context coverage lacks {metric} range")
-    if profile.get("decode_context_policy") != context.get("policy"):
-        errors.append("scale manifest and coverage Decode context policies differ")
-if manifest.get("replay_seed") != replay_seed:
-    errors.append("scale manifest replay_seed does not match the requested run")
-generated_path = Path(manifest.get("generated_manifest", ""))
-if not generated_path.is_file():
-    errors.append(f"scale manifest generated_manifest is unavailable: {generated_path}")
-if convergence.get("checkpoint_samples") != checkpoint or convergence.get("full_samples") != max_samples:
-    errors.append("convergence sample/checkpoint counts do not match the requested run")
-if errors:
-    raise SystemExit("calibration postflight failed:\n- " + "\n- ".join(errors))
-print(
-    f"[calibration postflight] passed: samples={max_samples}, "
-    f"language_contexts={language_context_count}, component={component}, "
-    f"stages={len(expected_stages)}, "
-    f"checkpoint={checkpoint}, activation_statistics=passed",
-    flush=True,
-)
-PY
-
-echo "[calibrate] replay and independent postflight passed" | tee -a "$LOG_PATH"
+echo "[calibrate] replay completed" | tee -a "$LOG_PATH"

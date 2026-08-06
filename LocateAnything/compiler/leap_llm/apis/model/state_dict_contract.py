@@ -1,4 +1,4 @@
-"""Fail-closed checkpoint loading helpers."""
+"""Strict checkpoint loading helpers."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-def load_state_dict_fail_closed(
+def load_state_dict_strict(
     model: Any,
     state_dict: Mapping[str, Any],
     *,

@@ -380,7 +380,7 @@ def _structural_offsets(
 
 
 def decode_context_id(bundle_id: str, token_source: str, offset: int) -> str:
-    """Return a stable identity keyed only by bundle, token source, and offset."""
+    """Return a stable context key from the bundle, source, and offset."""
 
     return f"{bundle_id}|{token_source}|{int(offset)}"
 
@@ -560,8 +560,8 @@ def select_decode_replay_contexts(
     planned = tuple(zip(SUPPLEMENTAL_CONTEXT_ROLES, base.required_target_offsets))
 
     for context_role, offset in planned:
-        context_identity = decode_context_id(base.bundle_id, "target", offset)
-        if context_identity in seen:
+        context_key = decode_context_id(base.bundle_id, "target", offset)
+        if context_key in seen:
             continue
         pending = tuple(int(token) for token in target_ids[offset : offset + pending_tokens])
         if len(pending) != pending_tokens:
@@ -572,7 +572,7 @@ def select_decode_replay_contexts(
         suffix = tuple(int(token) for token in target_ids[:offset])
         contexts.append(
             DecodeReplayContext(
-                context_id=context_identity,
+                context_id=context_key,
                 context_role=context_role,
                 bundle_id=base.bundle_id,
                 token_source="target",
@@ -588,7 +588,7 @@ def select_decode_replay_contexts(
                 required_target_offsets=base.required_target_offsets,
             )
         )
-        seen.add(context_identity)
+        seen.add(context_key)
 
     if len(contexts) > 2:
         raise AssertionError(f"{base.bundle_id}: Decode context cap exceeded")
