@@ -67,23 +67,23 @@ add_library(locateanything_inference STATIC
 target_include_directories(locateanything_inference PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(locateanything_inference PUBLIC ${OpenCV_LIBS} Threads::Threads)
 
-add_executable(vision_runner apps/vision_runner.cpp)
+add_executable(vision_runner src/vision_runner.cpp)
 target_link_libraries(vision_runner PRIVATE locateanything_hbm)
 
-add_executable(language_runner apps/language_runner.cpp)
+add_executable(language_runner src/language_runner.cpp)
 target_link_libraries(language_runner PRIVATE locateanything_hbm)
 
-add_executable(image_source ros/image_source_node.cpp)
+add_executable(image_source src/image_source_node.cpp)
 target_include_directories(image_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(image_source ${OpenCV_LIBS})
 ament_target_dependencies(image_source hbm_img_msgs rclcpp)
 
-add_executable(video_source ros/video_source_node.cpp)
+add_executable(video_source src/video_source_node.cpp)
 target_include_directories(video_source PRIVATE include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(video_source ${OpenCV_LIBS})
 ament_target_dependencies(video_source hbm_img_msgs rclcpp std_msgs)
 
-add_executable(inference ros/inference_node.cpp)
+add_executable(inference src/inference_node.cpp)
 target_link_libraries(inference locateanything_inference)
 ament_target_dependencies(inference
   ament_index_cpp cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
@@ -95,10 +95,7 @@ install(TARGETS
   video_source
   inference
   RUNTIME DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY config launch tokenizer
+install(DIRECTORY config launch models
   DESTINATION share/${PROJECT_NAME})
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
-  install(DIRECTORY models DESTINATION share/${PROJECT_NAME})
-endif()
 
 ament_package()

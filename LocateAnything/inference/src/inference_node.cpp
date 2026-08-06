@@ -101,7 +101,7 @@ class LocateAnythingNode : public rclcpp::Node {
     std::string tokenizer_directory =
         declare_parameter<std::string>("tokenizer_directory", "");
     if (tokenizer_directory.empty()) {
-      tokenizer_directory = (package_share / "tokenizer").string();
+      tokenizer_directory = (package_share / "models/tokenizer").string();
     }
     output_directory_ =
         declare_parameter<std::string>("output_directory", "outputs");

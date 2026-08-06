@@ -18,13 +18,11 @@ LocateAnything/
 │   ├── models/                  # Float 模型
 │   └── outputs/                 # 编译产物和日志
 ├── inference/                   # S600 TROS C++ 推理包
-│   ├── apps/                    # Vision/Language HBM runner
+│   ├── src/                     # 推理实现、运行器和 TROS 节点
 │   ├── include/                 # C++ 推理模块接口
-│   ├── ros/                     # TROS 推理节点和媒体输入节点
 │   ├── config/                  # ROS 参数
 │   ├── launch/                  # XML launch 文件
-│   ├── models/                  # HBM 和 Embedding
-│   ├── tokenizer/               # LocateAnything Tokenizer
+│   ├── models/                  # HBM、Embedding 和 Tokenizer
 │   └── outputs/                 # 推理结果
 └── README.md
 ```
