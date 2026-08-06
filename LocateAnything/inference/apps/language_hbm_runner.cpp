@@ -1474,7 +1474,7 @@ int main(int argc, char** argv) {
   std::string generation_mode = "hybrid";
   bool server = false;
   bool structured_output = false;
-  uint32_t backend_mask = 0;
+  uint32_t backend_mask = 15;
   int32_t expected_prefill_chunk = 0;
   int32_t expected_cache_len = 0;
   for (int index = 1; index < argc; ++index) {

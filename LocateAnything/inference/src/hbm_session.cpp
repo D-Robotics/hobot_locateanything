@@ -667,9 +667,8 @@ Result Graph::Execute(hbDNNHandle_t handle,
   //   hbDNNInferV2  -> create the task + bind tensors (NOT auto-submitted)
   //   hbUCPSubmitTask -> actually kick off the BPU
   //   hbUCPWaitTaskDone -> block until done
-  // SchedParam can be NULL on S600 — the runtime fills defaults (priority 0,
-  // custom_id 0, all-cores). If non-default scheduling is needed later, we
-  // plumb a hbUCPSchedParam through the API; for now NULL is fine.
+  // UCP 3.12.3 requires a valid scheduling parameter. The session default
+  // selects all four S600 BPU cores and callers may override the mask.
   hbUCPTaskHandle_t task = nullptr;
   const auto submit_started = Clock::now();
   int32_t err = hbDNNInferV2(&task, out_tensors.data(),
@@ -678,13 +677,9 @@ Result Graph::Execute(hbDNNHandle_t handle,
     return Result::Err(err, "hbDNNInferV2 failed");
   }
   hbUCPSchedParam sched{};
-  hbUCPSchedParam *sched_ptr = nullptr;
-  if (backend_mask_ != 0) {
-    HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
-    sched.backend = backend_mask_;
-    sched_ptr = &sched;
-  }
-  err = hbUCPSubmitTask(task, sched_ptr);
+  HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
+  sched.backend = backend_mask_;
+  err = hbUCPSubmitTask(task, &sched);
   if (err != 0) {
     hbUCPReleaseTask(task);
     return Result::Err(err, "hbUCPSubmitTask failed");

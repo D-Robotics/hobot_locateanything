@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
   std::string input_path;
   std::string output_path;
   bool server = false;
-  uint32_t backend_mask = 0;
+  uint32_t backend_mask = 15;
   if (!ParseArgs(argc, argv, &model_path, &input_path, &output_path, &server,
                  &backend_mask)) {
     Usage(argv[0]);

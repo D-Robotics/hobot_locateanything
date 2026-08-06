@@ -185,7 +185,7 @@ class Graph {
   std::vector<int32_t> input_dtypes_;
   std::vector<int32_t> output_dtypes_;
   std::unique_ptr<PersistentBuffers> buffers_;
-  uint32_t backend_mask_ = 0;
+  uint32_t backend_mask_ = 15;
 };
 
 // A loaded hbm file (may contain multiple graphs). Owns the packed handle
@@ -235,7 +235,7 @@ class HbmSession {
   std::vector<std::string> graph_names_;
   std::unordered_map<std::string, std::unique_ptr<Graph>> graphs_;
   Graph *active_graph_ = nullptr;  // owned by graphs_
-  uint32_t backend_mask_ = 0;
+  uint32_t backend_mask_ = 15;
 };
 
 // Helper: number of bytes per element for a given HB_DNN_TENSOR_TYPE_*.
