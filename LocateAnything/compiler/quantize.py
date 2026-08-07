@@ -96,7 +96,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
 
     paths = _mapping(config.get("paths"), "paths")
     required_paths = {
-        "checkpoint", "locateanything_source", "calibration_data", "output_dir"
+        "checkpoint", "locateanything_source", "calibration_data",
+        "calibration_input_dir", "output_dir",
     }
     missing_paths = sorted(required_paths - set(paths))
     if missing_paths:
@@ -227,13 +228,14 @@ def resolve_path(config: Mapping[str, Any], key: str) -> Path:
     checkpoint = _resolve_config_path(config_dir, paths["checkpoint"])
     source_dir = _resolve_config_path(config_dir, paths["locateanything_source"])
     calibration_data = _resolve_config_path(config_dir, paths["calibration_data"])
+    calibration_input_dir = _resolve_config_path(config_dir, paths["calibration_input_dir"])
     output_dir = _resolve_config_path(config_dir, paths["output_dir"])
     resolved = {
         "model": checkpoint,
         "source_dir": source_dir,
         "selected_jsonl": calibration_data / "selected.jsonl",
         "generated_dir": output_dir / "calibration" / "generated",
-        "generated_jsonl": output_dir / "calibration" / "generated" / "generated.jsonl",
+        "generated_jsonl": calibration_input_dir / "generated.jsonl",
         "calibration_dir": output_dir / "calibration" / "statistics",
         "scale_manifest": output_dir / "calibration" / "statistics" / "calibration_scale_manifest.json",
         "coverage_json": output_dir / "calibration" / "statistics" / "calibration_graph_coverage.json",
