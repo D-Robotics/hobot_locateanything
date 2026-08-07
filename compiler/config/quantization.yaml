@@ -1,11 +1,3 @@
-toolchain:
-  # OE_LLM/HBDK stays outside this repository. Leave python empty to use the
-  # currently activated SDK environment, or set an explicit environment Python.
-  python: ""
-  # LocateAnything owns only this model adapter; it imports HBDK from the
-  # external environment and does not copy the OE_LLM source tree.
-  build_adapter: ../build_adapter.py
-
 paths:
   checkpoint: ../models/LocateAnything-3B
   locateanything_source: ../models/LocateAnything-3B

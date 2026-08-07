@@ -207,13 +207,10 @@ python -m pip install oellm_build/hbdk4_compiler-*.whl
 ```
 
 这里的 `~/oellm/` 与 `hobot_locateanything/` 是两个独立目录。升级 OE_LLM
-时，在新的独立环境中安装新版 SDK，然后激活该环境即可；不要把 SDK 目录
-复制到 `compiler/`，也不要修改 LocateAnything 的模型和数据目录。
-
-`compiler/config/quantization.yaml` 中的 `toolchain.python` 默认留空，表示
-使用当前激活环境的 Python。需要固定到另一套 OE_LLM 环境时，仅设置该字段；
-`toolchain.build_adapter` 是 LocateAnything 自有的薄模型适配入口，不包含
-OE_LLM 源码。
+时，直接在项目外 wget、解压并安装新版 SDK，然后激活对应环境；不要把 SDK
+目录复制到 `compiler/`，也不需要在量化 YAML 中配置 OE_LLM 路径。编译始终
+使用当前激活环境的 Python，`compiler/build_adapter.py` 只包含
+LocateAnything 的模型适配逻辑。
 
 ### 2. 准备模型和校准数据
 
