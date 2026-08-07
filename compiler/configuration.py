@@ -9,8 +9,8 @@ try:
     import yaml
 except ImportError as exc:  # pragma: no cover - compiler environment owns PyYAML
     raise SystemExit(
-        "PyYAML is required; install the compiler package with "
-        "`python -m pip install -e compiler`"
+        "PyYAML is required; install the host requirements with "
+        "`python -m pip install -r compiler/requirements-host.txt`"
     ) from exc
 
 

@@ -229,7 +229,6 @@ python -m zipfile -e compiler/datasets/calibration/download/source.zip \
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate oellm_clean
 python -m pip install -r compiler/requirements-host.txt
-python -m pip install -e compiler --no-deps
 
 CONFIG=compiler/config/quantization.yaml
 python compiler/quantize.py --config "$CONFIG" prepare --resume

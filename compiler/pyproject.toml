@@ -28,9 +28,6 @@ dependencies = [
 # CUDA-enabled torch and torchvision must come from the OELLM/HBDK environment;
 # installing generic PyPI wheels can replace the compiler-compatible builds.
 
-[project.scripts]
-oellm_build = "oellm_build:main"
-
 [tool.setuptools]
 include-package-data = true
 py-modules = ["oellm_build"]
