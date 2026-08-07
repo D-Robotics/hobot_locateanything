@@ -13,8 +13,6 @@
 namespace locateanything {
 
 struct InferenceOptions {
-  std::string vision_runner;
-  std::string language_runner;
   std::string vision_model;
   std::string language_model;
   std::string embeddings;

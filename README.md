@@ -89,6 +89,10 @@ source install/setup.bash
 
 ### 3. 运行推理
 
+用户入口固定为两个：`console` 用于本地图片和视频，
+`hobot_locateanything` 用于订阅 TROS 图像话题。Vision 和 Language HBM
+worker 是内部实现，不作为 `ros2 run` 入口。
+
 本地图片和视频使用交互式 C++ Console：
 
 ```bash

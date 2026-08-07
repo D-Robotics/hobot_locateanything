@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <ament_index_cpp/get_package_prefix.hpp>
 #include "processing/image.hpp"
 #include "processing/prompt.hpp"
 #include "processing/tokenizer.hpp"
@@ -128,11 +129,17 @@ void InferenceSession::Initialize(
       (options.generation_mode != "hybrid" && options.generation_mode != "slow")) {
     throw std::invalid_argument("invalid generation configuration");
   }
-  for (const std::string* path : {&options.vision_runner, &options.language_runner,
-                                  &options.vision_model, &options.language_model,
-                                  &options.embeddings}) {
-    if (path->empty() || !fs::is_regular_file(*path)) {
-      throw std::runtime_error("missing inference asset: " + *path);
+  const fs::path worker_directory =
+      fs::path(ament_index_cpp::get_package_prefix("hobot_locateanything")) /
+      "libexec/hobot_locateanything";
+  const fs::path vision_worker = worker_directory / "vision_worker";
+  const fs::path language_worker = worker_directory / "language_worker";
+  for (const fs::path& path : {vision_worker, language_worker,
+                               fs::path(options.vision_model),
+                               fs::path(options.language_model),
+                               fs::path(options.embeddings)}) {
+    if (path.empty() || !fs::is_regular_file(path)) {
+      throw std::runtime_error("missing inference asset: " + path.string());
     }
   }
   if (!fs::is_directory(options.tokenizer_directory)) {
@@ -142,14 +149,14 @@ void InferenceSession::Initialize(
   fs::create_directories(options.temporary_directory);
   impl_->tokenizer.Load(options.tokenizer_directory);
   impl_->vision.Start(
-      options.vision_runner,
+      vision_worker.string(),
       {"--model", options.vision_model, "--backend-mask",
        std::to_string(options.vision_backend_mask), "--server"},
       "visual", [&] {
         if (progress_callback) progress_callback("Vision HBM");
       });
   impl_->language.Start(
-      options.language_runner,
+      language_worker.string(),
       {"--model", options.language_model, "--embed", options.embeddings,
        "--backend-mask", std::to_string(options.language_backend_mask), "--server"},
       "language", [&] {

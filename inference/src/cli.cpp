@@ -16,7 +16,6 @@
 #include <string>
 #include <utility>
 
-#include <ament_index_cpp/get_package_prefix.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
@@ -299,10 +298,10 @@ void PrintPerformance(const locateanything::InferenceOutput& output,
 
 class Console {
  public:
-  Console(ConsoleOptions options, fs::path package_prefix)
+  explicit Console(ConsoleOptions options)
       : options_(std::move(options)),
         color_(TerminalColors()),
-        session_(BuildInferenceOptions(package_prefix)) {}
+        session_(BuildInferenceOptions()) {}
 
   int Run() {
     PrintBanner(color_);
@@ -403,13 +402,9 @@ class Console {
               << std::setprecision(1) << elapsed << " s\n";
   }
 
-  locateanything::InferenceOptions BuildInferenceOptions(
-      const fs::path& package_prefix) const {
+  locateanything::InferenceOptions BuildInferenceOptions() const {
     locateanything::InferenceOptions inference;
     setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1);
-    const fs::path runners = package_prefix / "lib/hobot_locateanything";
-    inference.vision_runner = (runners / "vision_runner").string();
-    inference.language_runner = (runners / "language_runner").string();
     inference.vision_model =
         (options_.model_directory / options_.vision_model).string();
     inference.language_model =
@@ -563,11 +558,9 @@ int main(int argc, char** argv) {
   try {
     std::signal(SIGINT, HandleSignal);
     std::signal(SIGTERM, HandleSignal);
-    const fs::path package_prefix =
-        ament_index_cpp::get_package_prefix("hobot_locateanything");
     ConsoleOptions options = ParseArguments(argc, argv);
     fs::create_directories(options.output_directory);
-    return Console(std::move(options), package_prefix).Run();
+    return Console(std::move(options)).Run();
   } catch (const std::exception& error) {
     std::cerr << "[FAIL] " << error.what() << '\n';
     return 1;

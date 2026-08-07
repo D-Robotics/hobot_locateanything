@@ -76,12 +76,13 @@ target_link_libraries(hobot_locateanything_inference PUBLIC
   hobot_locateanything_runtime
   ${OpenCV_LIBS}
   Threads::Threads)
+ament_target_dependencies(hobot_locateanything_inference ament_index_cpp)
 
-add_executable(vision_runner src/runtime/vision.cpp)
-target_link_libraries(vision_runner PRIVATE hobot_locateanything_runtime)
+add_executable(vision_worker src/runtime/vision.cpp)
+target_link_libraries(vision_worker PRIVATE hobot_locateanything_runtime)
 
-add_executable(language_runner src/runtime/language.cpp)
-target_link_libraries(language_runner PRIVATE hobot_locateanything_runtime)
+add_executable(language_worker src/runtime/language.cpp)
+target_link_libraries(language_worker PRIVATE hobot_locateanything_runtime)
 
 add_executable(${PROJECT_NAME}
   src/main.cpp
@@ -95,8 +96,11 @@ target_link_libraries(console hobot_locateanything_inference yaml-cpp::yaml-cpp)
 ament_target_dependencies(console ament_index_cpp)
 
 install(TARGETS
-  vision_runner
-  language_runner
+  vision_worker
+  language_worker
+  RUNTIME DESTINATION libexec/${PROJECT_NAME})
+
+install(TARGETS
   ${PROJECT_NAME}
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
