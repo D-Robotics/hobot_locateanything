@@ -75,7 +75,8 @@ META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
 STARTED_AT=$(date --iso-8601=seconds)
-mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"if [[ "$DETACH" == "1" ]]; then
+mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"
+if [[ "$DETACH" == "1" ]]; then
   setsid nohup env DETACH=0 RESUME="$RESUME" bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
   printf '%s\n' "$child_pid" > "$PID_PATH"
