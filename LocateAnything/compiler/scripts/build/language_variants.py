@@ -137,7 +137,7 @@ def expected_io_contract(
     )
     if bpu_sampling:
         inputs.extend([
-            ((1, 6, VOCAB_SIZE), "uint8"),
+            ((1, 6, VOCAB_SIZE), "int8"),
             ((1, 6, 1), "float16"),
         ])
         outputs = [

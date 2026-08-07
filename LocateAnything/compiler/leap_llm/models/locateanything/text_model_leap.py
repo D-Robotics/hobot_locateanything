@@ -333,7 +333,8 @@ class LocateAnythingTextModel(Model):
         )
         if pbd and getattr(self.config, "sampling_backend", "bpu") == "bpu":
             inputs.extend([
-                leap.TensorType([1, PBD_ROWS, VOCAB_SIZE], leap.uint8),
+                # HBDK4 lowers this binary history mask to signed int8.
+                leap.TensorType([1, PBD_ROWS, VOCAB_SIZE], leap.int8),
                 leap.TensorType([1, PBD_ROWS, 1], leap.float16),
             ])
         return inputs
