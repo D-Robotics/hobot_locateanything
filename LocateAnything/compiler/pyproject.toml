@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "leap-llm"
+name = "locateanything-compiler"
 version = "1.0.5"
 requires-python = ">=3.10"
 dependencies = [
@@ -29,11 +29,12 @@ dependencies = [
 # installing generic PyPI wheels can replace the compiler-compatible builds.
 
 [project.scripts]
-oellm_build = "leap_llm.apis.oellm_build:main"
+oellm_build = "oellm_build:main"
 
 [tool.setuptools]
 include-package-data = true
+py-modules = ["oellm_build"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["leap_llm*"]
+include = ["model*", "pipeline*"]

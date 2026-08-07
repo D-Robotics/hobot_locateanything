@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Orchestrate LocateAnything preparation, calibration, and build stages.
 
-The numerical calibration, BC export, HBDK compilation, and runtime algorithms
-remain in ``compiler/scripts`` and ``compiler/leap_llm``.
+The numerical calibration, BC export, HBDK compilation, and model algorithms
+live in ``compiler/pipeline`` and ``compiler/model``.
 """
 
 from __future__ import annotations
@@ -22,9 +22,7 @@ from typing import Any, Iterable, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COMPILER_ROOT = PROJECT_ROOT / "compiler"
-SCRIPTS_ROOT = COMPILER_ROOT / "scripts"
-CALIBRATION_SCRIPTS = SCRIPTS_ROOT / "calibration"
-BUILD_SCRIPTS = SCRIPTS_ROOT / "build"
+PIPELINE_ROOT = COMPILER_ROOT / "pipeline"
 DEFAULT_CONFIG = COMPILER_ROOT / "config" / "quantization.yaml"
 CONFIG_DIR_KEY = "__config_dir__"
 COMPONENTS = ("vision", "language", "all")
@@ -34,8 +32,8 @@ if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
 from configuration import ConfigurationFileError, load_config_file  # noqa: E402
-from leap_llm.language_graphs import language_graph_set  # noqa: E402
-from leap_llm.model_contract import (  # noqa: E402
+from model.graphs import language_graph_set  # noqa: E402
+from model.contract import (  # noqa: E402
     HIDDEN_SIZE,
     IMAGE_HEIGHT,
     IMAGE_TOKEN_ID,
@@ -313,7 +311,7 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
         "SEED": str(calibration["seed"]),
         "RESUME": "1" if args.resume else "0",
     })
-    command = (bash_command(), str(CALIBRATION_SCRIPTS / "prepare.sh"))
+    command = (bash_command(), str(PIPELINE_ROOT / "run_prepare.sh"))
     return [PlanStep("prepare calibration tensors", command, env=env)]
 
 
@@ -356,7 +354,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
     note = None
     if args.resume:
         note = "calibration replay is atomic; only completed statistics are reused"
-    command = (bash_command(), str(CALIBRATION_SCRIPTS / "calibrate.sh"))
+    command = (bash_command(), str(PIPELINE_ROOT / "run_calibrate.sh"))
     return [PlanStep("collect activation statistics", command, env=env, note=note)]
 
 
@@ -402,7 +400,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
                 "IMAGE_WIDTH": str(IMAGE_WIDTH),
                 "IMAGE_HEIGHT": str(IMAGE_HEIGHT),
             })
-            script = BUILD_SCRIPTS / "vision.sh"
+            script = PIPELINE_ROOT / "build_vision.sh"
         else:
             env.update({
                 "W_BITS": str(quantization["language_weight_bits"]),
@@ -410,7 +408,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
                 "DECODE_CORE_NUM": str(cores["pbd"]),
                 "AR_CORE_NUM": str(cores["ar"]),
             })
-            script = BUILD_SCRIPTS / "language.sh"
+            script = PIPELINE_ROOT / "build_language.sh"
         steps.append(PlanStep(f"build {component} through {args.target}", (bash, str(script)), env=env))
     return steps
 

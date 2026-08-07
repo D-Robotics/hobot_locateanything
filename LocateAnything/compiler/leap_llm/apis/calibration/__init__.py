@@ -1,1 +1,0 @@
-"""LocateAnything calibration APIs."""
