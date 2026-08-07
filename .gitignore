@@ -17,13 +17,15 @@
 !/LocateAnything/compiler/outputs/.gitignore
 
 # Inference-owned model files and outputs
-/LocateAnything/inference/models/*
-!/LocateAnything/inference/models/.gitignore
-/LocateAnything/inference/outputs/*
-!/LocateAnything/inference/outputs/.gitignore
-/LocateAnything/inference/build/
-/LocateAnything/inference/install/
-/LocateAnything/inference/log/
+/LocateAnything/hobot_locateanything/models/*
+!/LocateAnything/hobot_locateanything/models/.gitignore
+/LocateAnything/hobot_locateanything/outputs/*
+!/LocateAnything/hobot_locateanything/outputs/.gitignore
+
+# Colcon workspace outputs live at the repository root, outside the ROS package.
+/build/
+/install/
+/log/
 
 # Model weights and generated artifacts
 *.safetensors
@@ -58,7 +60,6 @@ venv/
 *.egg-info/
 *.dist-info/
 .understand-anything/
-/build/
 demo_build/
 oellm_runtime/
 

@@ -17,11 +17,11 @@ LocateAnything/
 │   ├── datasets/                # 校准数据
 │   ├── models/                  # Float 模型
 │   └── outputs/                 # 编译产物和日志
-├── inference/                   # S600 TROS C++ 推理包
+├── hobot_locateanything/        # S600 TROS C++ 推理包
 │   ├── src/                     # 推理实现、运行器和 TROS 节点
 │   ├── include/                 # C++ 推理模块接口
-│   ├── config/                  # ROS 参数
-│   ├── launch/                  # XML launch 文件
+│   ├── config.yaml              # Console 和 ROS 共用参数
+│   ├── image/                   # 测试图片
 │   ├── models/                  # HBM、Embedding 和 Tokenizer
 │   └── outputs/                 # 推理结果
 └── README.md
@@ -37,7 +37,7 @@ LocateAnything/
 | Vision | W8 |
 | Language | W8 |
 | LM Head | W8 |
-| Prefill | 1024 tokens |
+| Prefill | 768 tokens |
 | KV Cache | 4096 tokens |
 | PBD | q=6 |
 | Language 图 | fused decode，Prefill + PBD q6-q12 + AR q1-q5 |
@@ -45,7 +45,7 @@ LocateAnything/
 
 默认配置提供完整的 fused decode 流程。常用编译参数集中在
 `LocateAnything/compiler/config/quantization.yaml`，推理参数集中在
-`LocateAnything/inference/config.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
+`LocateAnything/hobot_locateanything/config.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
 
 ## 直接部署 HBM
 
@@ -53,16 +53,17 @@ LocateAnything/
 
 ```bash
 git clone https://github.com/LiuAnclouds/oe_locateanything.git
-cd oe_locateanything/LocateAnything
+cd oe_locateanything
 
-mkdir -p inference/models
-hf download <模型仓库> --local-dir inference/models
+mkdir -p LocateAnything/hobot_locateanything/models
+hf download <模型仓库> \
+  --local-dir LocateAnything/hobot_locateanything/models
 ```
 
 模型目录应包含：
 
 ```text
-inference/models/
+LocateAnything/hobot_locateanything/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 ├── LocateAnything-3B_embed_tokens.bin
@@ -73,28 +74,33 @@ inference/models/
 
 ```bash
 source /opt/tros/jazzy/setup.bash
-cd inference
-colcon build --merge-install
+colcon build --merge-install \
+  --base-paths LocateAnything/hobot_locateanything \
+  --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-`inference/config.yaml` 是唯一配置，模型只放在 `inference/models/`。构建过程不会
-把配置或模型复制、链接到 `install/`。`install/share/locateanything/` 只由 TROS 用于
-包注册和查找 launch 文件，用户无需在该目录中编辑任何内容。
+与 D-Robotics 官方 TROS 示例一致，`build/`、`install/` 和 `log/` 由 colcon
+生成在工作空间根目录，不进入 `hobot_locateanything/` 源码包。`install/` 是
+`ros2 run` 使用的包索引和程序目录；`build/`、`log/` 可以在停止运行后重新生成。
+
+`LocateAnything/hobot_locateanything/config.yaml` 是唯一推理配置，模型只放在
+`LocateAnything/hobot_locateanything/models/`。配置和模型不复制到 `install/`。
 
 ### 3. 运行推理
 
 本地图片和视频使用交互式 C++ Console：
 
 ```bash
-ros2 run locateanything console
+cd LocateAnything/hobot_locateanything
+ros2 run hobot_locateanything console --config config.yaml
 ```
 
-Console 默认读取 `inference/config.yaml`，也可以显式指定
+Console 默认读取当前目录的 `config.yaml`，也可以显式指定
 另一份完整配置：
 
 ```bash
-ros2 run locateanything console \
+ros2 run hobot_locateanything console \
   --config /path/to/config.yaml
 ```
 
@@ -111,21 +117,22 @@ ros2 run locateanything console \
 /detect person
 ```
 
-实时 TROS 推理只启动 LA 自身，并通过三个参数指定配置、输入话题和任务：
+实时 TROS 推理直接运行节点，不依赖 launch XML。默认配置为共享内存话题
+`/hbmem_img` 和任务 `/detect person`：
 
 ```bash
-ros2 launch locateanything locateanything.launch.xml \
-  config:=/path/to/config.yaml \
-  input:=/hbmem_img \
-  prompt:="/detect person,motorcycle"
+cd LocateAnything/hobot_locateanything
+ros2 run hobot_locateanything hobot_locateanything --ros-args \
+  --params-file config.yaml
 ```
 
-`config` 默认使用 `inference/config.yaml`，因此采用默认配置时
-只需要指定输入话题和任务：
+启动时覆盖输入话题和任务：
 
 ```bash
-ros2 launch locateanything locateanything.launch.xml \
-  input:=/hbmem_img prompt:="/detect person"
+ros2 run hobot_locateanything hobot_locateanything --ros-args \
+  --params-file config.yaml \
+  -p input_topic:=/hbmem_img \
+  -p default_prompt:="/detect person,motorcycle"
 ```
 
 USB 和 MIPI 摄像头由 TROS 系统独立启动并发布 `/hbmem_img`。LA 不管理
@@ -152,8 +159,8 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
 
 ### 4. 输入与处理策略
 
-LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由启动参数 `input` 指定，
-共享内存或普通 ROS Image 传输由配置项 `use_shared_memory` 决定。USB 和 MIPI
+LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由参数 `input_topic` 指定，
+共享内存或普通 ROS Image 传输由配置项 `is_shared_mem_sub` 决定。USB 和 MIPI
 保持实时输入，模型忙碌时只保留最新一帧，不累积过期画面。
 
 每帧创建独立的 Language 状态，不跨帧复用 KV Cache。
@@ -168,7 +175,7 @@ LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由启动参数 
 结果同时保存到配置项 `output_directory` 指定的目录：
 
 ```text
-inference/outputs/
+LocateAnything/hobot_locateanything/outputs/
 ├── predictions.jsonl
 └── frames/
     ├── frame_000001.jpg
@@ -223,12 +230,10 @@ python -m pip install -e compiler --no-deps
 CONFIG=compiler/config/quantization.yaml
 python compiler/quantize.py --config "$CONFIG" prepare --resume
 python compiler/quantize.py --config "$CONFIG" calibrate --component all --resume
-python compiler/quantize.py --config "$CONFIG" build --component all --target bc --resume
 python compiler/quantize.py --config "$CONFIG" build --component all --target hbm --resume
-python compiler/quantize.py --config "$CONFIG" verify --component all --stage specification
 ```
 
-编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
+编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `hobot_locateanything/models/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
 
