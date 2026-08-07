@@ -85,7 +85,8 @@ def _positive_int(value: Any, name: str) -> int:
 
 def validate_config(config: Mapping[str, Any]) -> None:
     required_sections = {
-        "paths", "outputs", "calibration", "language", "quantization", "build",
+        "toolchain", "paths", "outputs", "calibration", "language",
+        "quantization", "build",
     }
     missing_sections = sorted(required_sections - config.keys())
     extra_sections = sorted(set(config) - required_sections)
@@ -93,6 +94,18 @@ def validate_config(config: Mapping[str, Any]) -> None:
         raise ConfigurationError(f"config is missing: {', '.join(missing_sections)}")
     if extra_sections:
         raise ConfigurationError(f"config contains unknown sections: {', '.join(extra_sections)}")
+
+    toolchain = _mapping(config.get("toolchain"), "toolchain")
+    required_toolchain = {"python", "build_adapter"}
+    if set(toolchain) != required_toolchain:
+        missing = sorted(required_toolchain - set(toolchain))
+        extra = sorted(set(toolchain) - required_toolchain)
+        details = [*(f"missing {name}" for name in missing), *(f"unknown {name}" for name in extra)]
+        raise ConfigurationError("invalid toolchain fields: " + ", ".join(details))
+    if not isinstance(toolchain.get("python"), str):
+        raise ConfigurationError("toolchain.python must be a string")
+    if not isinstance(toolchain.get("build_adapter"), str) or not toolchain["build_adapter"].strip():
+        raise ConfigurationError("toolchain.build_adapter must be a non-empty path")
 
     paths = _mapping(config.get("paths"), "paths")
     required_paths = {
@@ -287,8 +300,22 @@ def select_components(value: str) -> tuple[str, ...]:
 
 
 def python_command(config: Mapping[str, Any]) -> str:
-    del config
-    return sys.executable
+    toolchain = _mapping(config["toolchain"], "toolchain")
+    configured = os.path.expandvars(os.path.expanduser(toolchain["python"].strip()))
+    if not configured:
+        return sys.executable
+    candidate = Path(configured)
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        return str(_resolve_config_path(Path(config[CONFIG_DIR_KEY]), candidate))
+    return configured
+
+
+def build_adapter(config: Mapping[str, Any]) -> Path:
+    toolchain = _mapping(config["toolchain"], "toolchain")
+    return _resolve_config_path(
+        Path(config[CONFIG_DIR_KEY]),
+        os.path.expandvars(toolchain["build_adapter"]),
+    )
 
 
 def bash_command() -> str:
@@ -421,6 +448,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
             "DETACH": "0",
             "LOG_DIR": str(log_root),
             "LOG_FILE": str(log_root / f"build_{component}_{args.target}.log"),
+            "BUILD_ADAPTER": str(build_adapter(config)),
         })
         if component == "vision":
             env.update({

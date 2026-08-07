@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile LocateAnything vision tower (MoonViT-SO-400M) HBM (nash-p, W8) via oellm_build.
+# Compile LocateAnything vision through the external OE_LLM/HBDK environment.
 # Uses the LocateAnythingVisionApi registered under model_name locateanything-vit-3b
 # in the LA subsystem of the OELLM ecosystem.
 
@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-OELLM_BUILD_SCRIPT="${OELLM_BUILD_SCRIPT:-$REPO_ROOT/compiler/oellm_build.py}"
+BUILD_ADAPTER=${BUILD_ADAPTER:?run this stage through compiler/quantize.py}
 COMPILER_SRC="${COMPILER_SRC:-$REPO_ROOT/compiler}"
 
 MODEL_NAME="${MODEL_NAME:-locateanything-vit-3b}"
@@ -110,7 +110,7 @@ validate_bc() {
 export_bc() {
   echo "[build:vision] exporting visual BC"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" "$OELLM_BUILD_SCRIPT" \
+    "$PYTHON_BIN" "$BUILD_ADAPTER" \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
     --input_model_path "$INPUT_MODEL_PATH" \

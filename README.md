@@ -188,7 +188,7 @@ inference/outputs/
 
 ## 从零校准和编译
 
-从零编译需要 CUDA 主机、D-Robotics S600 OE_LLM SDK、LocateAnything 原始模型和校准数据。
+从零编译需要 CUDA 主机、D-Robotics S600 OE_LLM SDK、LocateAnything 原始模型和校准数据。OE_LLM SDK 和 Python 环境独立安装在项目目录之外；仓库不复制 SDK 源码、wheel 或运行库。
 
 ### 1. 安装编译环境
 
@@ -205,6 +205,15 @@ cd ~/oellm/s600_sdk/D-Robotics_LLM_S600_1.0.5_SDK
 python -m pip install -r oellm_build/requirements.txt
 python -m pip install oellm_build/hbdk4_compiler-*.whl
 ```
+
+这里的 `~/oellm/` 与 `hobot_locateanything/` 是两个独立目录。升级 OE_LLM
+时，在新的独立环境中安装新版 SDK，然后激活该环境即可；不要把 SDK 目录
+复制到 `compiler/`，也不要修改 LocateAnything 的模型和数据目录。
+
+`compiler/config/quantization.yaml` 中的 `toolchain.python` 默认留空，表示
+使用当前激活环境的 Python。需要固定到另一套 OE_LLM 环境时，仅设置该字段；
+`toolchain.build_adapter` 是 LocateAnything 自有的薄模型适配入口，不包含
+OE_LLM 源码。
 
 ### 2. 准备模型和校准数据
 

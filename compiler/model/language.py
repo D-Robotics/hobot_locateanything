@@ -282,7 +282,7 @@ class LocateAnythingLanguageApi:
                 llm_kwargs: Optional[dict] = None) -> None:
         """Compile pipeline: prefill + decode -> convert -> compile_hbo -> link.
 
-        `vit_kwargs` is accepted (oellm_build.py uniform signature) but
+        `vit_kwargs` is accepted (build adapter uniform signature) but
         ignored — this Api does not emit a vision HBM.
         """
         llm_kwargs = llm_kwargs or {}
