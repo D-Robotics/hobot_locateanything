@@ -31,6 +31,7 @@ RESUME="${RESUME:?set by compiler/quantize.py}"
 
 INPUT_MODEL_PATH="${INPUT_MODEL_PATH:?set by compiler/quantize.py}"
 OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:?set by compiler/quantize.py}"
+VISION_HBM_NAME="${VISION_HBM_NAME:?set by compiler/quantize.py}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
 
 LOG_DIR="${LOG_DIR:?set by compiler/quantize.py}"
@@ -89,8 +90,7 @@ fi
 if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
   EXTRA_ARGS+=(--disable_hidden_rotation)
 fi
-MODEL_BASENAME=$(basename "$INPUT_MODEL_PATH")
-HBM_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_vision_${IMAGE_WIDTH}x${IMAGE_HEIGHT}_w${W_BITS}_${MARCH}_corenum_${VIT_CORE_NUM}.hbm"
+HBM_PATH="$OUTPUT_MODEL_PATH/$VISION_HBM_NAME"
 BC_PATH="${HBM_PATH%.hbm}.visual.bc"
 STAGE_ARGS=(
   --bc_path "$BC_PATH"

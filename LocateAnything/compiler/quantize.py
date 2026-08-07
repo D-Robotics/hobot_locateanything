@@ -84,7 +84,9 @@ def _positive_int(value: Any, name: str) -> int:
 
 
 def validate_config(config: Mapping[str, Any]) -> None:
-    required_sections = {"paths", "calibration", "language", "quantization", "build"}
+    required_sections = {
+        "paths", "outputs", "calibration", "language", "quantization", "build",
+    }
     missing_sections = sorted(required_sections - config.keys())
     extra_sections = sorted(set(config) - required_sections)
     if missing_sections:
@@ -102,6 +104,27 @@ def validate_config(config: Mapping[str, Any]) -> None:
     extra_paths = sorted(set(paths) - required_paths)
     if extra_paths:
         raise ConfigurationError(f"paths contains unknown fields: {', '.join(extra_paths)}")
+
+    outputs = _mapping(config.get("outputs"), "outputs")
+    required_outputs = {"vision_hbm", "language_hbm", "embedding_bin"}
+    if set(outputs) != required_outputs:
+        missing = sorted(required_outputs - set(outputs))
+        extra = sorted(set(outputs) - required_outputs)
+        details = [*(f"missing {name}" for name in missing), *(f"unknown {name}" for name in extra)]
+        raise ConfigurationError("invalid outputs fields: " + ", ".join(details))
+    for name, suffix in (
+        ("vision_hbm", ".hbm"),
+        ("language_hbm", ".hbm"),
+        ("embedding_bin", ".bin"),
+    ):
+        value = outputs.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigurationError(f"outputs.{name} must be a non-empty filename")
+        filename = Path(value)
+        if filename.name != value or filename.is_absolute() or value in {".", ".."}:
+            raise ConfigurationError(f"outputs.{name} must be a filename, not a path")
+        if filename.suffix.lower() != suffix:
+            raise ConfigurationError(f"outputs.{name} must end with {suffix}")
 
     calibration = _mapping(config.get("calibration"), "calibration")
     required_calibration = {
@@ -362,6 +385,7 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
     build = _mapping(config["build"], "build")
     language = _mapping(config["language"], "language")
     quantization = _mapping(config["quantization"], "quantization")
+    outputs = _mapping(config["outputs"], "outputs")
     cores = _mapping(build["cores"], "build.cores")
     build_root = resolve_path(config, "build_root")
     log_root = resolve_path(config, "log_root")
@@ -373,6 +397,9 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
         env.update({
             "INPUT_MODEL_PATH": str(resolve_path(config, "model")),
             "OUTPUT_MODEL_PATH": str(output),
+            "VISION_HBM_NAME": str(outputs["vision_hbm"]),
+            "LANGUAGE_HBM_NAME": str(outputs["language_hbm"]),
+            "EMBEDDING_NAME": str(outputs["embedding_bin"]),
             "CALIBRATION_SCALE_MANIFEST": str(resolve_path(config, "scale_manifest")),
             "DEVICE": str(build["device"]),
             "MARCH": str(build["march"]),
@@ -420,6 +447,7 @@ def quote_command(command: Iterable[str]) -> str:
 def print_build_summary(config: Mapping[str, Any]) -> None:
     language = _mapping(config["language"], "language")
     quantization = _mapping(config["quantization"], "quantization")
+    outputs = _mapping(config["outputs"], "outputs")
     graph_set = language_graph_set()
     payload = {
         "image": f"{IMAGE_WIDTH}x{IMAGE_HEIGHT}",
@@ -431,6 +459,9 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
         "language_graph_set": graph_set.name,
         "language_graph_count": len(graph_set.graphs),
         "sampling_backend": language["sampling_backend"],
+        "vision_hbm": outputs["vision_hbm"],
+        "language_hbm": outputs["language_hbm"],
+        "embedding_bin": outputs["embedding_bin"],
     }
     print("[build] " + json.dumps(payload, sort_keys=True))
 

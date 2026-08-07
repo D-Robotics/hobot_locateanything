@@ -35,6 +35,8 @@ RESUME="${RESUME:?set by compiler/quantize.py}"
 
 INPUT_MODEL_PATH="${INPUT_MODEL_PATH:?set by compiler/quantize.py}"
 OUTPUT_MODEL_PATH="${OUTPUT_MODEL_PATH:?set by compiler/quantize.py}"
+LANGUAGE_HBM_NAME="${LANGUAGE_HBM_NAME:?set by compiler/quantize.py}"
+EMBEDDING_NAME="${EMBEDDING_NAME:?set by compiler/quantize.py}"
 CALIBRATION_SCALE_MANIFEST="${CALIBRATION_SCALE_MANIFEST:-}"
 
 LOG_DIR="${LOG_DIR:?set by compiler/quantize.py}"
@@ -105,14 +107,8 @@ fi
 if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
   EXTRA_ARGS+=(--disable_hidden_rotation)
 fi
-MODEL_BASENAME=$(basename "$INPUT_MODEL_PATH")
-HBM_STEM="${MODEL_BASENAME}_language_chunk_${CHUNK_SIZE}_cache_${CACHE_LEN}_decoder_w${W_BITS}_lmhead_w${LM_HEAD_W_BITS}_${MARCH}_corenum_${PREFILL_CORE_NUM}_${DECODE_CORE_NUM}"
-if [[ "$AR_CORE_NUM" != "$DECODE_CORE_NUM" ]]; then
-  HBM_STEM="${HBM_STEM}_ar${AR_CORE_NUM}"
-fi
-HBM_STEM="${HBM_STEM}_fused_decode"
-HBM_PATH="$OUTPUT_MODEL_PATH/${HBM_STEM}.hbm"
-EMBEDDING_PATH="$OUTPUT_MODEL_PATH/${MODEL_BASENAME}_embed_tokens.bin"
+HBM_PATH="$OUTPUT_MODEL_PATH/$LANGUAGE_HBM_NAME"
+EMBEDDING_PATH="$OUTPUT_MODEL_PATH/$EMBEDDING_NAME"
 EXPECTED_EMBEDDING_BYTES=$((152681 * 2048 * 2))
 STAGE_ARGS=(
   --bc_dir "$OUTPUT_MODEL_PATH"

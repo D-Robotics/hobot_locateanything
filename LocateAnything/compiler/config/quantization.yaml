@@ -4,6 +4,13 @@ paths:
   calibration_data: ../datasets/calibration/locateanything/source
   output_dir: ../outputs
 
+outputs:
+  # Final deployable files. Prefill is a graph inside language_hbm, not a
+  # separate HBM file; its BC/HBO intermediates use the language HBM stem.
+  vision_hbm: LocateAnything-3B_vision.hbm
+  language_hbm: LocateAnything-3B_language.hbm
+  embedding_bin: LocateAnything-3B_embed_tokens.bin
+
 calibration:
   # The supplied dataset is used in full. Use a smaller source dataset when
   # developing a faster experiment, or pass --max-samples for a one-off run.
