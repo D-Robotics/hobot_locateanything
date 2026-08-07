@@ -1,4 +1,4 @@
-#include "prompt_builder.hpp"
+#include "processing/prompt.hpp"
 
 #include <algorithm>
 #include <cctype>

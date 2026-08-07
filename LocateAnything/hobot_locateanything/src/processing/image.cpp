@@ -1,4 +1,4 @@
-#include "image_preprocessor.hpp"
+#include "processing/image.hpp"
 
 #include <algorithm>
 #include <cmath>

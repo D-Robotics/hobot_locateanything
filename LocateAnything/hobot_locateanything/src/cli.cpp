@@ -22,7 +22,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
-#include "inference_session.hpp"
+#include "inference.hpp"
 
 namespace fs = std::filesystem;
 
@@ -148,10 +148,10 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
     throw std::runtime_error("cannot read console config " + path.string() +
                              ": " + error.what());
   }
-  const YAML::Node parameters = root["locateanything"]["ros__parameters"];
+  const YAML::Node parameters = root["hobot_locateanything"]["ros__parameters"];
   if (!parameters || !parameters.IsMap()) {
     throw std::runtime_error(
-        "console config must contain locateanything.ros__parameters");
+        "console config must contain hobot_locateanything.ros__parameters");
   }
   auto read_string = [&](const char* name, std::string* target) {
     if (parameters[name]) *target = parameters[name].as<std::string>();
@@ -407,7 +407,7 @@ class Console {
       const fs::path& package_prefix) const {
     locateanything::InferenceOptions inference;
     setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1);
-    const fs::path runners = package_prefix / "lib/locateanything";
+    const fs::path runners = package_prefix / "lib/hobot_locateanything";
     inference.vision_runner = (runners / "vision_runner").string();
     inference.language_runner = (runners / "language_runner").string();
     inference.vision_model =
@@ -564,7 +564,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, HandleSignal);
     std::signal(SIGTERM, HandleSignal);
     const fs::path package_prefix =
-        ament_index_cpp::get_package_prefix("locateanything");
+        ament_index_cpp::get_package_prefix("hobot_locateanything");
     ConsoleOptions options = ParseArguments(argc, argv);
     fs::create_directories(options.output_directory);
     return Console(std::move(options), package_prefix).Run();

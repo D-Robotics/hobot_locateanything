@@ -18,7 +18,7 @@
 //  11) hbUCPReleaseTask           -> free the task handle
 //  12) retain IO buffers while the graph remains active
 
-#include "hbm_session.hpp"
+#include "runtime/hbm.hpp"
 
 #include <algorithm>
 #include <cerrno>

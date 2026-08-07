@@ -7,8 +7,8 @@
 
 #include <opencv2/core/mat.hpp>
 
-#include "inference_metrics.hpp"
-#include "postprocessor.hpp"
+#include "metrics.hpp"
+#include "processing/postprocess.hpp"
 
 namespace locateanything {
 

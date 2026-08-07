@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "hbm_session.hpp"
+#include "runtime/hbm.hpp"
 
 namespace rt = locateanything_runtime;
 

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 LiuAnclouds / Kangjie Xu / D-Robotics
 
-#include "kv_cache_ring.hpp"
+#include "runtime/kv_cache.hpp"
 
 #include <algorithm>
 #include <cstring>

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 LiuAnclouds / Kangjie Xu / D-Robotics
 
-#include "embed_lookup.hpp"
+#include "runtime/embedding.hpp"
 
 #include <cerrno>
 #include <cstring>

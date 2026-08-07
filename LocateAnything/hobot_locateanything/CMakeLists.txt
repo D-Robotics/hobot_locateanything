@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(locateanything)
+project(hobot_locateanything)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,53 +43,62 @@ foreach(library HBDNN_LIB HBUCP_LIB HBRT4_LIB HBTL_LIB HBDSP_PLUGIN_LIB HBHPL_LI
   endif()
 endforeach()
 
-add_library(locateanything_hbm STATIC
-  src/attention_mask.cpp
-  src/embed_lookup.cpp
-  src/hbm_session.cpp
-  src/hybrid_decoder.cpp
-  src/kv_cache_ring.cpp
-  src/position_ids.cpp)
-target_include_directories(locateanything_hbm PUBLIC include ${HOBOT_INCLUDE_DIR})
-target_link_libraries(locateanything_hbm PUBLIC ${HOBOT_RUNTIME_LIBS} Threads::Threads)
+add_library(hobot_locateanything_runtime STATIC
+  src/runtime/attention_mask.cpp
+  src/runtime/embedding.cpp
+  src/runtime/hbm.cpp
+  src/runtime/decoder.cpp
+  src/runtime/kv_cache.cpp
+  src/runtime/position.cpp
+  src/runtime/runner_process.cpp)
+target_include_directories(hobot_locateanything_runtime PUBLIC
+  include
+  ${HOBOT_INCLUDE_DIR})
+target_link_libraries(hobot_locateanything_runtime PUBLIC
+  ${HOBOT_RUNTIME_LIBS}
+  Threads::Threads)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND
    CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  set_source_files_properties(src/hybrid_decoder.cpp PROPERTIES
+  set_source_files_properties(src/runtime/decoder.cpp PROPERTIES
     COMPILE_OPTIONS "-march=armv8.2-a+fp16")
 endif()
 
-add_library(locateanything_inference STATIC
-  src/image_preprocessor.cpp
-  src/inference_session.cpp
-  src/postprocessor.cpp
-  src/prompt_builder.cpp
-  src/runner_process.cpp
-  src/tokenizer.cpp)
-target_include_directories(locateanything_inference PUBLIC include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(locateanything_inference PUBLIC ${OpenCV_LIBS} Threads::Threads)
+add_library(hobot_locateanything_inference STATIC
+  src/inference.cpp
+  src/processing/image.cpp
+  src/processing/postprocess.cpp
+  src/processing/prompt.cpp
+  src/processing/tokenizer.cpp)
+target_include_directories(hobot_locateanything_inference PUBLIC
+  include
+  ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(hobot_locateanything_inference PUBLIC
+  hobot_locateanything_runtime
+  ${OpenCV_LIBS}
+  Threads::Threads)
 
-add_executable(vision_runner src/vision_runner.cpp)
-target_link_libraries(vision_runner PRIVATE locateanything_hbm)
+add_executable(vision_runner src/runtime/vision.cpp)
+target_link_libraries(vision_runner PRIVATE hobot_locateanything_runtime)
 
-add_executable(language_runner src/language_runner.cpp)
-target_link_libraries(language_runner PRIVATE locateanything_hbm)
+add_executable(language_runner src/runtime/language.cpp)
+target_link_libraries(language_runner PRIVATE hobot_locateanything_runtime)
 
-add_executable(inference src/inference_node.cpp)
-target_link_libraries(inference locateanything_inference)
-ament_target_dependencies(inference
+add_executable(${PROJECT_NAME}
+  src/main.cpp
+  src/locateanything_node.cpp)
+target_link_libraries(${PROJECT_NAME} hobot_locateanything_inference)
+ament_target_dependencies(${PROJECT_NAME}
   ament_index_cpp cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
 
-add_executable(console src/console.cpp)
-target_link_libraries(console locateanything_inference yaml-cpp::yaml-cpp)
+add_executable(console src/cli.cpp)
+target_link_libraries(console hobot_locateanything_inference yaml-cpp::yaml-cpp)
 ament_target_dependencies(console ament_index_cpp)
 
 install(TARGETS
   vision_runner
   language_runner
-  inference
+  ${PROJECT_NAME}
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME})
 
 ament_package()

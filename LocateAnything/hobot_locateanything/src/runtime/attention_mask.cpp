@@ -1,6 +1,6 @@
 // Copyright (c) 2026 LiuAnclouds / Kangjie Xu / D-Robotics
 
-#include "attention_mask.hpp"
+#include "runtime/attention_mask.hpp"
 
 #include <cmath>
 #include <cstring>

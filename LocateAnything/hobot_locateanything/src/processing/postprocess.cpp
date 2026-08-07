@@ -1,4 +1,4 @@
-#include "postprocessor.hpp"
+#include "processing/postprocess.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9,7 +9,7 @@
 
 #include <opencv2/imgproc.hpp>
 
-#include "tokenizer.hpp"
+#include "processing/tokenizer.hpp"
 
 namespace locateanything {
 namespace {

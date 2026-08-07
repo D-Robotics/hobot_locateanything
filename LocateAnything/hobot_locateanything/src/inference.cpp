@@ -1,4 +1,4 @@
-#include "inference_session.hpp"
+#include "inference.hpp"
 
 #include <atomic>
 #include <algorithm>
@@ -11,10 +11,10 @@
 #include <utility>
 #include <vector>
 
-#include "image_preprocessor.hpp"
-#include "prompt_builder.hpp"
-#include "runner_process.hpp"
-#include "tokenizer.hpp"
+#include "processing/image.hpp"
+#include "processing/prompt.hpp"
+#include "processing/tokenizer.hpp"
+#include "runtime/runner_process.hpp"
 
 namespace locateanything {
 namespace {

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -26,7 +27,8 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/u_int32.hpp>
 
-#include "inference_session.hpp"
+#include "inference.hpp"
+#include "locateanything_node.hpp"
 
 namespace fs = std::filesystem;
 
@@ -71,11 +73,27 @@ struct PendingFrame {
 
 class LocateAnythingNode : public rclcpp::Node {
  public:
-  LocateAnythingNode() : Node("locateanything") {
+  LocateAnythingNode() : Node("hobot_locateanything") {
+    const int feed_type = declare_parameter<int>("feed_type", 1);
+    if (feed_type != 0 && feed_type != 1) {
+      throw std::invalid_argument("feed_type must be 0 (local image) or 1 (topic)");
+    }
+    const std::string image_path =
+        declare_parameter<std::string>("image", "image/test_detection.jpg");
+    fs::path local_image_path;
+    cv::Mat local_image;
+    if (feed_type == 0) {
+      local_image_path = fs::absolute(image_path);
+      local_image = cv::imread(local_image_path.string(), cv::IMREAD_COLOR);
+      if (local_image.empty()) {
+        throw std::runtime_error("image not found or unreadable: " +
+                                 local_image_path.string());
+      }
+    }
     const std::string input_topic =
         declare_parameter<std::string>("input_topic", "/hbmem_img");
-    const bool use_shared_memory =
-        declare_parameter<bool>("use_shared_memory", false);
+    const bool is_shared_mem_sub =
+        declare_parameter<bool>("is_shared_mem_sub", true);
     const std::string prompt_topic =
         declare_parameter<std::string>("prompt_topic", "/locateanything/prompt");
     const std::string result_topic =
@@ -87,7 +105,7 @@ class LocateAnythingNode : public rclcpp::Node {
     prompt_ = declare_parameter<std::string>("default_prompt", "/detect person");
 
     const fs::path package_prefix =
-        ament_index_cpp::get_package_prefix("locateanything");
+        ament_index_cpp::get_package_prefix("hobot_locateanything");
     std::string model_directory =
         declare_parameter<std::string>("model_directory", "");
     if (model_directory.empty()) {
@@ -107,9 +125,9 @@ class LocateAnythingNode : public rclcpp::Node {
 
     InferenceOptions options;
     options.vision_runner =
-        (package_prefix / "lib/locateanything/vision_runner").string();
+        (package_prefix / "lib/hobot_locateanything/vision_runner").string();
     options.language_runner =
-        (package_prefix / "lib/locateanything/language_runner").string();
+        (package_prefix / "lib/hobot_locateanything/language_runner").string();
     options.vision_model =
         (fs::path(model_directory) /
          declare_parameter<std::string>("vision_model", "LocateAnything-3B_vision.hbm"))
@@ -147,7 +165,7 @@ class LocateAnythingNode : public rclcpp::Node {
           std::lock_guard<std::mutex> lock(mutex_);
           prompt_ = message->data;
         });
-    if (use_shared_memory) {
+    if (feed_type == 1 && is_shared_mem_sub) {
       shared_image_subscription_ =
           create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
               input_topic, rclcpp::SensorDataQoS(),
@@ -170,7 +188,7 @@ class LocateAnythingNode : public rclcpp::Node {
                   RCLCPP_ERROR(get_logger(), "cannot convert shared image: %s", error.what());
                 }
               });
-    } else {
+    } else if (feed_type == 1) {
       image_subscription_ = create_subscription<sensor_msgs::msg::Image>(
           input_topic, rclcpp::SensorDataQoS(),
           [this](const sensor_msgs::msg::Image::ConstSharedPtr message) {
@@ -191,8 +209,18 @@ class LocateAnythingNode : public rclcpp::Node {
           });
     }
     worker_ = std::thread([this] { Run(); });
-    RCLCPP_INFO(get_logger(), "ready: image=%s prompt=%s",
-                input_topic.c_str(), prompt_topic.c_str());
+    if (feed_type == 0) {
+      std_msgs::msg::Header header;
+      header.frame_id = "0";
+      QueueFrame(header, local_image);
+      RCLCPP_INFO(get_logger(), "ready: local image=%s prompt=%s",
+                  local_image_path.string().c_str(), prompt_topic.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "ready: input=%s transport=%s prompt=%s",
+                  input_topic.c_str(),
+                  is_shared_mem_sub ? "hbmem" : "sensor_msgs/Image",
+                  prompt_topic.c_str());
+    }
   }
 
   ~LocateAnythingNode() override {
@@ -287,18 +315,8 @@ class LocateAnythingNode : public rclcpp::Node {
       frame_complete_publisher_;
 };
 
-}  // namespace locateanything
-
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-  try {
-    auto node = std::make_shared<locateanything::LocateAnythingNode>();
-    rclcpp::executors::MultiThreadedExecutor executor;
-    executor.add_node(node);
-    executor.spin();
-  } catch (const std::exception& error) {
-    RCLCPP_FATAL(rclcpp::get_logger("locateanything"), "%s", error.what());
-  }
-  rclcpp::shutdown();
-  return 0;
+std::shared_ptr<rclcpp::Node> CreateLocateAnythingNode() {
+  return std::make_shared<LocateAnythingNode>();
 }
+
+}  // namespace locateanything

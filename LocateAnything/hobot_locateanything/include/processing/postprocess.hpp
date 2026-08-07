@@ -7,8 +7,8 @@
 
 #include <opencv2/core/mat.hpp>
 
-#include "image_preprocessor.hpp"
-#include "inference_metrics.hpp"
+#include "metrics.hpp"
+#include "processing/image.hpp"
 
 namespace locateanything {
 

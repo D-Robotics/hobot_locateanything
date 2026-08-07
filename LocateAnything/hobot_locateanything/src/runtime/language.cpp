@@ -22,12 +22,12 @@
 #include <string>
 #include <vector>
 
-#include "attention_mask.hpp"
-#include "embed_lookup.hpp"
-#include "language_graph_set.hpp"
-#include "hbm_session.hpp"
-#include "hybrid_decoder.hpp"
-#include "kv_cache_ring.hpp"
+#include "runtime/attention_mask.hpp"
+#include "runtime/decoder.hpp"
+#include "runtime/embedding.hpp"
+#include "runtime/hbm.hpp"
+#include "runtime/kv_cache.hpp"
+#include "runtime/language_graph_set.hpp"
 
 namespace rt = locateanything_runtime;
 

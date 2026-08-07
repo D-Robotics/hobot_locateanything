@@ -1,12 +1,12 @@
-locateanything:
+hobot_locateanything:
   ros__parameters:
     # -------------------------------------------------------------------------
     # 共用配置：Console 和实时 TROS 推理都会读取
     # -------------------------------------------------------------------------
 
     # 模型文件
-    # 相对路径以启动命令所在目录为基准；推荐从 inference 目录启动。
-    # model_directory 为空时使用 inference/models。
+    # 相对路径以启动命令所在目录为基准；推荐从 hobot_locateanything 目录启动。
+    # model_directory 为空时使用 hobot_locateanything/models。
     # tokenizer_directory 为空时使用 model_directory/tokenizer。
     model_directory: models
     tokenizer_directory: ""
@@ -29,10 +29,18 @@ locateanything:
     output_directory: outputs
 
     # -------------------------------------------------------------------------
-    # 实时推理独有：Console 不读取下面这些字段
+    # ROS 节点独有：Console 不读取下面这些字段
     # -------------------------------------------------------------------------
-    # input 和默认 prompt 由 locateanything.launch.xml 的启动参数提供。
-    use_shared_memory: true
+    # feed_type=0：直接读取 image 指定的一张本地图片。
+    # feed_type=1：持续订阅 input_topic；不提供纯文本 feed_type=2。
+    feed_type: 1
+    image: image/test_detection.jpg
+    input_topic: /hbmem_img
+    default_prompt: /detect person
+
+    # 仅在 feed_type=1 时生效。true 订阅 hbm_img_msgs/HbmMsg1080P，
+    # false 订阅 sensor_msgs/Image。摄像头和视频发布由其他 TROS 节点负责。
+    is_shared_mem_sub: true
     prompt_topic: /locateanything/prompt
     result_topic: /locateanything/result
     annotated_topic: /locateanything/annotated
