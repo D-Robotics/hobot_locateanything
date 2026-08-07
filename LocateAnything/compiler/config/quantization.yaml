@@ -1,7 +1,7 @@
 paths:
-  checkpoint: ../../artifacts/models/LocateAnything-3B
-  locateanything_source: ../../artifacts/calibration/current/source
-  calibration_data: ../../artifacts/calibration/current
+  checkpoint: ../models/LocateAnything-3B
+  locateanything_source: ../datasets/upstream/Eagle/Embodied
+  calibration_data: ../datasets/calibration/locateanything/source
   output_dir: ../outputs
 
 outputs:
