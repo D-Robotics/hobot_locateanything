@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="LocateAnything/assets/LocateAnything.jpg" alt="LocateAnything 在 D-Robotics S600 上的检测效果" width="820">
+<img src="assets/LocateAnything.jpg" alt="LocateAnything 在 D-Robotics S600 上的检测效果" width="820">
 
 # LocateAnything-3B on D-Robotics S600
 
@@ -11,13 +11,13 @@
 ## 项目布局
 
 ```text
-LocateAnything/
+hobot_locateanything/
 ├── compiler/                    # 校准、量化和 BC/HBO/HBM 编译
 │   ├── config/                  # 编译配置
 │   ├── datasets/                # 校准数据
 │   ├── models/                  # Float 模型
 │   └── outputs/                 # 编译产物和日志
-├── hobot_locateanything/        # S600 TROS C++ 推理包
+├── inference/                   # S600 TROS C++ 推理包
 │   ├── src/                     # 推理实现、运行器和 TROS 节点
 │   ├── include/                 # C++ 推理模块接口
 │   ├── config.yaml              # Console 和 ROS 共用参数
@@ -44,26 +44,26 @@ LocateAnything/
 | 最大生成长度 | 4096 tokens |
 
 默认配置提供完整的 fused decode 流程。常用编译参数集中在
-`LocateAnything/compiler/config/quantization.yaml`，推理参数集中在
-`LocateAnything/hobot_locateanything/config.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
+`compiler/config/quantization.yaml`，推理参数集中在
+`inference/config.yaml`。运行时按 HBM 实际图接口执行，允许用户在同步修改编译图定义和 C++ 解码逻辑后扩展图集合。
 
 ## 直接部署 HBM
 
 ### 1. 获取代码和模型
 
 ```bash
-git clone https://github.com/LiuAnclouds/oe_locateanything.git
-cd oe_locateanything
+git clone git@github.com:LiuAnclouds/hobot_locateanything.git
+cd hobot_locateanything
 
-mkdir -p LocateAnything/hobot_locateanything/models
+mkdir -p inference/models
 hf download <模型仓库> \
-  --local-dir LocateAnything/hobot_locateanything/models
+  --local-dir inference/models
 ```
 
 模型目录应包含：
 
 ```text
-LocateAnything/hobot_locateanything/models/
+inference/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 ├── LocateAnything-3B_embed_tokens.bin
@@ -75,24 +75,24 @@ LocateAnything/hobot_locateanything/models/
 ```bash
 source /opt/tros/jazzy/setup.bash
 colcon build --merge-install \
-  --base-paths LocateAnything/hobot_locateanything \
+  --base-paths inference \
   --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
 与 D-Robotics 官方 TROS 示例一致，`build/`、`install/` 和 `log/` 由 colcon
-生成在工作空间根目录，不进入 `hobot_locateanything/` 源码包。`install/` 是
+生成在仓库根目录，不进入 `inference/` 源码包。`install/` 是
 `ros2 run` 使用的包索引和程序目录；`build/`、`log/` 可以在停止运行后重新生成。
 
-`LocateAnything/hobot_locateanything/config.yaml` 是唯一推理配置，模型只放在
-`LocateAnything/hobot_locateanything/models/`。配置和模型不复制到 `install/`。
+`inference/config.yaml` 是唯一推理配置，模型只放在
+`inference/models/`。配置和模型不复制到 `install/`。
 
 ### 3. 运行推理
 
 本地图片和视频使用交互式 C++ Console：
 
 ```bash
-cd LocateAnything/hobot_locateanything
+cd inference
 ros2 run hobot_locateanything console --config config.yaml
 ```
 
@@ -121,7 +121,7 @@ ros2 run hobot_locateanything console \
 `/hbmem_img` 和任务 `/detect person`：
 
 ```bash
-cd LocateAnything/hobot_locateanything
+cd inference
 ros2 run hobot_locateanything hobot_locateanything --ros-args \
   --params-file config.yaml
 ```
@@ -175,7 +175,7 @@ LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由参数 `input
 结果同时保存到配置项 `output_directory` 指定的目录：
 
 ```text
-LocateAnything/hobot_locateanything/outputs/
+inference/outputs/
 ├── predictions.jsonl
 └── frames/
     ├── frame_000001.jpg
@@ -205,7 +205,7 @@ python -m pip install oellm_build/hbdk4_compiler-*.whl
 ### 2. 准备模型和校准数据
 
 ```bash
-cd /path/to/oe_locateanything/LocateAnything
+cd /path/to/hobot_locateanything
 mkdir -p compiler/models/LocateAnything-3B compiler/datasets/calibration/download
 hf download nvidia/LocateAnything-3B \
   --local-dir compiler/models/LocateAnything-3B
@@ -233,7 +233,7 @@ python compiler/quantize.py --config "$CONFIG" calibrate --component all --resum
 python compiler/quantize.py --config "$CONFIG" build --component all --target hbm --resume
 ```
 
-编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `hobot_locateanything/models/`，再按直接部署流程构建 TROS 包。
+编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
 

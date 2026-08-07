@@ -6,7 +6,7 @@ hobot_locateanything:
 
     # 模型文件
     # 相对路径以启动命令所在目录为基准；推荐从 hobot_locateanything 目录启动。
-    # model_directory 为空时使用 hobot_locateanything/models。
+    # model_directory 为空时使用当前工作目录下的 models。
     # tokenizer_directory 为空时使用 model_directory/tokenizer。
     model_directory: models
     tokenizer_directory: ""

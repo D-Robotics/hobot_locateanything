@@ -1,26 +1,26 @@
 # Legacy local development outputs (not part of the public layout)
-/LocateAnything/artifacts/**
-/LocateAnything/workspace/**
+/artifacts/**
+/workspace/**
 
 # Local compiler backups and investigation outputs
 /local_backups/
 /local_results/
 
 # Compiler-owned inputs and outputs
-/LocateAnything/compiler/models/*
-!/LocateAnything/compiler/models/.gitignore
-/LocateAnything/compiler/datasets/calibration/*
-!/LocateAnything/compiler/datasets/calibration/.gitignore
-/LocateAnything/compiler/datasets/upstream/*
-!/LocateAnything/compiler/datasets/upstream/.gitignore
-/LocateAnything/compiler/outputs/*
-!/LocateAnything/compiler/outputs/.gitignore
+/compiler/models/*
+!/compiler/models/.gitignore
+/compiler/datasets/calibration/*
+!/compiler/datasets/calibration/.gitignore
+/compiler/datasets/upstream/*
+!/compiler/datasets/upstream/.gitignore
+/compiler/outputs/*
+!/compiler/outputs/.gitignore
 
 # Inference-owned model files and outputs
-/LocateAnything/hobot_locateanything/models/*
-!/LocateAnything/hobot_locateanything/models/.gitignore
-/LocateAnything/hobot_locateanything/outputs/*
-!/LocateAnything/hobot_locateanything/outputs/.gitignore
+/inference/models/*
+!/inference/models/.gitignore
+/inference/outputs/*
+!/inference/outputs/.gitignore
 
 # Colcon workspace outputs live at the repository root, outside the ROS package.
 /build/
