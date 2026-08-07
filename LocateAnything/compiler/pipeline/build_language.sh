@@ -145,7 +145,8 @@ validate_bc() {
 
 export_bc() {
   echo "[build:language] exporting the fused_decode Language BC graph family"
-  env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" oellm_build \
+  env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" -m oellm_build \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
     --input_model_path "$INPUT_MODEL_PATH" \
