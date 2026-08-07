@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+OELLM_BUILD_BIN="${OELLM_BUILD_BIN:-oellm_build}"
 COMPILER_SRC="${COMPILER_SRC:-$REPO_ROOT/compiler}"
 
 MODEL_NAME="${MODEL_NAME:-locateanything-vit-3b}"
@@ -91,7 +92,8 @@ if [[ "$DISABLE_HIDDEN_ROTATION" == "1" ]]; then
   EXTRA_ARGS+=(--disable_hidden_rotation)
 fi
 HBM_PATH="$OUTPUT_MODEL_PATH/$VISION_HBM_NAME"
-BC_PATH="${HBM_PATH%.hbm}.visual.bc"
+MODEL_DIR_NAME=$(basename -- "$INPUT_MODEL_PATH")
+BC_PATH="$OUTPUT_MODEL_PATH/${MODEL_DIR_NAME}_vision_${IMAGE_WIDTH}x${IMAGE_HEIGHT}_w${W_BITS}_${MARCH}_corenum_${VIT_CORE_NUM}.visual.bc"
 STAGE_ARGS=(
   --bc_path "$BC_PATH"
   --hbm_path "$HBM_PATH"
@@ -108,7 +110,7 @@ validate_bc() {
 export_bc() {
   echo "[build:vision] exporting visual BC"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" -m oellm_build \
+    "$OELLM_BUILD_BIN" \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
     --input_model_path "$INPUT_MODEL_PATH" \

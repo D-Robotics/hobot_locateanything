@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+OELLM_BUILD_BIN="${OELLM_BUILD_BIN:-oellm_build}"
 COMPILER_SRC="${COMPILER_SRC:-$REPO_ROOT/compiler}"
 
 MODEL_NAME="${MODEL_NAME:-locateanything-lm-3b}"
@@ -146,7 +147,7 @@ validate_bc() {
 export_bc() {
   echo "[build:language] exporting the fused_decode Language BC graph family"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" -m oellm_build \
+    "$OELLM_BUILD_BIN" \
     --model_name "$MODEL_NAME" \
     --march "$MARCH" \
     --input_model_path "$INPUT_MODEL_PATH" \
