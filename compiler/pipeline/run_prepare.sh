@@ -34,13 +34,16 @@ RESUME=${RESUME:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/compiler/outputs/logs"
+mkdir -p "$OUTPUT_DIR"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_prepare"}
 LOG_PATH=${LOG_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.log"}
 EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.exit.txt"}
 META_PATH=${META_PATH:-"$OUTPUT_DIR/prepare_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
+mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" \
+  "$(dirname "$META_PATH")" "$(dirname "$PID_PATH")" \
+  "$(dirname "$LAUNCH_LOG")"
 
 if [[ "${DETACH:-0}" == "1" ]]; then
   setsid nohup env DETACH=0 bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &

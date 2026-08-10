@@ -33,7 +33,7 @@ if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
 from configuration import ConfigurationFileError, load_config_file  # noqa: E402
-from model.graphs import language_graph_set  # noqa: E402
+from model.graphs import LANGUAGE_GRAPHS  # noqa: E402
 from model.contract import (  # noqa: E402
     HIDDEN_SIZE,
     IMAGE_HEIGHT,
@@ -316,6 +316,7 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
     build = _mapping(config["build"], "build")
     selected = resolve_path(config, "selected_jsonl")
     output_dir = resolve_path(config, "generated_dir")
+    log_root = resolve_path(config, "log_root")
     env = common_env(config, args.progress)
     env.update({
         "SELECTED_JSONL": str(selected),
@@ -335,6 +336,10 @@ def prepare_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Pl
         "MAX_NEW_TOKENS": str(calibration["max_new_tokens"]),
         "SLOW_SAMPLES": str(calibration["slow_samples"]),
         "SEED": str(calibration["seed"]),
+        "LOG_PATH": str(log_root / "prepare.log"),
+        "EXIT_PATH": str(log_root / "prepare.exit.txt"),
+        "PID_PATH": str(log_root / "prepare.pid"),
+        "LAUNCH_LOG": str(log_root / "prepare.launcher.log"),
         "RESUME": "1" if args.resume else "0",
     })
     command = (bash_command(), str(PIPELINE_ROOT / "run_prepare.sh"))
@@ -351,6 +356,7 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
     requested_checkpoint = calibration_checkpoint(
         config, requested_samples, args.checkpoint_samples
     )
+    log_root = resolve_path(config, "log_root")
     env = common_env(config, args.progress)
     env.update({
         "GENERATED_JSONL": str(generated_jsonl),
@@ -375,6 +381,11 @@ def calibrate_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[
         "CHECKPOINT_SAMPLES": str(requested_checkpoint),
         "IMAGE_TOKEN_ID": str(IMAGE_TOKEN_ID),
         "REPLAY_SEED": str(calibration["seed"]),
+        "LOG_PATH": str(log_root / "calibrate.log"),
+        "EXIT_PATH": str(log_root / "calibrate.exit.txt"),
+        "META_PATH": str(log_root / "calibrate.metadata.json"),
+        "PID_PATH": str(log_root / "calibrate.pid"),
+        "LAUNCH_LOG": str(log_root / "calibrate.launcher.log"),
         "RESUME": "1" if args.resume else "0",
     })
     note = None
@@ -392,6 +403,21 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
     cores = _mapping(build["cores"], "build.cores")
     build_root = resolve_path(config, "build_root")
     log_root = resolve_path(config, "log_root")
+    build_in_use = build_root.is_dir() and any(build_root.rglob("*"))
+    if not args.resume and not args.dry_run and build_in_use:
+        entries = sorted(
+            path.relative_to(build_root).as_posix()
+            for path in build_root.rglob("*")
+            if path.is_file()
+        )
+        preview = ", ".join(entries[:6]) or "existing directories"
+        suffix = " ..." if len(entries) > 6 else ""
+        raise ConfigurationError(
+            "build output directory is already in use: "
+            f"{build_root} ({preview}{suffix}). "
+            "Use --resume to continue it, or change paths.output_dir to a new "
+            "last-level directory."
+        )
     bash = bash_command()
     steps: list[PlanStep] = []
     for component in select_components(args.component):
@@ -452,7 +478,6 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
     language = _mapping(config["language"], "language")
     quantization = _mapping(config["quantization"], "quantization")
     outputs = _mapping(config["outputs"], "outputs")
-    graph_set = language_graph_set()
     payload = {
         "image": f"{IMAGE_WIDTH}x{IMAGE_HEIGHT}",
         "vision_w_bits": quantization["vision_weight_bits"],
@@ -460,8 +485,7 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
         "cache_len": language["cache_len"],
         "language_w_bits": quantization["language_weight_bits"],
         "lm_head_w_bits": quantization["lm_head_weight_bits"],
-        "language_graph_set": graph_set.name,
-        "language_graph_count": len(graph_set.graphs),
+        "language_graph_count": len(LANGUAGE_GRAPHS),
         "sampling_backend": language["sampling_backend"],
         "vision_hbm": outputs["vision_hbm"],
         "language_hbm": outputs["language_hbm"],

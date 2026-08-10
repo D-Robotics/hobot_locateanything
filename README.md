@@ -176,7 +176,7 @@ LA 默认订阅共享内存 NV12 话题 `/hbmem_img`。话题名由参数 `input
 | `/locateanything/result` | `std_msgs/msg/String` | 检测框、点坐标和各阶段耗时 JSON |
 | `/locateanything/annotated` | `sensor_msgs/msg/Image` | 已绘制预测结果的图像 |
 
-结果同时保存到配置项 `output_directory` 指定的目录：
+结果同时保存到 `inference/config.yaml` 中 `output_directory` 指定的目录：
 
 ```text
 inference/outputs/
@@ -237,12 +237,14 @@ conda activate oellm_clean
 python -m pip install -r compiler/requirements-host.txt
 
 CONFIG=compiler/config/quantization.yaml
-python compiler/quantize.py --config "$CONFIG" prepare --resume
-python compiler/quantize.py --config "$CONFIG" calibrate --component all --resume
-python compiler/quantize.py --config "$CONFIG" build --component all --target hbm --resume
+python compiler/quantize.py --config "$CONFIG" prepare
+python compiler/quantize.py --config "$CONFIG" calibrate --component all
+python compiler/quantize.py --config "$CONFIG" build --component all --target hbm
 ```
 
-编译产物保存在 `compiler/outputs/`。将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
+每次正常编译前，将 `paths.output_dir` 的最后一级改为新的目录名；已有
+`build/` 的目录只允许使用 `--resume` 续编。编译产物保存在该输出目录内。
+将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
 

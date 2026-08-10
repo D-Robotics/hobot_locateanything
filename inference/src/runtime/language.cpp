@@ -27,7 +27,7 @@
 #include "runtime/embedding.hpp"
 #include "runtime/hbm.hpp"
 #include "runtime/kv_cache.hpp"
-#include "runtime/language_graph_set.hpp"
+#include "runtime/language_graphs.hpp"
 
 namespace rt = locateanything_runtime;
 
@@ -907,167 +907,6 @@ int32_t ArLogitRow(const rt::Tensor& logits, int32_t accepted) {
 
 int32_t CacheCapacity(const CacheState& cache);
 
-bool RunHybridGenerationBase(rt::HbmSession* session,
-                               const rt::EmbedLookup& embed,
-                               const InputPayload& payload,
-                               int32_t max_new_tokens, CacheState* cache,
-                               int32_t* history_len,
-                               std::vector<int32_t>* response,
-                               std::string* stop_reason,
-                               bool protect_detection_structure,
-                               GenerationMetrics* metrics,
-                               const TokenCallback& token_callback = {}) {
-  std::vector<int32_t> generated = payload.prompt_ids;
-  bool use_pbd = true;
-  std::vector<rt::Tensor> pending_ar;
-  int32_t step = 0;
-  const int32_t cache_len = CacheCapacity(*cache);
-  if (cache_len <= 0) return false;
-  while (static_cast<int32_t>(response->size()) < max_new_tokens) {
-    if (*history_len >= cache_len) {
-      *stop_reason = "cache_limit";
-      break;
-    }
-    if (use_pbd) {
-      if (*history_len + 6 > cache_len) {
-        *stop_reason = "cache_limit_before_pbd";
-        break;
-      }
-      const int32_t anchor = generated.back();
-      const std::vector<int32_t> draft{
-          anchor, kTextMaskToken, kTextMaskToken, kTextMaskToken,
-          kTextMaskToken, kTextMaskToken};
-      std::vector<rt::Tensor> outputs;
-      if (!RunGraph(session, "decode", embed, 0, *history_len, true, *cache,
-                    &outputs, nullptr, nullptr, &draft, false, 0, metrics,
-                    &generated)) {
-        return false;
-      }
-      if (metrics != nullptr) ++metrics->pbd_calls;
-      const bool diagnostics_enabled =
-          std::getenv("LA_PBD_DIAGNOSTICS") != nullptr;
-      rt::PbdDiagnostics diagnostics;
-      const auto pbd_decode_started = std::chrono::steady_clock::now();
-      const rt::HybridDecision decision =
-          CacheOutputOffset(outputs) == 7
-              ? rt::DecodePbdCompact(outputs)
-              : rt::DecodePbd(outputs[0], generated, rt::PbdDecodeConfig{},
-                              diagnostics_enabled ? &diagnostics : nullptr);
-      const double pbd_decode_ms = std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - pbd_decode_started).count();
-      if (metrics != nullptr) metrics->host_decode_ms += pbd_decode_ms;
-      std::printf("[hybrid:%03d] mode=pbd_q6 history=%d pattern=%s accepted=%zu\n",
-                  step++, *history_len, decision.type.c_str(), decision.tokens.size());
-      if (diagnostics_enabled && diagnostics.valid) {
-        std::printf(
-            "[pbd] sampling=temperature:0.7,top_p:0.9,repetition:1.1 "
-            "host_decode_ms=%.3f "
-            "retained=%d,%d,%d,%d,%d,%d box_start=%.6f->%.6f "
-            "ref_start=%.6f->%.6f end_score=%.6f->%.6f "
-            "coord_top=%.6f/%.6f/%.6f/%.6f->%.6f/%.6f/%.6f/%.6f\n",
-            pbd_decode_ms, diagnostics.retained_tokens[0], diagnostics.retained_tokens[1],
-            diagnostics.retained_tokens[2], diagnostics.retained_tokens[3],
-            diagnostics.retained_tokens[4], diagnostics.retained_tokens[5],
-            diagnostics.legacy_box_start, diagnostics.official_box_start,
-            diagnostics.legacy_ref_start, diagnostics.official_ref_start,
-            diagnostics.legacy_end_score, diagnostics.official_end_score,
-            diagnostics.legacy_coord_top[0], diagnostics.legacy_coord_top[1],
-            diagnostics.legacy_coord_top[2], diagnostics.legacy_coord_top[3],
-            diagnostics.official_coord_top[0], diagnostics.official_coord_top[1],
-            diagnostics.official_coord_top[2], diagnostics.official_coord_top[3]);
-      }
-      if (decision.terminal) {
-        if (metrics != nullptr) {
-          metrics->pbd_accepted_tokens +=
-              static_cast<int32_t>(decision.tokens.size());
-        }
-        response->insert(response->end(), decision.tokens.begin(), decision.tokens.end());
-        generated.insert(generated.end(), decision.tokens.begin(), decision.tokens.end());
-        EmitTokens(token_callback, decision.tokens, decision.tokens.size());
-        *stop_reason = "im_end";
-        break;
-      }
-      if (protect_detection_structure &&
-          HasRepeatedDetectionBox(*response, decision.tokens)) {
-        *stop_reason = "repeated_box";
-        break;
-      }
-      const int32_t accepted = static_cast<int32_t>(decision.tokens.size());
-      const int32_t remaining = max_new_tokens - static_cast<int32_t>(response->size());
-      if (accepted <= 0 || accepted > 6) return false;
-      if (accepted > remaining) {
-        if (metrics != nullptr) metrics->pbd_accepted_tokens += remaining;
-        response->insert(response->end(), decision.tokens.begin(),
-                         decision.tokens.begin() + remaining);
-        EmitTokens(token_callback, decision.tokens, static_cast<size_t>(remaining));
-        *stop_reason = "max_new_tokens";
-        return true;
-      }
-
-      std::vector<int32_t> commit_tokens(6, decision.tokens.back());
-      std::copy(decision.tokens.begin(), decision.tokens.end(), commit_tokens.begin());
-      std::vector<rt::Tensor> committed;
-      if (!RunGraph(session, "decode", embed, 0, *history_len, false,
-                    *cache, &committed, nullptr, nullptr, &commit_tokens, false,
-                    0, metrics, &generated) ||
-          !AppendCacheUpdate(committed, *history_len, cache, accepted, metrics)) {
-        return false;
-      }
-      if (metrics != nullptr) {
-        ++metrics->pbd_calls;
-        metrics->pbd_accepted_tokens += accepted;
-      }
-      *history_len += accepted;
-      response->insert(response->end(), decision.tokens.begin(), decision.tokens.end());
-      generated.insert(generated.end(), decision.tokens.begin(), decision.tokens.end());
-      EmitTokens(token_callback, decision.tokens, decision.tokens.size());
-      use_pbd = !decision.switch_to_ar;
-      pending_ar.clear();
-      if (!use_pbd) {
-        rt::Tensor next_logits;
-        if (!SelectLogitsRow(committed[0], accepted - 1, &next_logits)) return false;
-        pending_ar.push_back(std::move(next_logits));
-      }
-      continue;
-    }
-
-    if (pending_ar.empty()) return false;
-    const int32_t token = rt::DecodeArGreedy(pending_ar[0], generated);
-    std::printf("[hybrid:%03d] mode=ar_q1 history=%d token=%d\n",
-                step++, *history_len, token);
-    response->push_back(token);
-    generated.push_back(token);
-    if (metrics != nullptr) ++metrics->ar_tokens;
-    if (protect_detection_structure && token == kBoxEndToken &&
-        HasRepeatedTrailingDetectionBox(*response)) {
-      *stop_reason = "repeated_box";
-      break;
-    }
-    if (token_callback) token_callback(token);
-    if (token != kBoxEndToken && !rt::IsCoordinateToken(token) &&
-        token != kNoneToken) {
-      *stop_reason = "ar_non_coordinate";
-      break;
-    }
-    const std::vector<int32_t> one{token};
-    std::vector<rt::Tensor> outputs;
-    if (!RunGraph(session, "decode_ar", embed, 0, *history_len, false,
-                  *cache, &outputs, nullptr, nullptr, &one, false, 0, metrics) ||
-        !AppendCacheUpdate(outputs, *history_len, cache, -1, metrics)) {
-      return false;
-    }
-    if (metrics != nullptr) ++metrics->ar_calls;
-    ++*history_len;
-    pending_ar = std::move(outputs);
-    if (token == kBoxEndToken) {
-      use_pbd = true;
-      pending_ar.clear();
-    }
-  }
-  if (stop_reason->empty()) *stop_reason = "max_new_tokens";
-  return true;
-}
-
 std::string PbdGraphName(int32_t prefix_len) {
   return prefix_len == 0 ? "decode"
                          : "decode_pbd_q" + std::to_string(6 + prefix_len);
@@ -1082,16 +921,16 @@ int32_t CacheCapacity(const CacheState& cache) {
   return cache.tensors.front().shape[1];
 }
 
-bool RunHybridGenerationFused(rt::HbmSession* session,
-                              const rt::EmbedLookup& embed,
-                              const InputPayload& payload,
-                              int32_t max_new_tokens, CacheState* cache,
-                              int32_t* history_len,
-                              std::vector<int32_t>* response,
-                              std::string* stop_reason,
-                              bool protect_detection_structure,
-                              GenerationMetrics* metrics,
-                              const TokenCallback& token_callback = {}) {
+bool RunHybridGeneration(rt::HbmSession* session,
+                         const rt::EmbedLookup& embed,
+                         const InputPayload& payload,
+                         int32_t max_new_tokens, CacheState* cache,
+                         int32_t* history_len,
+                         std::vector<int32_t>* response,
+                         std::string* stop_reason,
+                         bool protect_detection_structure,
+                         GenerationMetrics* metrics,
+                         const TokenCallback& token_callback = {}) {
   std::vector<int32_t> generated = payload.prompt_ids;
   std::vector<int32_t> pending_pbd;
   std::vector<rt::Tensor> pending_ar;
@@ -1241,30 +1080,6 @@ bool RunHybridGenerationFused(rt::HbmSession* session,
   }
   if (stop_reason->empty()) *stop_reason = "max_new_tokens";
   return true;
-}
-
-bool RunHybridGeneration(rt::HbmSession* session, const rt::EmbedLookup& embed,
-                         const InputPayload& payload, int32_t max_new_tokens,
-                         CacheState* cache, int32_t* history_len,
-                         std::vector<int32_t>* response,
-                         std::string* stop_reason,
-                         bool protect_detection_structure,
-                         GenerationMetrics* metrics,
-                         const TokenCallback& token_callback = {}) {
-  if (rt::HasDefaultLanguageGraphs(session->GetGraphNames())) {
-    std::printf("[INFO] Language graph set=fused_decode\n");
-    return RunHybridGenerationFused(session, embed, payload, max_new_tokens,
-                                    cache, history_len, response, stop_reason,
-                                    protect_detection_structure,
-                                    metrics,
-                                    token_callback);
-  }
-  std::printf("[INFO] fused_decode extensions unavailable; using base decode path\n");
-  return RunHybridGenerationBase(session, embed, payload, max_new_tokens,
-                                   cache, history_len, response, stop_reason,
-                                   protect_detection_structure,
-                                   metrics,
-                                   token_callback);
 }
 
 bool RunArGeneration(rt::HbmSession* session, const rt::EmbedLookup& embed,
@@ -1548,15 +1363,13 @@ int main(int argc, char** argv) {
   const std::vector<std::string> graph_names = session.GetGraphNames();
   for (const auto& name : graph_names) std::printf(" %s", name.c_str());
   std::printf("\n");
-  const rt::GraphSetValidation base_validation =
-      rt::ValidateGraphNames(rt::BaseLanguageGraphNames(), graph_names);
-  if (!base_validation.ok()) {
-    std::fprintf(stderr, "[FAIL] HBM is missing required base Language graphs\n");
+  const rt::GraphValidation graph_validation =
+      rt::ValidateLanguageGraphs(graph_names);
+  if (!graph_validation.ok()) {
+    std::fprintf(stderr, "[FAIL] HBM Language graph contract mismatch\n");
     return 4;
   }
-  std::printf("[ok] Language graphs=%zu fused_decode=%s\n",
-              graph_names.size(),
-              rt::HasDefaultLanguageGraphs(graph_names) ? "available" : "not-available");
+  std::printf("[ok] Language graphs=%zu\n", graph_names.size());
   for (const auto& name : graph_names) {
     rt::Graph* graph = session.GetGraph(name);
     if (graph) PrintGraphMetadata(*graph, name);

@@ -95,7 +95,7 @@ echo "input:         $INPUT_MODEL_PATH"
 echo "output:        $OUTPUT_MODEL_PATH"
 echo "scale:         $CALIBRATION_SCALE_MANIFEST"
 echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
-echo "Language graphs: fused_decode (13 graphs)"
+echo "Language graphs: 13 fixed graphs"
 echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
 echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
 echo "log:           $LOG_FILE"
@@ -145,7 +145,7 @@ validate_bc() {
 }
 
 export_bc() {
-  echo "[build:language] exporting the fused_decode Language BC graph family"
+  echo "[build:language] exporting the Language BC graph family"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$BUILD_ADAPTER" \
     --model_name "$MODEL_NAME" \

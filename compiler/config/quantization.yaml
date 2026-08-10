@@ -3,7 +3,9 @@ paths:
   locateanything_source: ../models/LocateAnything-3B
   calibration_data: ../datasets/calibration/locateanything/source
   calibration_input_dir: ../datasets/calibration/locateanything/generated
-  output_dir: ../outputs
+  # Use a new last-level directory for each normal build. Reuse an existing
+  # directory only with --resume.
+  output_dir: ../outputs/chunk768_cache4096_w8_bpu
 
 outputs:
   # Final deployable files. Prefill is a graph inside language_hbm, not a

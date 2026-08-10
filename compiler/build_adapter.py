@@ -166,8 +166,7 @@ def validate_args(parser: argparse.ArgumentParser, args) -> None:
         require_single_core("ar_core_num")
         if args.decode_seq_len != 6:
             parser.error(
-                "the default LocateAnything fused graph catalog requires "
-                "--decode_seq_len 6"
+                "LocateAnything Language requires --decode_seq_len 6"
             )
 
 def main() -> None:

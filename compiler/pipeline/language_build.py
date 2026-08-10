@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Convert and compile the LocateAnything Language graph catalog.
-
-The default fused-decode catalog contains Prefill, PBD q=6..12, and AR q=1..5.
-Shared PBD graphs are compiled once; the AR graph family is compiled for each
-requested core count.
-"""
+"""Convert and compile the fixed LocateAnything Language graphs."""
 
 from __future__ import annotations
 
@@ -26,7 +21,7 @@ from hbdk4.compiler import load, save
 from hbdk4.compiler.hbm import Hbm, Hbo
 
 from model.base import Model
-from model.graphs import language_graph_set
+from model.graphs import LANGUAGE_GRAPHS
 from pipeline.progress import StageProgress  # noqa: E402
 
 
@@ -34,7 +29,7 @@ BASE_EXPECTED = {
     "decode": ((1, 6, 152681), (1, 6, 2, 128)),
     "decode_ar": ((1, 1, 152681), (1, 1, 2, 128)),
 }
-KNOWN_STAGES = set(language_graph_set().graphs)
+KNOWN_STAGES = set(LANGUAGE_GRAPHS)
 VOCAB_SIZE = 152681
 HIDDEN_SIZE = 2048
 NUM_LAYERS = 36
@@ -211,22 +206,13 @@ def heading(value: str) -> None:
 def discover_bc(
     bc_dir: Path,
     contract: LanguageContract,
-    *,
-    artifact_prefix: str | None = None,
 ) -> dict[str, Path]:
-    expected = set(language_graph_set().graphs)
+    expected = set(LANGUAGE_GRAPHS)
     discovered: dict[str, Path] = {}
-    if artifact_prefix:
-        candidates = [
-            bc_dir / f"{artifact_prefix}.{name}.bc"
-            for name in sorted(KNOWN_STAGES)
-            if (bc_dir / f"{artifact_prefix}.{name}.bc").is_file()
-        ]
-    else:
-        candidates = [
-            path for path in sorted(bc_dir.glob("*.bc"))
-            if not path.name.endswith(("_convert.bc", ".partial.bc"))
-        ]
+    candidates = [
+        path for path in sorted(bc_dir.glob("*.bc"))
+        if not path.name.endswith(("_convert.bc", ".partial.bc"))
+    ]
     for path in candidates:
         module = load(str(path))
         functions = list(module.functions)
@@ -446,19 +432,16 @@ def main() -> int:
         args.hbm_path.parent.mkdir(parents=True, exist_ok=True)
         converted_dir = args.hbm_path.parent
         hbo_dir = args.hbm_path.parent
-        artifact_prefix = args.hbm_path.stem
     else:
         converted_dir = args.output_dir / "converted_bc"
         hbo_dir = args.output_dir / "hbo"
         converted_dir.mkdir(exist_ok=True)
         hbo_dir.mkdir(exist_ok=True)
-        artifact_prefix = None
 
     heading("SOURCE CONTRACT")
     source_bc = discover_bc(
         args.bc_dir,
         args.contract,
-        artifact_prefix=artifact_prefix,
     )
     if args.embedding_path:
         if not args.embedding_path.is_file():
@@ -474,7 +457,7 @@ def main() -> int:
     if args.check_only:
         heading("SOURCE CONTRACT PASSED")
         return 0
-    stage_order = list(language_graph_set().graphs)
+    stage_order = list(LANGUAGE_GRAPHS)
     pbd_stages = [
         graph for graph in stage_order
         if graph == "decode" or graph.startswith("decode_pbd_q")
@@ -542,8 +525,7 @@ def main() -> int:
         hbm = args.hbm_path or args.output_dir / (
             f"LocateAnything-3B_language_chunk_{args.chunk_size}_cache_{args.cache_len}_"
             f"decoder_w{args.language_w_bits}_lmhead_w{args.lm_head_w_bits}_{args.march}_"
-            f"prefill{args.prefill_core_num}_pbd{args.decode_core_num}_ar{ar_core}"
-            "_fused_decode.hbm"
+            f"prefill{args.prefill_core_num}_pbd{args.decode_core_num}_ar{ar_core}.hbm"
         )
         all_hbos = {**shared_hbos, **ar_hbos}
         with progress.stage(f"Link Language HBM (AR cores={ar_core})"):

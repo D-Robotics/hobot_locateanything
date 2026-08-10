@@ -29,19 +29,20 @@ from pipeline.progress import track  # noqa: E402
 from pipeline.replay import (  # noqa: E402
     ActivationTracker,
     DECODE_CONTEXT_POLICY,
-    append_cache_updates,
     build_decode_inputs,
     build_prefill_inputs,
     build_right_aligned_caches,
     compare_snapshots,
     load_tensor_payload,
     read_generated_manifest,
-    replay_sequential_ar_q1,
     select_decode_replay_contexts,
     select_pbd_tokens,
     summarize_decode_context_coverage,
 )
-from model.graphs import language_graph_set  # noqa: E402
+from model.graphs import (  # noqa: E402
+    CALIBRATION_STAGES,
+    calibration_execution_counts,
+)
 from model.rotation import load_hidden_rotation  # noqa: E402
 from pipeline.report import generate_activation_report  # noqa: E402
 
@@ -172,7 +173,6 @@ def progress(records: list[dict[str, Any]], description: str):
 
 
 def run(args: argparse.Namespace) -> int:
-    graph_set = language_graph_set()
     if args.max_samples <= 0:
         raise RuntimeError("activation calibration requires a positive sample count")
     if (
@@ -353,59 +353,43 @@ def run(args: argparse.Namespace) -> int:
                     stage_counts["pbd_q6"] += 1
                     del pbd_out, pbd_embeds, pbd_pos, pbd_mask
 
-                    if graph_set.uses_fused_decode:
-                        for prefix_len in range(1, 7):
-                            prefix = list(replay_context.pending_token_ids[:prefix_len])
-                            fused_tokens = [
-                                *prefix,
-                                prefix[-1],
-                                *([int(language.config.text_mask_token_id)] * 5),
-                            ]
-                            q_len = prefix_len + 6
-                            stage = f"pbd_q{q_len}"
-                            language_tracker.stage = stage
-                            fused_embeds, fused_pos, fused_mask = build_decode_inputs(
-                                language, fused_tokens, q_len=q_len, past_len=active_len,
-                                cache_len=args.cache_len, is_pbd=True,
-                                pbd_prefix_len=prefix_len, device=device, dtype=dtype,
-                            )
-                            fused_out = language(
-                                fused_embeds, fused_pos, fused_mask,
-                                *(cache_keys + cache_values),
-                            )
-                            stage_counts[stage] += 1
-                            del fused_out, fused_embeds, fused_pos, fused_mask
+                    for prefix_len in range(1, 7):
+                        prefix = list(replay_context.pending_token_ids[:prefix_len])
+                        decode_tokens = [
+                            *prefix,
+                            prefix[-1],
+                            *([int(language.config.text_mask_token_id)] * 5),
+                        ]
+                        q_len = prefix_len + 6
+                        stage = f"pbd_q{q_len}"
+                        language_tracker.stage = stage
+                        decode_embeds, decode_pos, decode_mask = build_decode_inputs(
+                            language, decode_tokens, q_len=q_len, past_len=active_len,
+                            cache_len=args.cache_len, is_pbd=True,
+                            pbd_prefix_len=prefix_len, device=device, dtype=dtype,
+                        )
+                        decode_out = language(
+                            decode_embeds, decode_pos, decode_mask,
+                            *(cache_keys + cache_values),
+                        )
+                        stage_counts[stage] += 1
+                        del decode_out, decode_embeds, decode_pos, decode_mask
 
-                        for q_len in range(1, 6):
-                            ar_tokens = list(replay_context.pending_token_ids[:q_len])
-                            stage = f"ar_q{q_len}"
-                            language_tracker.stage = stage
-                            ar_embeds, ar_pos, ar_mask = build_decode_inputs(
-                                language, ar_tokens, q_len=q_len, past_len=active_len,
-                                cache_len=args.cache_len, is_pbd=False,
-                                device=device, dtype=dtype,
-                            )
-                            ar_out = language(
-                                ar_embeds, ar_pos, ar_mask,
-                                *(cache_keys + cache_values),
-                            )
-                            stage_counts[stage] += 1
-                            del ar_out, ar_embeds, ar_pos, ar_mask
-                    else:
-                        language_tracker.stage = "ar_q1"
-                        cache_keys, cache_values = replay_sequential_ar_q1(
-                            language,
-                            replay_context.pending_token_ids,
-                            cache_keys,
-                            cache_values,
-                            active_len=active_len,
-                            cache_len=args.cache_len,
-                            device=device,
-                            dtype=dtype,
+                    for q_len in range(1, 6):
+                        ar_tokens = list(replay_context.pending_token_ids[:q_len])
+                        stage = f"ar_q{q_len}"
+                        language_tracker.stage = stage
+                        ar_embeds, ar_pos, ar_mask = build_decode_inputs(
+                            language, ar_tokens, q_len=q_len, past_len=active_len,
+                            cache_len=args.cache_len, is_pbd=False,
+                            device=device, dtype=dtype,
                         )
-                        stage_counts["ar_q1"] += len(
-                            replay_context.pending_token_ids
+                        ar_out = language(
+                            ar_embeds, ar_pos, ar_mask,
+                            *(cache_keys + cache_values),
                         )
+                        stage_counts[stage] += 1
+                        del ar_out, ar_embeds, ar_pos, ar_mask
                     del (
                         cache_keys, cache_values, new_keys, new_values,
                         embeds, positions, mask,
@@ -451,7 +435,6 @@ def run(args: argparse.Namespace) -> int:
             "cache_len": args.cache_len,
             "pbd_query_len": 6,
             "ar_query_len": 1,
-            "graph_set": graph_set.name,
             "vision_weight_bits": args.vision_w_bits,
             "detailed_statistics": args.detailed_statistics,
         },
@@ -465,13 +448,9 @@ def run(args: argparse.Namespace) -> int:
             "language_lm_head_weight_bits": args.lm_head_w_bits,
             "text_mask_token_id": 151676,
             "pbd_block_size": 6,
-            "pbd_total_query_lengths": (
-                list(range(6, 13)) if graph_set.uses_fused_decode else [6]
-            ),
-            "ar_total_query_lengths": (
-                list(range(1, 6)) if graph_set.uses_fused_decode else [1]
-            ),
-            "ar_q1_calls_per_context": graph_set.sequential_ar_q1_tokens,
+            "pbd_total_query_lengths": list(range(6, 13)),
+            "ar_total_query_lengths": list(range(1, 6)),
+            "ar_q1_calls_per_context": 1,
             "pbd_q6_role": "post_prefill_bootstrap_only",
             "pbd_input_protocol": "accepted_prefix_plus_duplicated_anchor_plus_5_text_masks",
             "decode_context_policy": DECODE_CONTEXT_POLICY,
@@ -484,10 +463,10 @@ def run(args: argparse.Namespace) -> int:
         stage_execution_counts["vision"] = full_samples
         expected_stage_execution_counts["vision"] = full_samples
     if language_snapshots:
-        expected_stages.extend(graph_set.calibration_stages)
+        expected_stages.extend(CALIBRATION_STAGES)
         stage_execution_counts.update(stage_counts)
         expected_stage_execution_counts.update(
-            graph_set.calibration_execution_counts(language_context_count)
+            calibration_execution_counts(language_context_count)
         )
     coverage = {
         "schema_version": 3,

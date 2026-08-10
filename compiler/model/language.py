@@ -33,7 +33,7 @@ from model.rotation import (
     rotate_language_to_hidden_domain,
 )
 from model.state_dict import load_state_dict_strict
-from model.graphs import language_graph_set
+from model.graphs import LANGUAGE_GRAPHS
 
 
 def remap_language_state_dict(raw_sd: dict) -> dict:
@@ -115,7 +115,6 @@ class LocateAnythingLanguageApi:
         self.prefill_core_num = prefill_core_num or [1]
         self.decode_core_num = decode_core_num or [1]
         self.ar_core_num = ar_core_num or list(self.decode_core_num)
-        self.graph_set = language_graph_set()
         self.march = march
         self.hidden_rotation_path = hidden_rotation_path
         self.apply_hidden_rotation = apply_hidden_rotation
@@ -141,10 +140,6 @@ class LocateAnythingLanguageApi:
             self.output_lm_model_path = str(
                 output.with_name(f"{output.stem}_ar{self.ar_core_num[0]}{output.suffix}")
             )
-        output = Path(self.output_lm_model_path)
-        self.output_lm_model_path = str(
-            output.with_name(f"{output.stem}_fused_decode{output.suffix}")
-        )
         self.token_embeddings_file_name = standard_token_embeddings_name(
             input_model_path, output_model_path,
         )
@@ -180,10 +175,7 @@ class LocateAnythingLanguageApi:
             f"prefill:{self.prefill_core_num[0]} "
             f"pbd_q6:{self.decode_core_num[0]} ar_q1:{self.ar_core_num[0]}"
         )
-        print(
-            f"  Language graph set      = {self.graph_set.name} "
-            f"({len(self.graph_set.graphs)} graphs)"
-        )
+        print(f"  Language graphs        = {len(LANGUAGE_GRAPHS)}")
         print(f"  tie_word_embeddings = {tc.tie_word_embeddings}")
 
         # Build model with our own class (no Qwen2_5_VLTextModel here).
@@ -308,7 +300,7 @@ class LocateAnythingLanguageApi:
         # ---- Stage 1: export .bc ----
         stage_inputs = {}
         stage_core_map = {}
-        for stage_name in self.graph_set.graphs:
+        for stage_name in LANGUAGE_GRAPHS:
             if stage_name == "prefill":
                 stage_inputs[stage_name] = (
                     self.text_model.get_leap_input_types_text_model(

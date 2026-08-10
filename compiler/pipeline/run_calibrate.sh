@@ -67,7 +67,7 @@ DETAILED_STATISTICS=${DETAILED_STATISTICS:-0}
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$REPO_ROOT/compiler/outputs/logs"
+mkdir -p "$OUTPUT_DIR"
 JOB_NAME=${JOB_NAME:-"$(basename "$OUTPUT_DIR")_calibrate"}
 LOG_PATH=${LOG_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.log"}
 EXIT_PATH=${EXIT_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.exit.txt"}
@@ -75,7 +75,9 @@ META_PATH=${META_PATH:-"$OUTPUT_DIR/calibration_job_metadata.json"}
 PID_PATH=${PID_PATH:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.pid"}
 LAUNCH_LOG=${LAUNCH_LOG:-"$REPO_ROOT/compiler/outputs/logs/${JOB_NAME}.launcher.log"}
 STARTED_AT=$(date --iso-8601=seconds)
-mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" "$(dirname "$META_PATH")"
+mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$EXIT_PATH")" \
+  "$(dirname "$META_PATH")" "$(dirname "$PID_PATH")" \
+  "$(dirname "$LAUNCH_LOG")"
 if [[ "$DETACH" == "1" ]]; then
   setsid nohup env DETACH=0 RESUME="$RESUME" bash "$0" >"$LAUNCH_LOG" 2>&1 </dev/null &
   child_pid=$!
@@ -126,14 +128,13 @@ from pathlib import Path
     sampling_top_p, sampling_repetition_penalty, repo_root,
 ) = sys.argv[1:]
 sys.path.insert(0, str(Path(repo_root) / "compiler"))
-from model.graphs import language_graph_set
+from model.graphs import CALIBRATION_STAGES
 
-profile = language_graph_set()
 expected_graph_paths = []
 if component in {"all", "vision"}:
     expected_graph_paths.append("vision")
 if component in {"all", "language"}:
-    expected_graph_paths.extend(profile.calibration_stages)
+    expected_graph_paths.extend(CALIBRATION_STAGES)
 value = {
     "schema_version": 1,
     "phase": "calibrate",
@@ -160,7 +161,6 @@ value = {
     "language_w_bits": int(language_w_bits),
     "lm_head_w_bits": int(lm_head_w_bits),
     "replay_seed": int(replay_seed),
-    "graph_set": profile.name,
     "detailed_statistics": detailed_statistics == "1",
     "sampling_backend": sampling_backend,
     "sampling_temperature": float(sampling_temperature),
@@ -235,7 +235,7 @@ write_exit_record running
 write_initial_metadata
 
 echo "[calibrate] manifest=$GENERATED_JSONL" | tee -a "$LOG_PATH"
-echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT graph_set=fused_decode device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES vision_w_bits=$VISION_W_BITS language_w_bits=$LANGUAGE_W_BITS lm_head_w_bits=$LM_HEAD_W_BITS detailed_statistics=$DETAILED_STATISTICS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
+echo "[calibrate] output=$OUTPUT_DIR component=$CALIBRATION_COMPONENT device=$DEVICE dtype=$DTYPE samples=$MAX_SAMPLES checkpoint=$CHECKPOINT_SAMPLES vision_w_bits=$VISION_W_BITS language_w_bits=$LANGUAGE_W_BITS lm_head_w_bits=$LM_HEAD_W_BITS detailed_statistics=$DETAILED_STATISTICS replay_seed=$REPLAY_SEED" | tee -a "$LOG_PATH"
 
 replay_args=(
   --generated-jsonl "$GENERATED_JSONL"
