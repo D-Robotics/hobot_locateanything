@@ -8,7 +8,6 @@ live in ``compiler/pipeline`` and ``compiler/model``.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shlex
 import shutil
@@ -28,12 +27,16 @@ BUILD_ADAPTER = COMPILER_ROOT / "build_adapter.py"
 CONFIG_DIR_KEY = "__config_dir__"
 COMPONENTS = ("vision", "language", "all")
 BUILD_TARGETS = ("bc", "hbm")
-PROGRESS_MODES = ("auto", "bar", "log", "off")
 if str(COMPILER_ROOT) not in sys.path:
     sys.path.insert(0, str(COMPILER_ROOT))
 
 from configuration import ConfigurationFileError, load_config_file  # noqa: E402
 from model.graphs import LANGUAGE_GRAPHS  # noqa: E402
+from pipeline.progress import (  # noqa: E402
+    PROGRESS_MODES,
+    format_status_line,
+    print_console_line,
+)
 from model.contract import (  # noqa: E402
     HIDDEN_SIZE,
     IMAGE_HEIGHT,
@@ -466,7 +469,13 @@ def build_plan(args: argparse.Namespace, config: Mapping[str, Any]) -> list[Plan
                 "AR_CORE_NUM": str(cores["ar"]),
             })
             script = PIPELINE_ROOT / "build_language.sh"
-        steps.append(PlanStep(f"build {component} through {args.target}", (bash, str(script)), env=env))
+        steps.append(
+            PlanStep(
+                f"{component.capitalize()} -> {args.target.upper()}",
+                (bash, str(script)),
+                env=env,
+            )
+        )
     return steps
 
 
@@ -477,7 +486,6 @@ def quote_command(command: Iterable[str]) -> str:
 def print_build_summary(config: Mapping[str, Any]) -> None:
     language = _mapping(config["language"], "language")
     quantization = _mapping(config["quantization"], "quantization")
-    outputs = _mapping(config["outputs"], "outputs")
     payload = {
         "image": f"{IMAGE_WIDTH}x{IMAGE_HEIGHT}",
         "vision_w_bits": quantization["vision_weight_bits"],
@@ -487,11 +495,13 @@ def print_build_summary(config: Mapping[str, Any]) -> None:
         "lm_head_w_bits": quantization["lm_head_weight_bits"],
         "language_graph_count": len(LANGUAGE_GRAPHS),
         "sampling_backend": language["sampling_backend"],
-        "vision_hbm": outputs["vision_hbm"],
-        "language_hbm": outputs["language_hbm"],
-        "embedding_bin": outputs["embedding_bin"],
     }
-    print("[build] " + json.dumps(payload, sort_keys=True))
+    details = "  ".join(f"{key}={value}" for key, value in payload.items())
+    print_console_line(
+        format_status_line(
+            "build", None, None, "CONFIG", "Resolved configuration", details=details
+        )
+    )
 
 
 def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[str, Any]) -> int:
@@ -514,7 +524,11 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
     run_started = time.monotonic()
     for index, step in enumerate(steps, 1):
         stage_started = time.monotonic()
-        print(f"[stage {index}/{len(steps)}] START {step.label}", flush=True)
+        print_console_line(
+            format_status_line(
+                "BUILD", index, len(steps), "START", step.label
+            )
+        )
         if step.note:
             print(f"  {step.note}", flush=True)
         executable = step.command[0]
@@ -525,18 +539,40 @@ def run_plan(steps: list[PlanStep], args: argparse.Namespace, config: Mapping[st
         completed = subprocess.run(step.command, cwd=step.cwd, env=env, check=False)
         if completed.returncode:
             elapsed = time.monotonic() - stage_started
-            print(
-                f"[stage {index}/{len(steps)}] FAILED {step.label} "
-                f"after {elapsed:.1f}s (exit={completed.returncode})",
-                flush=True,
+            print_console_line(
+                format_status_line(
+                    "BUILD",
+                    index,
+                    len(steps),
+                    "FAILED",
+                    step.label,
+                    details=(
+                        f"elapsed={elapsed:.1f}s exit={completed.returncode}"
+                    ),
+                )
             )
             return int(completed.returncode)
         elapsed = time.monotonic() - stage_started
-        print(
-            f"[stage {index}/{len(steps)}] DONE {step.label} ({elapsed:.1f}s)",
-            flush=True,
+        print_console_line(
+            format_status_line(
+                "BUILD",
+                index,
+                len(steps),
+                "COMPLETE",
+                step.label,
+                details=f"elapsed={elapsed:.1f}s",
+            )
         )
-    print(f"[done] completed in {time.monotonic() - run_started:.1f}s", flush=True)
+    print_console_line(
+        format_status_line(
+            "BUILD",
+            None,
+            None,
+            "COMPLETE",
+            "All requested components",
+            details=f"elapsed={time.monotonic() - run_started:.1f}s",
+        )
+    )
     return 0
 
 

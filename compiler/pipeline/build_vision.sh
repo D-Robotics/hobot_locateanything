@@ -63,8 +63,6 @@ fi
 
 cd "$COMPILER_SRC"
 
-[[ -d "$INPUT_MODEL_PATH" ]] || { echo "input model missing: $INPUT_MODEL_PATH"; exit 1; }
-[[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || { echo "activation scale manifest missing; set CALIBRATION_SCALE_MANIFEST"; exit 1; }
 [[ "$DISABLE_HIDDEN_ROTATION" == "0" || "$DISABLE_HIDDEN_ROTATION" == "1" ]] || { echo "DISABLE_HIDDEN_ROTATION must be 0 or 1"; exit 1; }
 
 [[ "$W_BITS" == "8" ]] || {
@@ -73,16 +71,6 @@ cd "$COMPILER_SRC"
 }
 
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"
-
-echo "cwd:           $(pwd)"
-echo "python:        $PYTHON_BIN"
-echo "input:         $INPUT_MODEL_PATH"
-echo "output:        $OUTPUT_MODEL_PATH"
-echo "scale:         $CALIBRATION_SCALE_MANIFEST"
-echo "image_wh:      ${IMAGE_WIDTH}x${IMAGE_HEIGHT}"
-echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
-echo "log:           $LOG_FILE"
-echo
 
 EXTRA_ARGS=()
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
@@ -108,7 +96,15 @@ validate_bc() {
 }
 
 export_bc() {
-  echo "[build:vision] exporting visual BC"
+  [[ -d "$INPUT_MODEL_PATH" ]] || {
+    echo "[VISION] ERROR  Input model missing: $INPUT_MODEL_PATH"
+    return 1
+  }
+  [[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || {
+    echo "[VISION] ERROR  Activation scale manifest missing: $CALIBRATION_SCALE_MANIFEST"
+    return 1
+  }
+  echo "[VISION] INFO   Export visual BC"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$BUILD_ADAPTER" \
     --model_name "$MODEL_NAME" \
@@ -128,9 +124,11 @@ export_bc() {
 
 run_build() (
   set -e
+  echo "[VISION] CONFIG target=$BUILD_TARGET resume=$RESUME image=${IMAGE_WIDTH}x${IMAGE_HEIGHT} w_bits=$W_BITS cores=$VIT_CORE_NUM output=$OUTPUT_MODEL_PATH"
+  echo "[VISION] LOG    $LOG_FILE"
   if [[ "$BUILD_TARGET" == "bc" ]]; then
     if [[ "$RESUME" == "1" ]] && validate_bc; then
-      echo "[RESUME] Vision BC graph already complete: $BC_PATH"
+      echo "[VISION] REUSE  BC graph: $BC_PATH"
       return 0
     fi
     export_bc
@@ -139,9 +137,9 @@ run_build() (
   fi
 
   if validate_bc; then
-    echo "[REUSE] Vision HBM build will consume existing BC: $BC_PATH"
+    echo "[VISION] REUSE  Existing BC: $BC_PATH"
   else
-    echo "[build:vision] complete BC graph not found; exporting it first"
+    echo "[VISION] INFO   Complete BC not found; export required"
     export_bc
     validate_bc
   fi
@@ -156,13 +154,14 @@ run_build() (
 printf 'status=running\ntarget=%s\nstarted_at=%s\n' \
   "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 set +e
-run_build 2>&1 | tee "$LOG_FILE"
+run_build 2>&1 | tee "$LOG_FILE" | \
+  "$PYTHON_BIN" "$REPO_ROOT/compiler/pipeline/progress.py" --component vision
 status=${PIPESTATUS[0]}
 set -e
 printf 'exit_code=%s\ntarget=%s\ncompleted_at=%s\n' \
   "$status" "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 if [[ "$status" -ne 0 ]]; then
-  echo "[build:vision] failed exit_code=$status log=$LOG_FILE"
+  echo "[ERROR] [build.vision] [-/-] FAILED Build failed | exit=$status log=$LOG_FILE"
   exit "$status"
 fi
-echo "[build:vision] completed target=$BUILD_TARGET log=$LOG_FILE"
+echo "[INFO] [build.vision] [-/-] COMPLETE Build target=$BUILD_TARGET | log=$LOG_FILE"

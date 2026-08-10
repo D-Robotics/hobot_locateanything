@@ -68,7 +68,6 @@ fi
 
 cd "$COMPILER_SRC"
 
-[[ -d "$INPUT_MODEL_PATH" ]] || { echo "input model missing: $INPUT_MODEL_PATH"; exit 1; }
 [[ "$W_BITS" == "4" || "$W_BITS" == "8" ]] || {
   echo "W_BITS must be 4 or 8; got $W_BITS"
   exit 1
@@ -84,22 +83,9 @@ cd "$COMPILER_SRC"
 [[ "$PREFILL_CORE_NUM" == "1" || "$PREFILL_CORE_NUM" == "2" || "$PREFILL_CORE_NUM" == "4" ]] || { echo "PREFILL_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$DECODE_CORE_NUM" == "1" || "$DECODE_CORE_NUM" == "2" || "$DECODE_CORE_NUM" == "4" ]] || { echo "DECODE_CORE_NUM must be 1, 2, or 4"; exit 1; }
 [[ "$AR_CORE_NUM" == "1" || "$AR_CORE_NUM" == "2" || "$AR_CORE_NUM" == "4" ]] || { echo "AR_CORE_NUM must be 1, 2, or 4"; exit 1; }
-[[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || { echo "activation scale manifest missing; set CALIBRATION_SCALE_MANIFEST"; exit 1; }
 [[ "$DISABLE_HIDDEN_ROTATION" == "0" || "$DISABLE_HIDDEN_ROTATION" == "1" ]] || { echo "DISABLE_HIDDEN_ROTATION must be 0 or 1"; exit 1; }
 
 mkdir -p "$(dirname "$OUTPUT_MODEL_PATH")"
-
-echo "cwd:           $(pwd)"
-echo "python:        $PYTHON_BIN"
-echo "input:         $INPUT_MODEL_PATH"
-echo "output:        $OUTPUT_MODEL_PATH"
-echo "scale:         $CALIBRATION_SCALE_MANIFEST"
-echo "weights:       decoder W$W_BITS; lm_head W$LM_HEAD_W_BITS"
-echo "Language graphs: 13 fixed graphs"
-echo "cores:         prefill=$PREFILL_CORE_NUM pbd_q6=$DECODE_CORE_NUM ar_q1=$AR_CORE_NUM"
-echo "target:        $BUILD_TARGET wait=$WAIT detach=$DETACH resume=$RESUME"
-echo "log:           $LOG_FILE"
-echo
 
 EXTRA_ARGS=()
 if [[ -n "$HIDDEN_ROTATION_PATH" ]]; then
@@ -145,7 +131,15 @@ validate_bc() {
 }
 
 export_bc() {
-  echo "[build:language] exporting the Language BC graph family"
+  [[ -d "$INPUT_MODEL_PATH" ]] || {
+    echo "[LANGUAGE] ERROR  Input model missing: $INPUT_MODEL_PATH"
+    return 1
+  }
+  [[ -n "$CALIBRATION_SCALE_MANIFEST" && -f "$CALIBRATION_SCALE_MANIFEST" ]] || {
+    echo "[LANGUAGE] ERROR  Activation scale manifest missing: $CALIBRATION_SCALE_MANIFEST"
+    return 1
+  }
+  echo "[LANGUAGE] INFO   Export fixed 13-graph BC family"
   env PYTHONUNBUFFERED=1 PYTHONPATH="$COMPILER_SRC${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$BUILD_ADAPTER" \
     --model_name "$MODEL_NAME" \
@@ -173,9 +167,11 @@ export_bc() {
 
 run_build() (
   set -e
+  echo "[LANGUAGE] CONFIG target=$BUILD_TARGET resume=$RESUME chunk=$CHUNK_SIZE cache=$CACHE_LEN decoder_w=$W_BITS lm_head_w=$LM_HEAD_W_BITS cores=$PREFILL_CORE_NUM/$DECODE_CORE_NUM/$AR_CORE_NUM output=$OUTPUT_MODEL_PATH"
+  echo "[LANGUAGE] LOG    $LOG_FILE"
   if [[ "$BUILD_TARGET" == "bc" ]]; then
     if [[ "$RESUME" == "1" ]] && validate_bc; then
-      echo "[RESUME] Language BC graphs already complete: $OUTPUT_MODEL_PATH"
+      echo "[LANGUAGE] REUSE  Complete BC family: $OUTPUT_MODEL_PATH"
       return 0
     fi
     export_bc
@@ -184,9 +180,9 @@ run_build() (
   fi
 
   if validate_bc; then
-    echo "[REUSE] Language HBM build will consume existing ${#LANGUAGE_GRAPHS[@]}-graph BC family"
+    echo "[LANGUAGE] REUSE  Existing ${#LANGUAGE_GRAPHS[@]}-graph BC family"
   else
-    echo "[build:language] complete BC graph family not found; exporting it first"
+    echo "[LANGUAGE] INFO   Complete BC family not found; export required"
     export_bc
     validate_bc
   fi
@@ -201,13 +197,14 @@ run_build() (
 printf 'status=running\ntarget=%s\nstarted_at=%s\n' \
   "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 set +e
-run_build 2>&1 | tee "$LOG_FILE"
+run_build 2>&1 | tee "$LOG_FILE" | \
+  "$PYTHON_BIN" "$REPO_ROOT/compiler/pipeline/progress.py" --component language
 status=${PIPESTATUS[0]}
 set -e
 printf 'exit_code=%s\ntarget=%s\ncompleted_at=%s\n' \
   "$status" "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 if [[ "$status" -ne 0 ]]; then
-  echo "[build:language] failed exit_code=$status log=$LOG_FILE"
+  echo "[ERROR] [build.language] [-/-] FAILED Build failed | exit=$status log=$LOG_FILE"
   exit "$status"
 fi
-echo "[build:language] completed target=$BUILD_TARGET log=$LOG_FILE"
+echo "[INFO] [build.language] [-/-] COMPLETE Build target=$BUILD_TARGET | log=$LOG_FILE"

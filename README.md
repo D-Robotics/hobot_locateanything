@@ -244,6 +244,16 @@ python compiler/quantize.py --config "$CONFIG" build --component all --target hb
 
 每次正常编译前，将 `paths.output_dir` 的最后一级改为新的目录名；已有
 `build/` 的目录只允许使用 `--resume` 续编。编译产物保存在该输出目录内。
+
+编译输出分为三层，含义互不混用：
+
+- 终端采用 ROS 风格英文事件行，只显示配置摘要、阶段进度、复用、警告、失败和耗时；
+- `calibration/statistics/calibration_scale_manifest.json` 保存逐量化点 Scale、执行次数和有限性数据，`calibration_graph_coverage.json` 保存图覆盖与 activation audit；
+- `logs/build_vision_hbm.log` 和 `logs/build_language_hbm.log` 保存完整 HBDK 输出，包括 IR 算子计数、底层 INFO 和 traceback。
+
+`calibration.detailed_statistics: true` 会额外生成完整激活分布报告；默认关闭，
+不影响构建使用的 Scale Manifest 和覆盖审计。
+
 将最终 Vision HBM、Language HBM 和 Embedding 放入 `inference/models/`，再按直接部署流程构建 TROS 包。
 
 ## 任务命令
