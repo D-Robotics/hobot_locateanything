@@ -720,7 +720,6 @@ bool AppendCacheUpdate(const std::vector<rt::Tensor>& outputs,
     const size_t row_bytes = static_cast<size_t>(ElementCount(cache.shape)) /
                              static_cast<size_t>(cache_len) *
                              static_cast<size_t>(bytes);
-    const size_t cache_bytes = static_cast<size_t>(cache_len) * row_bytes;
     const bool appended = cache.device_buffer != nullptr
         ? rt::AppendMirroredDeviceRingRows(
               &cache, static_cast<size_t>(cache_len), row_bytes,
