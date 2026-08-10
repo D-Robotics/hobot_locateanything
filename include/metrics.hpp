@@ -32,11 +32,25 @@ struct LanguageMetrics {
   std::string fallback_reason;
 };
 
+struct StageTiming {
+  // Monotonic offsets from the start of one InferenceSession::Infer call.
+  // Consumers can map these offsets onto their own wall/ROS clock.
+  double start_ms = 0.0;
+  double end_ms = 0.0;
+
+  double DurationMs() const { return end_ms > start_ms ? end_ms - start_ms : 0.0; }
+};
+
 struct InferenceMetrics {
   double preprocess_ms = 0.0;
   double vision_ms = 0.0;
   double language_ms = 0.0;
+  double postprocess_ms = 0.0;
   double total_ms = 0.0;
+  StageTiming preprocess_timing;
+  StageTiming vision_timing;
+  StageTiming language_timing;
+  StageTiming postprocess_timing;
   LanguageMetrics language;
 };
 

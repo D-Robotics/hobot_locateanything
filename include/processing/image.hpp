@@ -1,11 +1,15 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include <opencv2/core/mat.hpp>
 
 namespace locateanything {
+
+cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
+                  uint32_t height, uint32_t step = 0);
 
 struct ImageTransform {
   int source_width = 0;

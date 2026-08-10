@@ -19,10 +19,18 @@ namespace {
 
 namespace fs = std::filesystem;
 
-double Milliseconds(std::chrono::steady_clock::time_point start) {
-  return std::chrono::duration<double, std::milli>(
-             std::chrono::steady_clock::now() - start)
-      .count();
+double MillisecondsBetween(std::chrono::steady_clock::time_point start,
+                           std::chrono::steady_clock::time_point end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+StageTiming Stage(std::chrono::steady_clock::time_point inference_started,
+                  std::chrono::steady_clock::time_point stage_started,
+                  std::chrono::steady_clock::time_point stage_ended) {
+  StageTiming timing;
+  timing.start_ms = MillisecondsBetween(inference_started, stage_started);
+  timing.end_ms = MillisecondsBetween(inference_started, stage_ended);
+  return timing;
 }
 
 }  // namespace
@@ -97,9 +105,11 @@ InferenceOutput InferenceSession::Infer(const cv::Mat& bgr,
     throw std::runtime_error("prompt does not contain 576 visual tokens");
   }
   const PreparedImage image = impl_->image_preprocessor.Prepare(bgr);
-  const double preprocess_ms = Milliseconds(preprocess_started);
+  const auto preprocess_ended = std::chrono::steady_clock::now();
 
+  const auto vision_started = std::chrono::steady_clock::now();
   VisionResult vision = impl_->vision.Infer(image.patches);
+  const auto vision_ended = std::chrono::steady_clock::now();
   LanguageInput language_input;
   language_input.prompt_ids = std::move(prompt_tokens);
   language_input.visual_features_fp16 =
@@ -109,20 +119,34 @@ InferenceOutput InferenceSession::Infer(const cv::Mat& bgr,
   LanguageResult language = impl_->language.Generate(
       std::move(language_input), impl_->options.max_new_tokens,
       impl_->options.generation_mode, protect_structure);
-  const double language_ms = Milliseconds(language_started);
+  const auto language_ended = std::chrono::steady_clock::now();
 
   InferenceOutput output;
   output.stop_reason = language.stop_reason;
-  output.metrics.preprocess_ms = preprocess_ms;
-  output.metrics.vision_ms = vision.elapsed_ms;
-  output.metrics.language_ms = language_ms;
+  output.metrics.preprocess_timing =
+      Stage(total_started, preprocess_started, preprocess_ended);
+  output.metrics.vision_timing =
+      Stage(total_started, vision_started, vision_ended);
+  output.metrics.language_timing =
+      Stage(total_started, language_started, language_ended);
+  output.metrics.preprocess_ms = output.metrics.preprocess_timing.DurationMs();
+  output.metrics.vision_ms = output.metrics.vision_timing.DurationMs();
+  output.metrics.language_ms = output.metrics.language_timing.DurationMs();
   output.metrics.language = std::move(language.metrics);
+  const auto postprocess_started = std::chrono::steady_clock::now();
   output.prediction = impl_->postprocessor.Parse(
       language.token_ids, image.transform, impl_->tokenizer, prompt.task);
+  output.generated_text = impl_->tokenizer.Decode(language.token_ids);
+  output.generated_token_ids = std::move(language.token_ids);
+  const auto postprocess_ended = std::chrono::steady_clock::now();
+  output.metrics.postprocess_timing =
+      Stage(total_started, postprocess_started, postprocess_ended);
+  output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
   if (output_options.render_annotated) {
     output.annotated_image = impl_->postprocessor.Draw(bgr, output.prediction);
   }
-  output.metrics.total_ms = Milliseconds(total_started);
+  output.metrics.total_ms = MillisecondsBetween(
+      total_started, std::chrono::steady_clock::now());
   if (output_options.serialize_json) {
     output.json = impl_->postprocessor.ToJson(
         output.prediction, prompt.task, output.stop_reason, frame_index,

@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #if __has_include(<cv_bridge/cv_bridge.hpp>)
 #include <cv_bridge/cv_bridge.hpp>
@@ -28,14 +29,13 @@
 #include <ai_msgs/msg/target.hpp>
 #include <builtin_interfaces/msg/time.hpp>
 #include <hbm_img_msgs/msg/hbm_msg1080_p.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include "inference.hpp"
 #include "locateanything_node.hpp"
+#include "processing/image.hpp"
 #include "processing/prompt.hpp"
 
 namespace fs = std::filesystem;
@@ -84,53 +84,34 @@ float ClampPoint(float value, float limit) {
   return std::isfinite(value) ? std::clamp(value, 0.0f, limit) : 0.0f;
 }
 
-rclcpp::Time AppendPerf(ai_msgs::msg::PerceptionTargets* message,
-                        const std::string& type,
-                        const rclcpp::Time& start,
-                        double duration_ms) {
-  duration_ms = SafeDurationMs(duration_ms);
-  const rclcpp::Time end =
-      start + rclcpp::Duration::from_seconds(duration_ms / 1000.0);
+void AppendPerf(ai_msgs::msg::PerceptionTargets* message,
+                const std::string& type,
+                const rclcpp::Time& inference_started,
+                const StageTiming& timing) {
+  const double start_ms = SafeDurationMs(timing.start_ms);
+  const double end_ms = std::max(start_ms, SafeDurationMs(timing.end_ms));
+  const rclcpp::Time start = inference_started +
+      rclcpp::Duration::from_seconds(start_ms / 1000.0);
+  const rclcpp::Time end = inference_started +
+      rclcpp::Duration::from_seconds(end_ms / 1000.0);
   ai_msgs::msg::Perf perf;
   perf.type = type;
   perf.stamp_start = static_cast<builtin_interfaces::msg::Time>(start);
   perf.stamp_end = static_cast<builtin_interfaces::msg::Time>(end);
-  perf.time_ms_duration = duration_ms;
+  perf.time_ms_duration = end_ms - start_ms;
   message->perfs.emplace_back(std::move(perf));
-  return end;
+}
+
+std::string TokenIdsText(const std::vector<int32_t>& tokens) {
+  std::ostringstream stream;
+  for (size_t index = 0; index < tokens.size(); ++index) {
+    if (index != 0) stream << ',';
+    stream << tokens[index];
+  }
+  return stream.str();
 }
 
 }  // namespace
-
-cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
-                  uint32_t height, uint32_t step = 0) {
-  if (data == nullptr || width == 0 || height == 0 || width % 2 != 0 ||
-      height % 2 != 0) {
-    throw std::runtime_error("invalid NV12 image buffer");
-  }
-  const size_t nv12_rows = static_cast<size_t>(height) * 3 / 2;
-  uint32_t row_stride = step == 0 ? width : step;
-  if (data_size % nv12_rows == 0) {
-    const size_t inferred_stride = data_size / nv12_rows;
-    if (inferred_stride >= width) {
-      row_stride = static_cast<uint32_t>(inferred_stride);
-    }
-  }
-  const size_t required = static_cast<size_t>(row_stride) * nv12_rows;
-  if (row_stride < width || data_size < required) {
-    throw std::runtime_error("invalid NV12 image buffer");
-  }
-  cv::Mat y_plane(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                  const_cast<uint8_t*>(data), row_stride);
-  cv::Mat uv_plane(static_cast<int>(height / 2), static_cast<int>(width / 2),
-                   CV_8UC2,
-                   const_cast<uint8_t*>(data) +
-                       static_cast<size_t>(row_stride) * height,
-                   row_stride);
-  cv::Mat bgr;
-  cv::cvtColorTwoPlane(y_plane, uv_plane, bgr, cv::COLOR_YUV2BGR_NV12);
-  return bgr;
-}
 
 struct PendingFrame {
   std_msgs::msg::Header header;
@@ -141,22 +122,6 @@ struct PendingFrame {
 class LocateAnythingNode : public rclcpp::Node {
  public:
   LocateAnythingNode() : Node("hobot_locateanything") {
-    const int feed_type = declare_parameter<int>("feed_type", 1);
-    if (feed_type != 0 && feed_type != 1) {
-      throw std::invalid_argument("feed_type must be 0 (local image) or 1 (topic)");
-    }
-    const std::string image_path =
-        declare_parameter<std::string>("image", "image/test_detection.jpg");
-    fs::path local_image_path;
-    cv::Mat local_image;
-    if (feed_type == 0) {
-      local_image_path = fs::absolute(image_path);
-      local_image = cv::imread(local_image_path.string(), cv::IMREAD_COLOR);
-      if (local_image.empty()) {
-        throw std::runtime_error("image not found or unreadable: " +
-                                 local_image_path.string());
-      }
-    }
     const std::string input_topic =
         declare_parameter<std::string>("input_topic", "/hbmem_img");
     const bool is_shared_mem_sub =
@@ -165,22 +130,28 @@ class LocateAnythingNode : public rclcpp::Node {
         declare_parameter<std::string>("prompt_topic", "/locateanything/prompt");
     const std::string result_topic = declare_parameter<std::string>(
         "result_topic", "/perception/locateanything");
+    if (input_topic.empty() || prompt_topic.empty() || result_topic.empty()) {
+      throw std::invalid_argument("input, prompt, and result topics must not be empty");
+    }
     prompt_ = declare_parameter<std::string>("default_prompt", "/detect person");
     ValidatePrompt(prompt_);
 
-    std::string model_directory =
-        declare_parameter<std::string>("model_directory", "");
-    if (model_directory.empty()) {
-      model_directory = "models";
-    }
-    std::string tokenizer_directory =
-        declare_parameter<std::string>("tokenizer_directory", "");
-    if (tokenizer_directory.empty()) {
-      tokenizer_directory = (fs::path(model_directory) / "tokenizer").string();
+    const std::string model_directory =
+        declare_parameter<std::string>("model_directory", "models");
+    const std::string tokenizer_directory =
+        declare_parameter<std::string>("tokenizer_directory", "models/tokenizer");
+    if (model_directory.empty() || tokenizer_directory.empty()) {
+      throw std::invalid_argument(
+          "model_directory and tokenizer_directory must be explicit");
     }
     const std::string l2m_sizes =
         declare_parameter<std::string>("l2m_sizes", "6:6:6:6");
-    setenv("HB_DNN_USER_DEFINED_L2M_SIZES", l2m_sizes.c_str(), 1);
+    if (l2m_sizes.empty()) {
+      throw std::invalid_argument("l2m_sizes must not be empty");
+    }
+    if (setenv("HB_DNN_USER_DEFINED_L2M_SIZES", l2m_sizes.c_str(), 1) != 0) {
+      throw std::runtime_error("cannot configure S600 BPU L2 cache");
+    }
 
     InferenceOptions options;
     options.vision_model =
@@ -201,13 +172,26 @@ class LocateAnythingNode : public rclcpp::Node {
     options.max_new_tokens = declare_parameter<int>("max_new_tokens", 4096);
     options.nms_iou =
         static_cast<float>(declare_parameter<double>("nms_iou", 0.9));
-    options.vision_backend_mask =
-        static_cast<uint32_t>(declare_parameter<int>("vision_backend_mask", 15));
-    options.language_backend_mask =
-        static_cast<uint32_t>(declare_parameter<int>("language_backend_mask", 15));
+    const int vision_backend_mask =
+        declare_parameter<int>("vision_backend_mask", 15);
+    const int language_backend_mask =
+        declare_parameter<int>("language_backend_mask", 15);
+    if (vision_backend_mask <= 0 || vision_backend_mask > 15 ||
+        language_backend_mask <= 0 || language_backend_mask > 15) {
+      throw std::invalid_argument("S600 backend masks must be in [1, 15]");
+    }
+    options.vision_backend_mask = static_cast<uint32_t>(vision_backend_mask);
+    options.language_backend_mask = static_cast<uint32_t>(language_backend_mask);
 
     session_ = std::make_unique<InferenceSession>(std::move(options));
-    session_->Initialize();
+    const auto initialization_started = std::chrono::steady_clock::now();
+    session_->Initialize([this](const std::string& stage) {
+      RCLCPP_INFO(get_logger(), "loading %s", stage.c_str());
+    });
+    const double initialization_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - initialization_started).count();
+    RCLCPP_INFO(get_logger(), "inference core ready in %.1f s",
+                initialization_seconds);
     result_publisher_ =
         create_publisher<ai_msgs::msg::PerceptionTargets>(result_topic, 10);
     prompt_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -227,7 +211,7 @@ class LocateAnythingNode : public rclcpp::Node {
           RCLCPP_INFO(get_logger(), "prompt updated: %s",
                       LogText(message->data).c_str());
         });
-    if (feed_type == 1 && is_shared_mem_sub) {
+    if (is_shared_mem_sub) {
       shared_image_subscription_ =
           create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
               input_topic, rclcpp::SensorDataQoS(),
@@ -236,23 +220,27 @@ class LocateAnythingNode : public rclcpp::Node {
                   const auto encoding_end = std::find(
                       message.encoding.begin(), message.encoding.end(), uint8_t{0});
                   const std::string encoding(message.encoding.begin(), encoding_end);
-                  if (encoding != "nv12") {
-                    throw std::runtime_error(
-                        "shared-memory input must use nv12 encoding");
-                  }
-                  cv::Mat image = Nv12ToBgr(
+                   if (encoding != "nv12") {
+                     throw std::runtime_error(
+                         "shared-memory input must use nv12 encoding");
+                   }
+                   if (message.data_size > message.data.size()) {
+                     throw std::runtime_error(
+                         "shared-memory data_size exceeds message buffer");
+                   }
+                   cv::Mat image = Nv12ToBgr(
                       message.data.data(), message.data_size,
                       message.width, message.height, message.step);
                   std_msgs::msg::Header header;
                   header.stamp = message.time_stamp;
                   header.frame_id = std::to_string(message.index);
-                  QueueFrame(header, image);
+                  QueueFrame(header, std::move(image));
                 } catch (const std::exception& error) {
                   RCLCPP_WARN(get_logger(), "cannot process shared image: %s",
                               error.what());
                 }
               });
-    } else if (feed_type == 1) {
+    } else {
       image_subscription_ = create_subscription<sensor_msgs::msg::Image>(
           input_topic, rclcpp::SensorDataQoS(),
           [this](const sensor_msgs::msg::Image::ConstSharedPtr message) {
@@ -266,7 +254,7 @@ class LocateAnythingNode : public rclcpp::Node {
               } else {
                 image = cv_bridge::toCvCopy(message, "bgr8")->image;
               }
-              QueueFrame(message->header, image);
+              QueueFrame(message->header, std::move(image));
             } catch (const std::exception& error) {
               RCLCPP_WARN(get_logger(), "cannot process input image: %s",
                           error.what());
@@ -274,20 +262,11 @@ class LocateAnythingNode : public rclcpp::Node {
           });
     }
     worker_ = std::thread([this] { Run(); });
-    if (feed_type == 0) {
-      std_msgs::msg::Header header;
-      header.frame_id = "0";
-      QueueFrame(header, local_image);
-      RCLCPP_INFO(get_logger(), "ready: local_image=%s prompt_topic=%s result=%s",
-                  local_image_path.string().c_str(), prompt_topic.c_str(),
-                  result_topic.c_str());
-    } else {
-      RCLCPP_INFO(get_logger(),
-                  "ready: input=%s transport=%s prompt_topic=%s result=%s",
-                  input_topic.c_str(),
-                  is_shared_mem_sub ? "hbmem" : "sensor_msgs/Image",
-                  prompt_topic.c_str(), result_topic.c_str());
-    }
+    RCLCPP_INFO(get_logger(),
+                "ready: input=%s transport=%s prompt_topic=%s result=%s",
+                input_topic.c_str(),
+                is_shared_mem_sub ? "hbmem" : "sensor_msgs/Image",
+                prompt_topic.c_str(), result_topic.c_str());
   }
 
   ~LocateAnythingNode() override {
@@ -315,7 +294,7 @@ class LocateAnythingNode : public rclcpp::Node {
     (void)PromptBuilder{}.Build(prompt);
   }
 
-  void QueueFrame(const std_msgs::msg::Header& header, const cv::Mat& image) {
+  void QueueFrame(const std_msgs::msg::Header& header, cv::Mat image) {
     if (image.empty()) {
       throw std::runtime_error("input image conversion returned empty data");
     }
@@ -334,7 +313,7 @@ class LocateAnythingNode : public rclcpp::Node {
           last_drop_warning_ = now;
         }
       }
-      pending_ = PendingFrame{header, image.clone(), prompt_};
+      pending_ = PendingFrame{header, std::move(image), prompt_};
     }
     if (warn_drops > 0) {
       RCLCPP_WARN(get_logger(),
@@ -361,30 +340,34 @@ class LocateAnythingNode : public rclcpp::Node {
         const rclcpp::Time inference_started = now();
         InferenceOutput output =
             session_->Infer(frame.image, frame.prompt, frame_index);
-        const int16_t fps = RecordOutputFps();
+        const int16_t fps = RecordOutputFps(output.metrics.total_ms);
         ai_msgs::msg::PerceptionTargets result =
             BuildResult(frame, output, fps, inference_started);
         result_publisher_->publish(result);
 
         const LanguageMetrics& language = output.metrics.language;
-        const double postprocess_ms = PostprocessMs(output.metrics);
         const std::string labels = ResultLabels(output.prediction);
         RCLCPP_INFO(
             get_logger(),
-            "frame_id=%s prompt=\"%s\" labels=\"%s\" boxes=%zu points=%zu "
+            "frame_id=%s prompt=\"%s\" output=\"%s\" labels=\"%s\" "
+            "boxes=%zu points=%zu "
             "fps=%d stop_reason=%s prompt_tokens=%d generated_tokens=%d "
             "pbd_calls=%d pbd_accepted_tokens=%d mode=%s "
             "preprocess_ms=%.3f vision_ms=%.3f language_ms=%.3f "
             "postprocess_ms=%.3f total_ms=%.3f",
             LogText(frame.header.frame_id).c_str(), LogText(frame.prompt).c_str(),
-            labels.c_str(), output.prediction.detections.size(),
+            LogText(output.generated_text).c_str(), labels.c_str(),
+            output.prediction.detections.size(),
             output.prediction.points.size(), static_cast<int>(fps),
             output.stop_reason.c_str(), language.prompt_tokens,
             language.generated_tokens, language.pbd_calls,
             language.pbd_accepted_tokens, language.executed_mode.c_str(),
             output.metrics.preprocess_ms, output.metrics.vision_ms,
-            output.metrics.language_ms, postprocess_ms,
+            output.metrics.language_ms, output.metrics.postprocess_ms,
             output.metrics.total_ms);
+        RCLCPP_DEBUG(get_logger(), "frame_id=%s generated_token_ids=[%s]",
+                     LogText(frame.header.frame_id).c_str(),
+                     TokenIdsText(output.generated_token_ids).c_str());
         if (!language.fallback_reason.empty()) {
           RCLCPP_WARN(get_logger(), "frame_id=%s language fallback: %s",
                       LogText(frame.header.frame_id).c_str(),
@@ -397,14 +380,6 @@ class LocateAnythingNode : public rclcpp::Node {
     }
   }
 
-  static double PostprocessMs(const InferenceMetrics& metrics) {
-    // The core exposes total time but not postprocess time as a separate field.
-    const double known = SafeDurationMs(metrics.preprocess_ms) +
-                         SafeDurationMs(metrics.vision_ms) +
-                         SafeDurationMs(metrics.language_ms);
-    return std::max(0.0, SafeDurationMs(metrics.total_ms) - known);
-  }
-
   static ai_msgs::msg::PerceptionTargets BuildResult(
       const PendingFrame& frame, const InferenceOutput& output, int16_t fps,
       const rclcpp::Time& inference_started) {
@@ -412,15 +387,14 @@ class LocateAnythingNode : public rclcpp::Node {
     message.header = frame.header;
     message.fps = fps;
 
-    rclcpp::Time stage_start = inference_started;
-    stage_start = AppendPerf(&message, "preprocess", stage_start,
-                             output.metrics.preprocess_ms);
-    stage_start = AppendPerf(&message, "vision", stage_start,
-                             output.metrics.vision_ms);
-    stage_start = AppendPerf(&message, "language", stage_start,
-                             output.metrics.language_ms);
-    AppendPerf(&message, "postprocess", stage_start,
-               PostprocessMs(output.metrics));
+    AppendPerf(&message, "preprocess", inference_started,
+               output.metrics.preprocess_timing);
+    AppendPerf(&message, "vision", inference_started,
+               output.metrics.vision_timing);
+    AppendPerf(&message, "language", inference_started,
+               output.metrics.language_timing);
+    AppendPerf(&message, "postprocess", inference_started,
+               output.metrics.postprocess_timing);
 
     const uint32_t width = static_cast<uint32_t>(frame.image.cols);
     const uint32_t height = static_cast<uint32_t>(frame.image.rows);
@@ -466,13 +440,17 @@ class LocateAnythingNode : public rclcpp::Node {
     return message;
   }
 
-  int16_t RecordOutputFps() {
+  int16_t RecordOutputFps(double total_ms) {
     const auto timestamp = std::chrono::steady_clock::now();
     output_timestamps_.push_back(timestamp);
     while (output_timestamps_.size() > kFpsWindowSize) {
       output_timestamps_.pop_front();
     }
-    if (output_timestamps_.size() < 2) return -1;
+    if (output_timestamps_.size() < 2) {
+      const double single_frame_fps = total_ms > 0.0 ? 1000.0 / total_ms : 0.0;
+      return static_cast<int16_t>(std::clamp<long>(
+          std::lround(single_frame_fps), 0, std::numeric_limits<int16_t>::max()));
+    }
     const double seconds = std::chrono::duration<double>(
                                output_timestamps_.back() -
                                output_timestamps_.front())

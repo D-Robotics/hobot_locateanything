@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <opencv2/core/mat.hpp>
 
@@ -34,6 +35,8 @@ struct InferenceOutput {
   Prediction prediction;
   cv::Mat annotated_image;
   std::string json;
+  std::string generated_text;
+  std::vector<int32_t> generated_token_ids;
   std::string stop_reason;
   InferenceMetrics metrics;
 };

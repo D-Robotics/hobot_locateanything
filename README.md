@@ -84,6 +84,8 @@ The node subscribes to the image topic configured by `input_topic` and to
 the input stream; this package only consumes it. Shared-memory input uses
 `hbm_img_msgs/msg/HbmMsg1080P` with `is_shared_mem_sub: true`, while ordinary
 images use `sensor_msgs/msg/Image` with that parameter set to `false`.
+The ROS executable never opens a local image or video itself; use Console for
+that workflow.
 
 Change the prompt for subsequent frames:
 
@@ -98,6 +100,9 @@ when no object is found. The input header is copied. Bounding boxes are
 rounded and clamped to the source image; confidence is `-1.0` because
 LocateAnything does not provide a calibrated confidence value. Drawing,
 encoding, saving and downstream message handling remain outside this node.
+`fps` is measured from inference outputs, not from the camera's declared frame
+rate; the first output uses its measured single-frame throughput and later
+outputs use a rolling output window.
 
 Normal per-frame summaries are `INFO`, recoverable input/prompt errors and
 dropped-frame reports are `WARN`, runtime failures are `ERROR`, and verbose

@@ -121,6 +121,36 @@ uint16_t FloatToHalf(float value) {
 
 }  // namespace
 
+cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
+                  uint32_t height, uint32_t step) {
+  if (data == nullptr || width == 0 || height == 0 || width % 2 != 0 ||
+      height % 2 != 0) {
+    throw std::runtime_error("invalid NV12 image buffer");
+  }
+  const size_t nv12_rows = static_cast<size_t>(height) * 3 / 2;
+  uint32_t row_stride = step == 0 ? width : step;
+  if (data_size % nv12_rows == 0) {
+    const size_t inferred_stride = data_size / nv12_rows;
+    if (inferred_stride >= width) {
+      row_stride = static_cast<uint32_t>(inferred_stride);
+    }
+  }
+  const size_t required = static_cast<size_t>(row_stride) * nv12_rows;
+  if (row_stride < width || data_size < required) {
+    throw std::runtime_error("invalid NV12 image buffer");
+  }
+  cv::Mat y_plane(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
+                  const_cast<uint8_t*>(data), row_stride);
+  cv::Mat uv_plane(static_cast<int>(height / 2), static_cast<int>(width / 2),
+                   CV_8UC2,
+                   const_cast<uint8_t*>(data) +
+                       static_cast<size_t>(row_stride) * height,
+                   row_stride);
+  cv::Mat bgr;
+  cv::cvtColorTwoPlane(y_plane, uv_plane, bgr, cv::COLOR_YUV2BGR_NV12);
+  return bgr;
+}
+
 PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
   if (bgr.empty() || bgr.channels() != 3) {
     throw std::invalid_argument("input image must be a non-empty three-channel image");

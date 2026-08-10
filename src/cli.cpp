@@ -148,9 +148,9 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
                              ": " + error.what());
   }
   YAML::Node parameters = root["hobot_locateanything"]["ros__parameters"];
-  if (!parameters || !parameters.IsMap()) parameters = root["inference"];
   if (!parameters || !parameters.IsMap()) {
-    throw std::runtime_error("console config must contain an inference map");
+    throw std::runtime_error(
+        "console config must contain hobot_locateanything.ros__parameters");
   }
   auto read_string = [&](const char* name, std::string* target) {
     if (parameters[name]) *target = parameters[name].as<std::string>();
@@ -224,9 +224,11 @@ ConsoleOptions ParseArguments(int argc, char** argv) {
         "generation_mode in config must be hybrid or slow");
   }
   options.model_directory = fs::absolute(options.model_directory);
-  if (!options.tokenizer_directory.empty()) {
-    options.tokenizer_directory = fs::absolute(options.tokenizer_directory);
+  if (options.tokenizer_directory.empty()) {
+    throw std::invalid_argument(
+        "tokenizer_directory must be set explicitly in config");
   }
+  options.tokenizer_directory = fs::absolute(options.tokenizer_directory);
   options.output_directory = fs::absolute(options.output_directory);
   return options;
 }
@@ -404,17 +406,16 @@ class Console {
 
   locateanything::InferenceOptions BuildInferenceOptions() const {
     locateanything::InferenceOptions inference;
-    setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1);
+    if (setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1) != 0) {
+      throw std::runtime_error("cannot configure S600 BPU L2 cache");
+    }
     inference.vision_model =
         (options_.model_directory / options_.vision_model).string();
     inference.language_model =
         (options_.model_directory / options_.language_model).string();
     inference.embeddings =
         (options_.model_directory / options_.embeddings).string();
-    fs::path tokenizer = options_.tokenizer_directory;
-    if (tokenizer.empty()) tokenizer = options_.model_directory / "tokenizer";
-    if (!fs::is_directory(tokenizer)) tokenizer = "models/tokenizer";
-    inference.tokenizer_directory = tokenizer.string();
+    inference.tokenizer_directory = options_.tokenizer_directory.string();
     inference.generation_mode = options_.generation_mode;
     inference.max_new_tokens = options_.max_new_tokens;
     inference.vision_backend_mask = options_.vision_backend_mask;

@@ -6,10 +6,9 @@ hobot_locateanything:
 
     # 模型文件
     # 相对路径以启动命令所在目录为基准；推荐从仓库根目录启动。
-    # model_directory 为空时使用当前工作目录下的 models。
-    # tokenizer_directory 为空时使用 model_directory/tokenizer。
+    # 路径均显式配置；相对路径以启动命令所在目录为基准。
     model_directory: models
-    tokenizer_directory: ""
+    tokenizer_directory: models/tokenizer
     vision_model: LocateAnything-3B_vision.hbm
     language_model: LocateAnything-3B_language.hbm
     embeddings: LocateAnything-3B_embed_tokens.bin
@@ -31,14 +30,11 @@ hobot_locateanything:
     # -------------------------------------------------------------------------
     # ROS 节点独有：Console 不读取下面这些字段
     # -------------------------------------------------------------------------
-    # feed_type=0：直接读取 image 指定的一张本地图片。
-    # feed_type=1：持续订阅 input_topic；不提供纯文本 feed_type=2。
-    feed_type: 1
-    image: image/test_detection.jpg
+    # ROS 入口只消费 TROS 图像话题；本地图片和视频由 Console 处理。
     input_topic: /hbmem_img
     default_prompt: /detect person
 
-    # 仅在 feed_type=1 时生效。true 订阅 hbm_img_msgs/HbmMsg1080P，
+    # true 订阅 hbm_img_msgs/HbmMsg1080P，
     # false 订阅 sensor_msgs/Image。摄像头和视频发布由其他 TROS 节点负责。
     is_shared_mem_sub: true
     prompt_topic: /locateanything/prompt

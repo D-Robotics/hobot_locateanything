@@ -263,6 +263,7 @@ std::string Postprocessor::ToJson(const Prediction& prediction,
          << ",\"language_prefill\":" << language.prefill_ms
          << ",\"language_decode\":" << language.decode_ms
          << ",\"language\":" << metrics.language_ms
+         << ",\"postprocess\":" << metrics.postprocess_ms
          << ",\"total\":" << metrics.total_ms << "}}";
   return output.str();
 }
