@@ -11,6 +11,10 @@ namespace locateanything {
 cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                   uint32_t height, uint32_t step = 0);
 
+cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
+                         uint32_t width, uint32_t height, uint32_t step,
+                         bool input_is_rgb);
+
 struct ImageTransform {
   int source_width = 0;
   int source_height = 0;

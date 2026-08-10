@@ -255,6 +255,12 @@ class LocateAnythingNode : public rclcpp::Node {
                     reinterpret_cast<const uint8_t*>(message->data.data()),
                     message->data.size(), message->width, message->height,
                     message->step);
+              } else if (message->encoding == "bgr" ||
+                         message->encoding == "rgb") {
+                image = PackedColorToBgr(
+                    reinterpret_cast<const uint8_t*>(message->data.data()),
+                    message->data.size(), message->width, message->height,
+                    message->step, message->encoding == "rgb");
               } else {
                 image = cv_bridge::toCvCopy(message, "bgr8")->image;
               }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 #include <opencv2/imgproc.hpp>
@@ -148,6 +149,31 @@ cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                    row_stride);
   cv::Mat bgr;
   cv::cvtColorTwoPlane(y_plane, uv_plane, bgr, cv::COLOR_YUV2BGR_NV12);
+  return bgr;
+}
+
+cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
+                         uint32_t width, uint32_t height, uint32_t step,
+                         bool input_is_rgb) {
+  if (data == nullptr || width == 0 || height == 0 ||
+      width > std::numeric_limits<size_t>::max() / 3U) {
+    throw std::runtime_error("invalid packed color image buffer");
+  }
+  const size_t packed_row_size = static_cast<size_t>(width) * 3U;
+  const size_t row_stride = step == 0 ? packed_row_size : step;
+  if (row_stride < packed_row_size ||
+      static_cast<size_t>(height) >
+          std::numeric_limits<size_t>::max() / row_stride ||
+      data_size < row_stride * static_cast<size_t>(height)) {
+    throw std::runtime_error("invalid packed color image buffer");
+  }
+
+  const cv::Mat source(static_cast<int>(height), static_cast<int>(width),
+                       CV_8UC3, const_cast<uint8_t*>(data), row_stride);
+  if (!input_is_rgb) return source.clone();
+
+  cv::Mat bgr;
+  cv::cvtColor(source, bgr, cv::COLOR_RGB2BGR);
   return bgr;
 }
 
