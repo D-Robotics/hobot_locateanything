@@ -1,0 +1,51 @@
+hobot_locateanything:
+  ros__parameters:
+    # -------------------------------------------------------------------------
+    # 共用配置：Console 和实时 TROS 推理都会读取
+    # -------------------------------------------------------------------------
+
+    # 模型文件
+    # 相对路径以启动命令所在目录为基准；推荐从仓库根目录启动。
+    # model_directory 为空时使用当前工作目录下的 models。
+    # tokenizer_directory 为空时使用 model_directory/tokenizer。
+    model_directory: models
+    tokenizer_directory: ""
+    vision_model: LocateAnything-3B_vision.hbm
+    language_model: LocateAnything-3B_language.hbm
+    embeddings: LocateAnything-3B_embed_tokens.bin
+
+    # 生成和后处理
+    generation_mode: hybrid
+    max_new_tokens: 4096
+    nms_iou: 0.9
+
+    # S600 BPU
+    # mask=15 表示使用 4 个 BPU 核；l2m_sizes 依次对应 4 个核。
+    vision_backend_mask: 15
+    language_backend_mask: 15
+    l2m_sizes: "6:6:6:6"
+
+    # Console 输出目录；ROS 节点不绘图、不编码、不保存结果。
+    output_directory: outputs
+
+    # -------------------------------------------------------------------------
+    # ROS 节点独有：Console 不读取下面这些字段
+    # -------------------------------------------------------------------------
+    # feed_type=0：直接读取 image 指定的一张本地图片。
+    # feed_type=1：持续订阅 input_topic；不提供纯文本 feed_type=2。
+    feed_type: 1
+    image: image/test_detection.jpg
+    input_topic: /hbmem_img
+    default_prompt: /detect person
+
+    # 仅在 feed_type=1 时生效。true 订阅 hbm_img_msgs/HbmMsg1080P，
+    # false 订阅 sensor_msgs/Image。摄像头和视频发布由其他 TROS 节点负责。
+    is_shared_mem_sub: true
+    prompt_topic: /locateanything/prompt
+    # 最终空间结果使用 ai_msgs/msg/PerceptionTargets；绘制和保存由下游节点负责。
+    result_topic: /perception/locateanything
+
+    # -------------------------------------------------------------------------
+    # Console 独有：当前没有独有 YAML 字段
+    # -------------------------------------------------------------------------
+    # 图片/视频路径和任务在交互界面输入，其他推理设置复用上面的共用配置。

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hobot_locateanything</name>
+  <version>0.1.0</version>
+  <description>LocateAnything HBM inference for D-Robotics TROS.</description>
+  <maintainer email="xkj521999@users.noreply.github.com">Kangjie Xu</maintainer>
+  <license>CC-BY-NC-4.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>ai_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>hbm_img_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
