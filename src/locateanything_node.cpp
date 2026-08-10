@@ -215,25 +215,29 @@ class LocateAnythingNode : public rclcpp::Node {
       shared_image_subscription_ =
           create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
               input_topic, rclcpp::SensorDataQoS(),
-              [this](const hbm_img_msgs::msg::HbmMsg1080P& message) {
+              [this](
+                  const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr message) {
                 try {
+                  if (!message) {
+                    throw std::runtime_error("received a null shared image");
+                  }
                   const auto encoding_end = std::find(
-                      message.encoding.begin(), message.encoding.end(), uint8_t{0});
-                  const std::string encoding(message.encoding.begin(), encoding_end);
-                   if (encoding != "nv12") {
-                     throw std::runtime_error(
-                         "shared-memory input must use nv12 encoding");
-                   }
-                   if (message.data_size > message.data.size()) {
-                     throw std::runtime_error(
-                         "shared-memory data_size exceeds message buffer");
-                   }
-                   cv::Mat image = Nv12ToBgr(
-                      message.data.data(), message.data_size,
-                      message.width, message.height, message.step);
+                      message->encoding.begin(), message->encoding.end(), uint8_t{0});
+                  const std::string encoding(message->encoding.begin(), encoding_end);
+                  if (encoding != "nv12") {
+                    throw std::runtime_error(
+                        "shared-memory input must use nv12 encoding");
+                  }
+                  if (message->data_size > message->data.size()) {
+                    throw std::runtime_error(
+                        "shared-memory data_size exceeds message buffer");
+                  }
+                  cv::Mat image = Nv12ToBgr(
+                      message->data.data(), message->data_size,
+                      message->width, message->height, message->step);
                   std_msgs::msg::Header header;
-                  header.stamp = message.time_stamp;
-                  header.frame_id = std::to_string(message.index);
+                  header.stamp = message->time_stamp;
+                  header.frame_id = std::to_string(message->index);
                   QueueFrame(header, std::move(image));
                 } catch (const std::exception& error) {
                   RCLCPP_WARN(get_logger(), "cannot process shared image: %s",
