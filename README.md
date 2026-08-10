@@ -71,12 +71,20 @@ outputs; the ROS node does not.
 
 ## TROS node: real-time input
 
-Start the node with the repository config:
+The ROS entry point follows the official TROS `ros2 run` contract. Use the
+parameter file for the shared model settings and override the input contract
+with ordinary ROS parameters:
 
 ```bash
 cd "$HOME/tros_ws/src/hobot_locateanything"
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
 ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args --params-file "$PWD/config.yaml"
+  --ros-args \
+  --params-file "$PWD/config.yaml" \
+  -p input_topic:=/hbmem_img \
+  -p is_shared_mem_sub:=true \
+  -p default_prompt:="/detect person"
 ```
 
 The node subscribes to the image topic configured by `input_topic` and to
@@ -93,6 +101,24 @@ Change the prompt for subsequent frames:
 ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   '{data: "/detect person,motorcycle"}'
 ```
+
+For a standard `sensor_msgs/msg/Image` publisher, use the same executable and
+override only the input transport and topic. The official TROS image
+publisher may use `bgr`, `rgb`, `bgr8` or `rgb8`; all four are accepted.
+
+```bash
+ros2 run hobot_locateanything hobot_locateanything \
+  --ros-args \
+  --params-file "$PWD/config.yaml" \
+  -p input_topic:=/image \
+  -p is_shared_mem_sub:=false \
+  -p default_prompt:="/detect person"
+```
+
+No launch XML or Python wrapper is part of this package. Start the official
+camera or media publisher separately, then start this executable with the
+parameters above. The Console remains the local image/video entry point and
+uses the same `InferenceSession` in a separate process.
 
 Each accepted frame produces exactly one `ai_msgs/msg/PerceptionTargets`
 message on `/perception/locateanything`, including an empty `targets` list
