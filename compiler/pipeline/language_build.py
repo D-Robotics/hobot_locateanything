@@ -22,7 +22,7 @@ from hbdk4.compiler.hbm import Hbm, Hbo
 
 from model.base import Model
 from model.graphs import LANGUAGE_GRAPHS
-from pipeline.progress import StageProgress  # noqa: E402
+from pipeline.progress import StageProgress, format_status_line  # noqa: E402
 
 
 BASE_EXPECTED = {
@@ -231,6 +231,17 @@ def discover_bc(
         print(
             f"[DETAIL] {name}: logits={logits_shape} cache={cache_shape} "
             f"inputs=75 outputs=73",
+            flush=True,
+        )
+        print(
+            format_status_line(
+                "build.language",
+                len(discovered),
+                len(expected),
+                "PROGRESS",
+                "Validate source BC",
+                details=f"graph={name}",
+            ),
             flush=True,
         )
     missing = sorted(expected - set(discovered))
