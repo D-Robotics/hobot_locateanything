@@ -229,13 +229,17 @@ def discover_bc(
         cache_shape = tuple(function.outputs[1].type.shape)
         discovered[name] = path.resolve()
         print(
-            f"[PASS] {name}: logits={logits_shape} cache={cache_shape} "
+            f"[DETAIL] {name}: logits={logits_shape} cache={cache_shape} "
             f"inputs=75 outputs=73",
             flush=True,
         )
     missing = sorted(expected - set(discovered))
     if missing:
         raise RuntimeError(f"missing BC graphs in {bc_dir}: {missing}")
+    print(
+        f"[PASS] fixed {len(discovered)}-graph source BC contract",
+        flush=True,
+    )
     return discovered
 
 

@@ -136,8 +136,11 @@ def compact_build_line(component: str, raw_line: str) -> str | None:
     }
     for prefix, state in translations.items():
         if line.startswith(prefix):
+            message = line[len(prefix):].strip()
+            if component == "vision" and message.startswith("visual:"):
+                return None
             return format_status_line(
-                scope, None, None, state, line[len(prefix):].strip()
+                scope, None, None, state, message
             )
     legacy_prefix = f"[build:{component}]"
     if line.startswith(legacy_prefix):

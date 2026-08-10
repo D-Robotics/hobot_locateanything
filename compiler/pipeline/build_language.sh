@@ -204,7 +204,7 @@ set -e
 printf 'exit_code=%s\ntarget=%s\ncompleted_at=%s\n' \
   "$status" "$BUILD_TARGET" "$(date --iso-8601=seconds)" > "$EXIT_PATH"
 if [[ "$status" -ne 0 ]]; then
-  echo "[ERROR] [build.language] [-/-] FAILED Build failed | exit=$status log=$LOG_FILE"
+  echo "[ERROR] [build.language]    [-/-]   FAILED    Build failed | exit=$status log=$LOG_FILE"
   exit "$status"
 fi
-echo "[INFO] [build.language] [-/-] COMPLETE Build target=$BUILD_TARGET | log=$LOG_FILE"
+echo "[INFO]  [build.language]    [-/-]   COMPLETE  Build target=$BUILD_TARGET | log=$LOG_FILE"
