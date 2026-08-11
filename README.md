@@ -74,6 +74,7 @@ git clone https://github.com/LiuAnclouds/hobot_locateanything.git
 cd hobot_locateanything
 
 python3 -m pip install -U huggingface_hub
+export HF_ENDPOINT="https://hf-mirror.com"
 hf download xkj521999/LocateAnything-3B-S600 --local-dir models
 ```
 
