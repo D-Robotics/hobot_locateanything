@@ -161,7 +161,9 @@ Result
 
 #### ROS 2 node
 
-Run terminals 1 through 4 in order. The inference node ignores images until it receives a valid prompt.
+Local image replay and USB camera input are independent workflows. Run terminals 1 through 4 within the selected workflow. The inference node ignores images until it receives a valid prompt.
+
+##### Local image replay
 
 Terminal 1: start the inference node and wait for `ready`.
 
@@ -177,13 +179,13 @@ ros2 run hobot_locateanything hobot_locateanything \
   -p is_shared_mem_sub:=true
 ```
 
-Terminal 2: wait for one structured result before publishing an image.
+Terminal 2: continuously subscribe to structured results.
 
 ```bash
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-ros2 topic echo --once \
+ros2 topic echo \
   /perception/locateanything \
   ai_msgs/msg/PerceptionTargets
 ```
@@ -218,11 +220,62 @@ ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_encoding:=nv12
 ```
 
-The image node publishes continuously. Press `Ctrl+C` in this terminal after receiving the result.
+The image node publishes the same image continuously at 2 FPS.
 
-To verify prompt replacement, rerun terminal 2, publish `/detect bus` from terminal 3, and restart terminal 4. New frames use only the new prompt.
+To run another task on the same image, keep terminals 1, 2, and 4 running and publish a new prompt from terminal 3:
 
-For USB camera input, remove `--once` from the terminal 2 command above and replace terminal 4 with:
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/detect bus'}"
+```
+
+Subsequent replays of the same image use `/detect bus`. The image publisher and result subscription do not need to restart.
+
+##### USB camera input
+
+Terminal 1: start the inference node and wait for `ready`.
+
+```bash
+cd "$HOME/tros_ws/src/hobot_locateanything"
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 run hobot_locateanything hobot_locateanything \
+  --ros-args \
+  --params-file "$PWD/config.yaml" \
+  -p input_topic:=/hbmem_img \
+  -p is_shared_mem_sub:=true
+```
+
+Terminal 2: continuously subscribe to structured results.
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic echo \
+  /perception/locateanything \
+  ai_msgs/msg/PerceptionTargets
+```
+
+Terminal 3: publish a prompt.
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/ground cardboard box'}"
+```
+
+Terminal 4: start the official TROS USB camera node.
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -237,6 +290,8 @@ ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
   usb_io_method:=mmap \
   usb_zero_copy:=True
 ```
+
+While the camera is publishing, send a new prompt directly from terminal 3. Subsequent frames use the new prompt without restarting the camera node or result subscription.
 
 The ROS node publishes results only. Rendering, encoding, and file storage belong to downstream TROS nodes.
 

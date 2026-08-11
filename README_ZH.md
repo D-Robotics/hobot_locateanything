@@ -161,7 +161,9 @@ Result
 
 #### ROS 2 节点推理
 
-以下命令按终端 1 至终端 4 的顺序执行。收到有效 Prompt 前，推理节点不会处理图像。
+本地图片回灌和 USB 摄像头是两套独立流程，分别按各自的终端 1 至终端 4 执行。收到有效 Prompt 前，推理节点不会处理图像。
+
+##### 本地图片回灌
 
 终端 1，启动推理节点并等待 `ready`：
 
@@ -177,13 +179,13 @@ ros2 run hobot_locateanything hobot_locateanything \
   -p is_shared_mem_sub:=true
 ```
 
-终端 2，在图像发布前等待一条结构化结果：
+终端 2，持续订阅结构化结果：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-ros2 topic echo --once \
+ros2 topic echo \
   /perception/locateanything \
   ai_msgs/msg/PerceptionTargets
 ```
@@ -218,11 +220,62 @@ ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_encoding:=nv12
 ```
 
-图片节点会持续发布。收到结果后，在该终端按 `Ctrl+C` 停止回灌。
+图片节点以 2 FPS 持续发布同一张图片。
 
-验证 Prompt 覆盖时，重新执行终端 2，在终端 3 发布 `/detect bus`，再重新启动终端 4。后续新帧仅使用新的 Prompt。
+需要在同一张图片上切换任务时，保持终端 1、2、4 运行，直接在终端 3 发布新的 Prompt：
 
-USB 摄像头输入时，终端 2 删除上述命令中的 `--once`，终端 4 改为：
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/detect bus'}"
+```
+
+后续接收的同一张回灌图片使用 `/detect bus`，不需要重启图片发布节点或结果订阅。
+
+##### USB 摄像头输入
+
+终端 1，启动推理节点并等待 `ready`：
+
+```bash
+cd "$HOME/tros_ws/src/hobot_locateanything"
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 run hobot_locateanything hobot_locateanything \
+  --ros-args \
+  --params-file "$PWD/config.yaml" \
+  -p input_topic:=/hbmem_img \
+  -p is_shared_mem_sub:=true
+```
+
+终端 2，持续订阅结构化结果：
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic echo \
+  /perception/locateanything \
+  ai_msgs/msg/PerceptionTargets
+```
+
+终端 3，发布 Prompt：
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/ground cardboard box'}"
+```
+
+终端 4，启动 TROS 官方 USB 摄像头节点：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -237,6 +290,8 @@ ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
   usb_io_method:=mmap \
   usb_zero_copy:=True
 ```
+
+摄像头持续发布期间可直接在终端 3 发布新的 Prompt，后续新帧使用新 Prompt，无需重启摄像头节点或结果订阅。
 
 ROS 节点只发布结果，不绘图、不编码、不保存文件。渲染和存储由下游 TROS 节点完成。
 
