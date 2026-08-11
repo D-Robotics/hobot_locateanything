@@ -183,7 +183,9 @@ Terminal 2: wait for one structured result before publishing an image.
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-ros2 topic echo --once /perception/locateanything
+ros2 topic echo --once \
+  /perception/locateanything \
+  ai_msgs/msg/PerceptionTargets
 ```
 
 Terminal 3: publish a prompt.
@@ -200,24 +202,25 @@ ros2 topic pub --once \
 
 A valid prompt remains active until another valid prompt replaces it or the node restarts.
 
-Terminal 4: replay one local image with the official TROS image publisher.
+Terminal 4: replay a local image with the official TROS image publisher.
 
 ```bash
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-timeout --signal=INT --kill-after=2s 3s \
-  ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
+ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
   publish_image_format:=jpg \
   publish_message_topic_name:=/hbmem_img \
-  publish_fps:=1 \
+  publish_fps:=10 \
   publish_is_loop:=True \
   publish_is_shared_mem:=True \
   publish_encoding:=nv12
 ```
 
-For USB camera input, run `ros2 topic echo /perception/locateanything` in terminal 2 and replace terminal 4 with:
+The image node publishes continuously. Press `Ctrl+C` in this terminal after receiving the result.
+
+For USB camera input, remove `--once` from the terminal 2 command above and replace terminal 4 with:
 
 ```bash
 source /opt/tros/jazzy/setup.bash

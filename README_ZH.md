@@ -183,7 +183,9 @@ ros2 run hobot_locateanything hobot_locateanything \
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-ros2 topic echo --once /perception/locateanything
+ros2 topic echo --once \
+  /perception/locateanything \
+  ai_msgs/msg/PerceptionTargets
 ```
 
 终端 3，发布 Prompt：
@@ -200,24 +202,25 @@ ros2 topic pub --once \
 
 有效 Prompt 会持续生效，直到新的有效 Prompt 覆盖或节点重启。
 
-终端 4，使用 TROS 官方图像发布节点回灌一张本地图片：
+终端 4，使用 TROS 官方图像发布节点回灌本地图片：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
 source "$HOME/tros_ws/install/setup.bash"
 
-timeout --signal=INT --kill-after=2s 3s \
-  ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
+ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
   publish_image_format:=jpg \
   publish_message_topic_name:=/hbmem_img \
-  publish_fps:=1 \
+  publish_fps:=10 \
   publish_is_loop:=True \
   publish_is_shared_mem:=True \
   publish_encoding:=nv12
 ```
 
-USB 摄像头输入时，终端 2 使用 `ros2 topic echo /perception/locateanything`，终端 4 改为：
+图片节点会持续发布。收到结果后，在该终端按 `Ctrl+C` 停止回灌。
+
+USB 摄像头输入时，终端 2 删除上述命令中的 `--once`，终端 4 改为：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
