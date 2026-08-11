@@ -197,7 +197,7 @@ source "$HOME/tros_ws/install/setup.bash"
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
-  "{data: '/detect person,bus,bicycle'}"
+  "{data: '/detect person'}"
 ```
 
 有效 Prompt 会持续生效，直到新的有效 Prompt 覆盖或节点重启。
@@ -219,6 +219,8 @@ ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
 ```
 
 图片节点会持续发布。收到结果后，在该终端按 `Ctrl+C` 停止回灌。
+
+验证 Prompt 覆盖时，重新执行终端 2，在终端 3 发布 `/detect bus`，再重新启动终端 4。后续新帧仅使用新的 Prompt。
 
 USB 摄像头输入时，终端 2 删除上述命令中的 `--once`，终端 4 改为：
 

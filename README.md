@@ -197,7 +197,7 @@ source "$HOME/tros_ws/install/setup.bash"
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
-  "{data: '/detect person,bus,bicycle'}"
+  "{data: '/detect person'}"
 ```
 
 A valid prompt remains active until another valid prompt replaces it or the node restarts.
@@ -219,6 +219,8 @@ ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
 ```
 
 The image node publishes continuously. Press `Ctrl+C` in this terminal after receiving the result.
+
+To verify prompt replacement, rerun terminal 2, publish `/detect bus` from terminal 3, and restart terminal 4. New frames use only the new prompt.
 
 For USB camera input, remove `--once` from the terminal 2 command above and replace terminal 4 with:
 
