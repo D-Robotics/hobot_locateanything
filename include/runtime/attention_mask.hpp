@@ -35,24 +35,20 @@ struct AttentionMask {
   std::vector<uint16_t> data;   // fp16 bit patterns, row-major
 };
 
-// Build a PBD-aware causal mask for one prefill or decode step.
-//
-//   q_len       : number of query positions this step (1024 prefill, 6 decode)
-//   cache_len   : total KV cache length (4096). Active history and the current
-//                 query window are right-aligned in this fixed graph.
-//   past_len    : number of tokens already in the cache before this step
-//                 (0 for cold-start prefill, grows by q_len each step).
-//   block_size  : PBD block size (6 for LA). Only the decode step uses the
-//                 bidirectional block tweak; prefill passes block_size=0 to
-//                 skip it.
-//   mask_value  : fp16 bit pattern for "masked" (-32768 for LA).
-//   causal_attn : if true, keep strict causal (no PBD bidirectional block).
-//
-// The returned mask covers the full cache_len columns; rows correspond to
-// the q_len query positions. History occupies
-// [cache_len-q_len-past_len, cache_len-q_len), and the current query occupies
-// [cache_len-q_len, cache_len). The standard causal pattern applies within
-// the query window, plus the PBD block tweak when not causal_attn.
+/**
+ * @brief Build a PBD-aware causal mask for one prefill or decode step.
+ *
+ * The returned mask covers all cache columns. History and query rows are
+ * right-aligned, with the PBD bidirectional block applied only when requested.
+ * @param q_len Number of query positions in this step.
+ * @param cache_len Total fixed KV-cache length.
+ * @param past_len Number of cache rows committed before this step.
+ * @param block_size PBD block width, or zero for plain causal behavior.
+ * @param mask_value_fp16 Raw fp16 value used for masked positions.
+ * @param causal_attn Keep strict causal attention when true.
+ * @param out Destination shape and fp16 mask values.
+ * @return True when dimensions are valid and the mask was built.
+ */
 bool BuildAttentionMask(int32_t q_len,
                         int32_t cache_len,
                         int32_t past_len,
@@ -61,9 +57,11 @@ bool BuildAttentionMask(int32_t q_len,
                         bool causal_attn,
                         AttentionMask *out);
 
-// Encode a float as an IEEE 754 binary16 bit pattern. Used to turn the
-// LA mask_value (-32768.0f) into the fp16 bits the hbm expects. Also
-// exported so callers can pass any float they like.
+/**
+ * @brief Encode a host float as an IEEE-754 binary16 bit pattern.
+ * @param f Host floating-point value.
+ * @return Raw fp16 bits consumed by the HBM graph.
+ */
 uint16_t FloatToFp16Bits(float f);
 
 }  // namespace locateanything_runtime

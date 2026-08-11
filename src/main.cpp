@@ -5,6 +5,12 @@
 
 #include "locateanything_node.hpp"
 
+/**
+ * @brief Initialize ROS, run the LocateAnything node, and shut ROS down cleanly.
+ * @param argc Process argument count supplied to ROS.
+ * @param argv Process arguments supplied to ROS.
+ * @return Zero after normal shutdown, or one after startup/runtime failure.
+ */
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   int exit_code = 0;

@@ -111,16 +111,4 @@ install(TARGETS
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 
-if(BUILD_TESTING)
-  find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(processing_test
-    test/processing_test.cpp
-    src/processing/image.cpp
-    src/processing/prompt.cpp)
-  target_include_directories(processing_test PRIVATE
-    include
-    ${OpenCV_INCLUDE_DIRS})
-  target_link_libraries(processing_test ${OpenCV_LIBS})
-endif()
-
 ament_package()

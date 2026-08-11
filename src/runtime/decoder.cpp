@@ -31,6 +31,11 @@ constexpr int32_t kNone = 4064;
 constexpr int32_t kNucleusInitialWidth = 256;
 constexpr int32_t kNucleusMaximumWidth = 8192;
 
+/**
+ * @brief Convert one IEEE-754 binary16 bit pattern to a host float.
+ * @param bits Raw fp16 value.
+ * @return Converted fp32 value.
+ */
 float Fp16ToFloat(uint16_t bits) {
   const uint32_t sign = (bits >> 15) & 1u;
   const uint32_t exponent = (bits >> 10) & 0x1fu;
@@ -46,6 +51,11 @@ float Fp16ToFloat(uint16_t bits) {
   return sign ? -value : value;
 }
 
+/**
+ * @brief Convert one vocabulary row from fp16 logits to host-side fp32.
+ * @param raw Source row containing exactly one vocabulary of fp16 values.
+ * @param values Pre-sized fp32 destination vector.
+ */
 void ConvertFp16Row(const uint16_t *raw, std::vector<float> *values) {
   size_t token = 0;
 #if defined(__aarch64__) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
@@ -74,6 +84,14 @@ void ConvertFp16Row(const uint16_t *raw, std::vector<float> *values) {
   }
 }
 
+/**
+ * @brief Extract and repetition-adjust one logits row.
+ * @param logits Source fp16 logits tensor.
+ * @param row Sequence-axis row index.
+ * @param history_tokens De-duplicated generated-token history.
+ * @param repetition_penalty Positive repetition penalty.
+ * @return Adjusted fp32 vocabulary scores.
+ */
 std::vector<float> Row(const Tensor &logits, int32_t row,
                        const std::vector<int32_t> &history_tokens,
                        float repetition_penalty) {
@@ -96,7 +114,12 @@ struct NucleusDistribution {
   int32_t retained = 0;
 };
 
+/** Normalize logits using a caller-provided maximum for numerical stability. */
+std::vector<float> Softmax(const std::vector<float> &logits,
+                           float maximum);
+/** Normalize logits using their maximum value. */
 std::vector<float> Softmax(const std::vector<float> &logits);
+/** Return the index of the largest value, preserving the first tie. */
 int32_t Argmax(const std::vector<float> &values);
 
 std::vector<float> Softmax(const std::vector<float> &logits,
@@ -112,6 +135,13 @@ std::vector<float> Softmax(const std::vector<float> &logits,
   return probabilities;
 }
 
+/**
+ * @brief Apply temperature scaling and top-p filtering to one logits row.
+ * @param logits Repetition-adjusted vocabulary scores.
+ * @param temperature Positive sampling temperature.
+ * @param top_p Retained probability mass in (0, 1].
+ * @return Filtered probabilities and retained-token count.
+ */
 NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
                                     float temperature, float top_p) {
   std::vector<float> adjusted(logits.size());
@@ -220,6 +250,15 @@ struct PbdRowResult {
   int32_t retained_tokens = 0;
 };
 
+/**
+ * @brief Decode one PBD row and optionally retain comparison probabilities.
+ * @param logits Source PBD logits tensor.
+ * @param row Sequence-axis row index.
+ * @param history_tokens De-duplicated generated-token history.
+ * @param config Sampling configuration.
+ * @param collect_diagnostics Preserve unfiltered probabilities when true.
+ * @return Row probabilities, greedy token, and diagnostic data.
+ */
 PbdRowResult DecodePbdRow(const Tensor &logits, int32_t row,
                           const std::vector<int32_t> &history_tokens,
                           const PbdDecodeConfig &config,
@@ -237,6 +276,7 @@ PbdRowResult DecodePbdRow(const Tensor &logits, int32_t row,
 
 class PbdRowExecutor {
  public:
+  /** Start five workers; the caller decodes the sixth row on its own thread. */
   PbdRowExecutor() {
     workers_.reserve(5);
     for (int32_t row = 0; row < 5; ++row) {
@@ -244,6 +284,7 @@ class PbdRowExecutor {
     }
   }
 
+  /** Stop workers and wait for any in-flight row jobs to finish. */
   ~PbdRowExecutor() {
     {
       std::lock_guard<std::mutex> lock(job_mutex_);
@@ -256,6 +297,15 @@ class PbdRowExecutor {
   PbdRowExecutor(const PbdRowExecutor &) = delete;
   PbdRowExecutor &operator=(const PbdRowExecutor &) = delete;
 
+  /**
+   * @brief Dispatch five rows and synchronously collect all six row results.
+   * @param logits Source PBD logits tensor.
+   * @param history_tokens De-duplicated generated-token history.
+   * @param config Sampling configuration.
+   * @param collect_diagnostics Preserve unfiltered probabilities when true.
+   * @param row_start First row of the six-row decision window.
+   * @param results Destination fixed-size row result array.
+   */
   void Decode(const Tensor &logits,
               const std::vector<int32_t> &history_tokens,
               const PbdDecodeConfig &config, bool collect_diagnostics,
@@ -287,6 +337,10 @@ class PbdRowExecutor {
   }
 
  private:
+  /**
+   * @brief Wait for jobs, decode one assigned row, and signal completion.
+   * @param row Worker-owned row offset from zero through four.
+   */
   void Worker(int32_t row) {
     size_t observed_generation = 0;
     while (true) {
@@ -339,16 +393,28 @@ class PbdRowExecutor {
   bool stopping_ = false;
 };
 
+/** Return the process-wide row executor used by the shared inference core. */
 PbdRowExecutor &PbdRows() {
   static PbdRowExecutor executor;
   return executor;
 }
 
+/**
+ * @brief Normalize logits after finding their maximum value.
+ * @param logits Vocabulary scores to normalize.
+ * @return Probability for every vocabulary entry.
+ */
 std::vector<float> Softmax(const std::vector<float> &logits) {
   const float maximum = *std::max_element(logits.begin(), logits.end());
   return Softmax(logits, maximum);
 }
 
+/**
+ * @brief Return token indices ordered by descending score.
+ * @param values Scores indexed by token ID.
+ * @param count Maximum number of indices to return.
+ * @return Up to count best token IDs with stable numeric tie-breaking.
+ */
 std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
   count = std::min<int32_t>(count, static_cast<int32_t>(values.size()));
   if (count <= 0) return {};
@@ -375,6 +441,11 @@ std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
   return top;
 }
 
+/**
+ * @brief Build a de-duplicated token history for repetition penalties.
+ * @param generated Prompt and response token history.
+ * @return Thread-local valid token IDs, unique in first-occurrence order.
+ */
 const std::vector<int32_t> &BuildHistoryTokens(
     const std::vector<int32_t> &generated) {
   static thread_local std::vector<uint8_t> seen(
@@ -394,21 +465,42 @@ const std::vector<int32_t> &BuildHistoryTokens(
   return history_tokens;
 }
 
+/**
+ * @brief Return the first index with the largest score.
+ * @param values Scores indexed by token ID.
+ * @return Index of the maximum value, or zero for an empty vector.
+ */
 int32_t Argmax(const std::vector<float> &values) {
   return static_cast<int32_t>(
       std::max_element(values.begin(), values.end()) - values.begin());
 }
 
+/**
+ * @brief Score terminal-token alternatives in the last PBD row.
+ * @param probabilities Six PBD vocabulary distributions.
+ * @return Combined end, null, and image-end probability.
+ */
 float EndScore(const std::vector<std::vector<float>> &probabilities) {
   return probabilities[5][kBoxEnd] + probabilities[5][kNull] +
          probabilities[5][kImEnd];
 }
 
+/**
+ * @brief Return the strongest probability in the coordinate range.
+ * @param probabilities One vocabulary distribution.
+ * @return Maximum coordinate-token probability.
+ */
 float TopCoordinateProbability(const std::vector<float> &probabilities) {
   return *std::max_element(probabilities.begin() + kCoordStart,
                            probabilities.begin() + kCoordEnd + 1);
 }
 
+/**
+ * @brief Recognize a complete box or explicit empty-box pattern.
+ * @param probabilities Six PBD vocabulary distributions.
+ * @param tokens Destination accepted box tokens.
+ * @return True when a valid complete pattern was recognized.
+ */
 bool DecodeBox(const std::vector<std::vector<float>> &probabilities,
                std::vector<int32_t> *tokens) {
   const float start = probabilities[0][kBoxStart];
@@ -441,6 +533,12 @@ bool DecodeBox(const std::vector<std::vector<float>> &probabilities,
   return true;
 }
 
+/**
+ * @brief Recognize a six-row reference-object token pattern.
+ * @param probabilities Six PBD vocabulary distributions.
+ * @param tokens Destination accepted reference tokens.
+ * @return True when a valid reference pattern was recognized.
+ */
 bool DecodeRef(const std::vector<std::vector<float>> &probabilities,
                std::vector<int32_t> *tokens) {
   if (probabilities[0][kRefStart] < 0.6f) return false;
@@ -457,6 +555,11 @@ bool DecodeRef(const std::vector<std::vector<float>> &probabilities,
   return true;
 }
 
+/**
+ * @brief Convert a candidate token pattern into a hybrid decoder decision.
+ * @param tokens Candidate six-row token sequence.
+ * @return Accepted tokens and PBD/AR/terminal control flags.
+ */
 HybridDecision HandlePattern(std::vector<int32_t> tokens) {
   if (tokens.empty()) return {"im_end", {kImEnd}, false, true};
   if (tokens[0] == kNull || tokens[0] == kImEnd) {
@@ -493,6 +596,7 @@ HybridDecision HandlePattern(std::vector<int32_t> tokens) {
 
 }  // namespace
 
+/** Return whether token is one of the 0..1000 coordinate tokens. */
 bool IsCoordinateToken(int32_t token) {
   return token >= kCoordStart && token <= kCoordEnd;
 }

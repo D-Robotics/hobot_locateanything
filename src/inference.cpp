@@ -19,11 +19,24 @@ namespace {
 
 namespace fs = std::filesystem;
 
+/**
+ * @brief Return elapsed time between two monotonic clock points.
+ * @param start Earlier clock point.
+ * @param end Later clock point.
+ * @return Elapsed milliseconds.
+ */
 double MillisecondsBetween(std::chrono::steady_clock::time_point start,
                            std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+/**
+ * @brief Convert stage clock bounds into offsets from inference start.
+ * @param inference_started Start of the complete inference call.
+ * @param stage_started Start of one pipeline stage.
+ * @param stage_ended End of one pipeline stage.
+ * @return Monotonic stage offsets in milliseconds.
+ */
 StageTiming Stage(std::chrono::steady_clock::time_point inference_started,
                   std::chrono::steady_clock::time_point stage_started,
                   std::chrono::steady_clock::time_point stage_ended) {
@@ -36,6 +49,10 @@ StageTiming Stage(std::chrono::steady_clock::time_point inference_started,
 }  // namespace
 
 struct InferenceSession::Impl {
+  /**
+   * @brief Store runtime options and construct postprocessing state.
+   * @param value Explicit shared-core runtime options.
+   */
   explicit Impl(InferenceOptions value)
       : options(std::move(value)), postprocessor(options.nms_iou) {}
 
@@ -150,7 +167,7 @@ InferenceOutput InferenceSession::Infer(const cv::Mat& bgr,
   if (output_options.serialize_json) {
     output.json = impl_->postprocessor.ToJson(
         output.prediction, prompt.task, output.stop_reason, frame_index,
-        output.metrics);
+        output.metrics, output_options.pretty_json);
   }
   return output;
 }

@@ -46,10 +46,20 @@ namespace {
 constexpr auto kDropWarningInterval = std::chrono::seconds(5);
 constexpr size_t kFpsWindowSize = 30;
 
+/**
+ * @brief Normalize a measured duration before placing it in a ROS message.
+ * @param value Measured duration in milliseconds.
+ * @return Positive finite duration, or zero for an invalid value.
+ */
 double SafeDurationMs(double value) {
   return std::isfinite(value) && value > 0.0 ? value : 0.0;
 }
 
+/**
+ * @brief Replace control characters so one inference remains one log line.
+ * @param value Text that may contain line-breaking control characters.
+ * @return Sanitized log text.
+ */
 std::string LogText(const std::string& value) {
   std::string result = value;
   for (char& item : result) {
@@ -58,6 +68,11 @@ std::string LogText(const std::string& value) {
   return result;
 }
 
+/**
+ * @brief Join prediction labels into the compact INFO-log representation.
+ * @param prediction Structured inference prediction.
+ * @return Pipe-separated detection and point labels.
+ */
 std::string ResultLabels(const Prediction& prediction) {
   std::ostringstream stream;
   bool first = true;
@@ -73,6 +88,12 @@ std::string ResultLabels(const Prediction& prediction) {
   return stream.str();
 }
 
+/**
+ * @brief Round a floating coordinate and clamp it to an image bound.
+ * @param value Source-space floating coordinate.
+ * @param limit Inclusive image-axis limit.
+ * @return Clamped unsigned coordinate.
+ */
 uint32_t RoundAndClamp(float value, uint32_t limit) {
   if (!std::isfinite(value)) return 0;
   const long rounded = std::lround(value);
@@ -80,10 +101,23 @@ uint32_t RoundAndClamp(float value, uint32_t limit) {
       std::clamp<long>(rounded, 0, static_cast<long>(limit)));
 }
 
+/**
+ * @brief Clamp a floating-point coordinate to the source image extent.
+ * @param value Source-space coordinate.
+ * @param limit Inclusive image-axis limit.
+ * @return Finite clamped coordinate.
+ */
 float ClampPoint(float value, float limit) {
   return std::isfinite(value) ? std::clamp(value, 0.0f, limit) : 0.0f;
 }
 
+/**
+ * @brief Append one inference stage timing to the outgoing ai_msgs message.
+ * @param message Destination PerceptionTargets message.
+ * @param type Public stage name.
+ * @param inference_started ROS timestamp corresponding to inference start.
+ * @param timing Monotonic stage offsets from the shared inference core.
+ */
 void AppendPerf(ai_msgs::msg::PerceptionTargets* message,
                 const std::string& type,
                 const rclcpp::Time& inference_started,
@@ -102,6 +136,11 @@ void AppendPerf(ai_msgs::msg::PerceptionTargets* message,
   message->perfs.emplace_back(std::move(perf));
 }
 
+/**
+ * @brief Render token IDs for opt-in DEBUG logging.
+ * @param tokens Generated model token IDs.
+ * @return Comma-separated token list.
+ */
 std::string TokenIdsText(const std::vector<int32_t>& tokens) {
   std::ostringstream stream;
   for (size_t index = 0; index < tokens.size(); ++index) {
@@ -113,6 +152,7 @@ std::string TokenIdsText(const std::vector<int32_t>& tokens) {
 
 }  // namespace
 
+/** Latest-frame queue item with the Prompt snapshot captured on arrival. */
 struct PendingFrame {
   std_msgs::msg::Header header;
   cv::Mat image;
@@ -121,6 +161,7 @@ struct PendingFrame {
 
 class LocateAnythingNode : public rclcpp::Node {
  public:
+  /** Declare parameters, load the shared inference core, and wire TROS topics. */
   LocateAnythingNode() : Node("hobot_locateanything") {
     const std::string input_topic =
         declare_parameter<std::string>("input_topic", "/hbmem_img");
@@ -195,21 +236,9 @@ class LocateAnythingNode : public rclcpp::Node {
     result_publisher_ =
         create_publisher<ai_msgs::msg::PerceptionTargets>(result_topic, 10);
     prompt_subscription_ = create_subscription<std_msgs::msg::String>(
-        prompt_topic, 10, [this](const std_msgs::msg::String::ConstSharedPtr message) {
-          try {
-            ValidatePrompt(message->data);
-          } catch (const std::exception& error) {
-            RCLCPP_WARN(get_logger(),
-                        "ignoring invalid prompt; previous prompt remains active: %s",
-                        error.what());
-            return;
-          }
-          {
-            std::lock_guard<std::mutex> lock(mutex_);
-            prompt_ = message->data;
-          }
-          RCLCPP_INFO(get_logger(), "prompt updated: %s",
-                      LogText(message->data).c_str());
+        prompt_topic, 10,
+        [this](const std_msgs::msg::String::ConstSharedPtr message) {
+          OnPrompt(message);
         });
     if (is_shared_mem_sub) {
       shared_image_subscription_ =
@@ -217,58 +246,13 @@ class LocateAnythingNode : public rclcpp::Node {
               input_topic, rclcpp::SensorDataQoS(),
               [this](
                   const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr message) {
-                try {
-                  if (!message) {
-                    throw std::runtime_error("received a null shared image");
-                  }
-                  const auto encoding_end = std::find(
-                      message->encoding.begin(), message->encoding.end(), uint8_t{0});
-                  const std::string encoding(message->encoding.begin(), encoding_end);
-                  if (encoding != "nv12") {
-                    throw std::runtime_error(
-                        "shared-memory input must use nv12 encoding");
-                  }
-                  if (message->data_size > message->data.size()) {
-                    throw std::runtime_error(
-                        "shared-memory data_size exceeds message buffer");
-                  }
-                  cv::Mat image = Nv12ToBgr(
-                      message->data.data(), message->data_size,
-                      message->width, message->height, message->step);
-                  std_msgs::msg::Header header;
-                  header.stamp = message->time_stamp;
-                  header.frame_id = std::to_string(message->index);
-                  QueueFrame(header, std::move(image));
-                } catch (const std::exception& error) {
-                  RCLCPP_WARN(get_logger(), "cannot process shared image: %s",
-                              error.what());
-                }
+                OnSharedImage(message);
               });
     } else {
       image_subscription_ = create_subscription<sensor_msgs::msg::Image>(
           input_topic, rclcpp::SensorDataQoS(),
           [this](const sensor_msgs::msg::Image::ConstSharedPtr message) {
-            try {
-              cv::Mat image;
-              if (message->encoding == "nv12") {
-                image = Nv12ToBgr(
-                    reinterpret_cast<const uint8_t*>(message->data.data()),
-                    message->data.size(), message->width, message->height,
-                    message->step);
-              } else if (message->encoding == "bgr" ||
-                         message->encoding == "rgb") {
-                image = PackedColorToBgr(
-                    reinterpret_cast<const uint8_t*>(message->data.data()),
-                    message->data.size(), message->width, message->height,
-                    message->step, message->encoding == "rgb");
-              } else {
-                image = cv_bridge::toCvCopy(message, "bgr8")->image;
-              }
-              QueueFrame(message->header, std::move(image));
-            } catch (const std::exception& error) {
-              RCLCPP_WARN(get_logger(), "cannot process input image: %s",
-                          error.what());
-            }
+            OnImage(message);
           });
     }
     worker_ = std::thread([this] { Run(); });
@@ -279,6 +263,7 @@ class LocateAnythingNode : public rclcpp::Node {
                 prompt_topic.c_str(), result_topic.c_str());
   }
 
+  /** Stop the worker and report any frames dropped during shutdown. */
   ~LocateAnythingNode() override {
     uint64_t unreported_drops = 0;
     uint64_t total_drops = 0;
@@ -300,10 +285,101 @@ class LocateAnythingNode : public rclcpp::Node {
   }
 
  private:
+  /**
+   * @brief Validate a public Prompt before changing active Prompt state.
+   * @param prompt Public LocateAnything task command.
+   */
   static void ValidatePrompt(const std::string& prompt) {
     (void)PromptBuilder{}.Build(prompt);
   }
 
+  /**
+   * @brief Validate and activate a Prompt message for subsequently received frames.
+   * @param message Incoming `/locateanything/prompt` message.
+   */
+  void OnPrompt(const std_msgs::msg::String::ConstSharedPtr message) {
+    try {
+      ValidatePrompt(message->data);
+    } catch (const std::exception& error) {
+      RCLCPP_WARN(get_logger(),
+                  "ignoring invalid prompt; previous prompt remains active: %s",
+                  error.what());
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      prompt_ = message->data;
+    }
+    RCLCPP_INFO(get_logger(), "prompt updated: %s",
+                LogText(message->data).c_str());
+  }
+
+  /**
+   * @brief Convert an official TROS shared-memory NV12 message and queue it.
+   * @param message Incoming `hbm_img_msgs/msg/HbmMsg1080P` frame.
+   */
+  void OnSharedImage(
+      const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr message) {
+    try {
+      if (!message) {
+        throw std::runtime_error("received a null shared image");
+      }
+      const auto encoding_end = std::find(
+          message->encoding.begin(), message->encoding.end(), uint8_t{0});
+      const std::string encoding(message->encoding.begin(), encoding_end);
+      if (encoding != "nv12") {
+        throw std::runtime_error("shared-memory input must use nv12 encoding");
+      }
+      if (message->data_size > message->data.size()) {
+        throw std::runtime_error(
+            "shared-memory data_size exceeds message buffer");
+      }
+      cv::Mat image = Nv12ToBgr(
+          message->data.data(), message->data_size,
+          message->width, message->height, message->step);
+      std_msgs::msg::Header header;
+      header.stamp = message->time_stamp;
+      header.frame_id = std::to_string(message->index);
+      QueueFrame(header, std::move(image));
+    } catch (const std::exception& error) {
+      RCLCPP_WARN(get_logger(), "cannot process shared image: %s",
+                  error.what());
+    }
+  }
+
+  /**
+   * @brief Convert a standard ROS image message to BGR and queue it.
+   * @param message Incoming `sensor_msgs/msg/Image` frame.
+   */
+  void OnImage(const sensor_msgs::msg::Image::ConstSharedPtr message) {
+    try {
+      cv::Mat image;
+      if (message->encoding == "nv12") {
+        image = Nv12ToBgr(
+            reinterpret_cast<const uint8_t*>(message->data.data()),
+            message->data.size(), message->width, message->height,
+            message->step);
+      } else if (message->encoding == "bgr" ||
+                 message->encoding == "rgb") {
+        image = PackedColorToBgr(
+            reinterpret_cast<const uint8_t*>(message->data.data()),
+            message->data.size(), message->width, message->height,
+            message->step, message->encoding == "rgb");
+      } else {
+        image = cv_bridge::toCvCopy(message, "bgr8")->image;
+      }
+      QueueFrame(message->header, std::move(image));
+    } catch (const std::exception& error) {
+      RCLCPP_WARN(get_logger(), "cannot process input image: %s",
+                  error.what());
+    }
+  }
+
+  /**
+   * @brief Replace the pending frame and snapshot the active Prompt atomically.
+   * @param header Source message header retained for the result.
+   * @param image Converted source image transferred into the latest-frame queue.
+   */
   void QueueFrame(const std_msgs::msg::Header& header, cv::Mat image) {
     if (image.empty()) {
       throw std::runtime_error("input image conversion returned empty data");
@@ -335,6 +411,7 @@ class LocateAnythingNode : public rclcpp::Node {
     condition_.notify_one();
   }
 
+  /** @brief Consume latest queued frames until ROS shutdown or node teardown. */
   void Run() {
     while (rclcpp::ok()) {
       PendingFrame frame;
@@ -390,6 +467,14 @@ class LocateAnythingNode : public rclcpp::Node {
     }
   }
 
+  /**
+   * @brief Convert shared inference output into the public ai_msgs contract.
+   * @param frame Source header, image extent, and Prompt snapshot.
+   * @param output Structured shared-core inference output.
+   * @param fps Measured result publication throughput.
+   * @param inference_started ROS timestamp corresponding to inference start.
+   * @return One PerceptionTargets message, including empty-target frames.
+   */
   static ai_msgs::msg::PerceptionTargets BuildResult(
       const PendingFrame& frame, const InferenceOutput& output, int16_t fps,
       const rclcpp::Time& inference_started) {
@@ -450,6 +535,11 @@ class LocateAnythingNode : public rclcpp::Node {
     return message;
   }
 
+  /**
+   * @brief Compute output throughput from the rolling completion window.
+   * @param total_ms Current frame latency used before the window has two samples.
+   * @return Rounded result FPS clamped to the message field range.
+   */
   int16_t RecordOutputFps(double total_ms) {
     const auto timestamp = std::chrono::steady_clock::now();
     output_timestamps_.push_back(timestamp);
@@ -472,6 +562,11 @@ class LocateAnythingNode : public rclcpp::Node {
         fps, 0, std::numeric_limits<int16_t>::max()));
   }
 
+  /**
+   * @brief Extract a numeric frame index when the publisher provides one.
+   * @param header Source message header.
+   * @return Parsed frame index, or zero for a non-numeric frame ID.
+   */
   static uint32_t FrameIndex(const std_msgs::msg::Header& header) {
     try {
       const unsigned long value = std::stoul(header.frame_id);
@@ -503,6 +598,7 @@ class LocateAnythingNode : public rclcpp::Node {
       result_publisher_;
 };
 
+/** Construct the ROS node through the small package-level entry interface. */
 std::shared_ptr<rclcpp::Node> CreateLocateAnythingNode() {
   return std::make_shared<LocateAnythingNode>();
 }

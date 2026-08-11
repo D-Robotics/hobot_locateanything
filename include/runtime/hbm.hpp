@@ -10,9 +10,10 @@
 //   - submits an inference task and waits for it to complete
 //   - copies the results back into host-side std::vector
 //
-// Phase 1 scope: just enough to load vision.hbm and run the "visual" graph
-// once with a dummy input. Phase 2+ will add multi-graph orchestration,
-// KV-cache reuse, PBD mask building etc. on top.
+// The wrapper is deliberately small: it exposes graph metadata, reusable
+// input/output buffers, explicit cache-backed tensors, and synchronous graph
+// execution. Language-side graph orchestration and PBD decoding stay in the
+// Language runtime rather than being hidden inside this vendor adapter.
 
 #pragma once
 
@@ -21,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Forward-declare the C handles so we don't leak hb_dnn.h into every TU.
@@ -51,15 +53,19 @@ struct Tensor {
 
 // Cacheable UCP memory visible to both Host and BPU. The implementation keeps
 // hbUCPSysMem private so public callers do not depend on the vendor headers.
+/** Cacheable UCP memory visible to both Host and BPU. */
 class DeviceBuffer {
  public:
+  /** Release the vendor memory allocation, if one exists. */
   ~DeviceBuffer();
   DeviceBuffer(const DeviceBuffer &) = delete;
   DeviceBuffer &operator=(const DeviceBuffer &) = delete;
 
+  /** Return the number of bytes allocated for this buffer. */
   size_t size() const;
 
  private:
+  /** Construct the private wrapper state before vendor memory allocation. */
   DeviceBuffer();
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -76,8 +82,16 @@ class DeviceBuffer {
 struct Result {
   int32_t code = 0;
   std::string message;
+  /** Return whether the wrapped vendor call succeeded. */
   bool ok() const { return code == 0; }
+  /** Construct a successful result. */
   static Result Ok() { return {0, ""}; }
+  /**
+   * @brief Construct a failed result.
+   * @param c Vendor or wrapper error code.
+   * @param m Human-readable diagnostic message.
+   * @return Failed result value.
+   */
   static Result Err(int32_t c, std::string m) { return {c, std::move(m)}; }
 };
 
@@ -97,10 +111,25 @@ struct ExecutionMetrics {
 
 // Allocate cacheable UCP/DDR memory. `zero_initialize` also cleans the cache so
 // a graph can consume the buffer immediately without another full-buffer copy.
+/**
+ * @brief Allocate cacheable UCP/DDR memory for graph input or output.
+ * @param bytes Required allocation size.
+ * @param zero_initialize Zero and cache-clean the allocation when true.
+ * @param buffer Destination shared buffer handle.
+ * @return Vendor-backed success or failure result.
+ */
 Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
                             std::shared_ptr<DeviceBuffer> *buffer);
 
 // Copy a changed range into UCP memory and clean only that range for the BPU.
+/**
+ * @brief Copy a changed range into device memory and clean it for the BPU.
+ * @param buffer Destination UCP allocation.
+ * @param byte_offset Destination byte offset.
+ * @param source Host source bytes.
+ * @param bytes Number of bytes to copy.
+ * @return Vendor-backed success or failure result.
+ */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes);
 
@@ -118,34 +147,67 @@ struct OutputSlice {
 // queried.
 class Graph {
  public:
+  /** Create an empty graph wrapper. */
   Graph();
+  /** Release graph metadata and persistent buffers. */
   ~Graph();
 
   // Query the graph's name list and per-tensor properties. Cheap after the
   // first call (results cached).
+  /**
+   * @brief Query and cache the graph input/output contract.
+   * @param handle Vendor graph handle owned by the packed HBM session.
+   * @return Vendor-backed success or failure result.
+   */
   Result RefreshIO(hbDNNHandle_t handle);
 
   // Release graph-private input/output allocations while retaining the graph
   // handle and cached IO metadata. Device-resident KV buffers are owned by
   // callers and are unaffected.
+  /** Release graph-private input/output allocations while retaining metadata. */
   void ReleasePersistentBuffers();
 
   // Remember the C handle for later Execute calls. Kept separate from
   // RefreshIO so that the HbmSession can pass the handle in once when it
   // first looks the graph up.
+  /**
+   * @brief Remember the vendor graph handle used by later Execute calls.
+   * @param handle Non-owning vendor graph handle.
+   */
   void SetHandle(void *handle) { c_handle_ = handle; }
+  /** Return the remembered vendor graph handle. */
   void *GetHandle() const { return c_handle_; }
 
+  /**
+   * @brief Select the BPU backend mask used for graph execution.
+   * @param backend_mask S600 BPU backend bit mask.
+   */
   void SetBackendMask(uint32_t backend_mask) { backend_mask_ = backend_mask; }
 
   // Run the graph once with the given inputs, using the previously SetHandle
   // C handle. `inputs` must be in the same order as GetInputNames(); each
   // Tensor's shape/dtype must match the graph's declared IO. On success,
   // `outputs` is filled in the order returned by GetOutputNames().
+  /**
+   * @brief Execute the graph using owned tensor values as inputs.
+   * @param inputs Input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result Execute(const std::vector<Tensor> &inputs,
                  std::vector<Tensor> *outputs,
                  ExecutionMetrics *metrics = nullptr,
                  const std::vector<OutputSlice> *output_slices = nullptr);
+  /**
+   * @brief Execute the graph using caller-owned tensor views as inputs.
+   * @param inputs Non-owning input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result Execute(const std::vector<const Tensor *> &inputs,
                  std::vector<Tensor> *outputs,
                  ExecutionMetrics *metrics = nullptr,
@@ -153,27 +215,56 @@ class Graph {
 
   // Run the graph with an explicit C handle (used when the caller has one
   // but didn't go through SetHandle — e.g. from HbmSession).
+  /**
+   * @brief Execute with an explicit vendor handle and owned tensor values.
+   * @param handle Vendor graph handle.
+   * @param inputs Input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result Execute(hbDNNHandle_t handle,
                  const std::vector<Tensor> &inputs,
                  std::vector<Tensor> *outputs,
                  ExecutionMetrics *metrics = nullptr,
                  const std::vector<OutputSlice> *output_slices = nullptr);
+  /**
+   * @brief Execute with an explicit vendor handle and caller-owned tensor views.
+   * @param handle Vendor graph handle.
+   * @param inputs Non-owning input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result Execute(hbDNNHandle_t handle,
                  const std::vector<const Tensor *> &inputs,
                  std::vector<Tensor> *outputs,
                  ExecutionMetrics *metrics = nullptr,
                  const std::vector<OutputSlice> *output_slices = nullptr);
 
+  /** Return cached input names in vendor order. */
   const std::vector<std::string> &GetInputNames() const { return input_names_; }
+  /** Return cached output names in vendor order. */
   const std::vector<std::string> &GetOutputNames() const { return output_names_; }
+  /** Return cached input shapes in vendor order. */
   const std::vector<std::vector<int32_t>> &GetInputShapes() const { return input_shapes_; }
+  /** Return cached output shapes in vendor order. */
   const std::vector<std::vector<int32_t>> &GetOutputShapes() const { return output_shapes_; }
+  /** Return cached input data types in vendor order. */
   const std::vector<int32_t> &GetInputDtypes() const { return input_dtypes_; }
+  /** Return cached output data types in vendor order. */
   const std::vector<int32_t> &GetOutputDtypes() const { return output_dtypes_; }
 
  private:
   struct PersistentBuffers;
 
+  /**
+   * @brief Allocate reusable graph-owned input and output buffers.
+   * @param handle Vendor graph handle used to query tensor properties.
+   * @return Vendor-backed success or failure result.
+   */
   Result EnsurePersistentBuffers(hbDNNHandle_t handle);
 
   bool io_ready_ = false;
@@ -192,7 +283,9 @@ class Graph {
 // and the per-graph metadata map.
 class HbmSession {
  public:
+  /** Create an unloaded HBM session. */
   HbmSession() = default;
+  /** Release the packed HBM handle and graph wrappers. */
   ~HbmSession();
 
   HbmSession(const HbmSession &) = delete;
@@ -200,9 +293,18 @@ class HbmSession {
 
   // Load `hbm_path` into BPU memory. After this, GetGraphNames() returns the
   // packed file's graph name list.
+  /**
+   * @brief Load a packed HBM file and enumerate its graph names.
+   * @param hbm_path Explicit HBM file path.
+   * @return Vendor-backed success or failure result.
+   */
   Result Load(const std::string &hbm_path);
 
   // Zero lets HBRT choose a backend. Non-zero values are explicit BPU masks.
+  /**
+   * @brief Select the BPU backend mask for all graphs in this session.
+   * @param backend_mask S600 BPU backend bit mask.
+   */
   void SetBackendMask(uint32_t backend_mask) {
     backend_mask_ = backend_mask;
     for (auto &entry : graphs_) entry.second->SetBackendMask(backend_mask);
@@ -210,16 +312,39 @@ class HbmSession {
 
   // Fetch a graph by name. First call per name will lazily refresh its IO
   // metadata. The returned pointer is owned by the session (do not delete).
+  /**
+   * @brief Return a lazily initialized graph wrapper by name.
+   * @param name Packed HBM graph name.
+   * @return Session-owned graph pointer, or nullptr when absent/invalid.
+   */
   Graph *GetGraph(const std::string &name);
 
   // Convenience: look up the graph by name and run it in one call. Avoids
   // having to plumb the raw C handle out to callers (the Graph object does
   // not expose its handle).
+  /**
+   * @brief Look up and execute a graph using owned tensor values.
+   * @param graph_name Packed HBM graph name.
+   * @param inputs Input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result ExecuteGraphByName(const std::string &graph_name,
                             const std::vector<Tensor> &inputs,
                             std::vector<Tensor> *outputs,
                             ExecutionMetrics *metrics = nullptr,
                             const std::vector<OutputSlice> *output_slices = nullptr);
+  /**
+   * @brief Look up and execute a graph using caller-owned tensor views.
+   * @param graph_name Packed HBM graph name.
+   * @param inputs Non-owning input tensors in vendor-declared order.
+   * @param outputs Destination output tensors.
+   * @param metrics Optional execution timing and byte counters.
+   * @param output_slices Optional Host materialization policy per output.
+   * @return Vendor-backed success or failure result.
+   */
   Result ExecuteGraphByName(const std::string &graph_name,
                             const std::vector<const Tensor *> &inputs,
                             std::vector<Tensor> *outputs,
@@ -228,6 +353,7 @@ class HbmSession {
 
   // List of all graph names in this hbm (e.g. ["visual"], or
   // ["prefill", "decode"]).
+  /** Return all graph names in the packed HBM file. */
   const std::vector<std::string> &GetGraphNames() const { return graph_names_; }
 
  private:
@@ -240,9 +366,19 @@ class HbmSession {
 
 // Helper: number of bytes per element for a given HB_DNN_TENSOR_TYPE_*.
 // Mirrors HB_RuntimeUtils.hpp's dtype-size table.
+/**
+ * @brief Return the byte width of one HB_DNN tensor element.
+ * @param dtype Vendor tensor-type integer.
+ * @return Element width in bytes, or zero for an unsupported type.
+ */
 int32_t DtypeElementBytes(int32_t dtype);
 
 // Helper: convert HB_DNN_TENSOR_TYPE_* -> a short human-readable string.
+/**
+ * @brief Return a short human-readable HB_DNN tensor type name.
+ * @param dtype Vendor tensor-type integer.
+ * @return Static diagnostic name.
+ */
 const char *DtypeName(int32_t dtype);
 
 }  // namespace locateanything_runtime

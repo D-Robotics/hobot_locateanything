@@ -4,7 +4,6 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -29,8 +28,20 @@ namespace {
 
 std::atomic<bool> stop_requested{false};
 
-void HandleSignal(int) { stop_requested = true; }
+/**
+ * @brief Convert SIGINT/SIGTERM into a cooperative Console shutdown request.
+ * @param signal_number POSIX signal number; its value does not change behavior.
+ */
+void HandleSignal(int signal_number) {
+  (void)signal_number;
+  stop_requested = true;
+}
 
+/**
+ * @brief Remove surrounding whitespace from an interactive Console command.
+ * @param value Raw command text.
+ * @return Trimmed command text.
+ */
 std::string Trim(std::string value) {
   const size_t first = value.find_first_not_of(" \t\r\n");
   if (first == std::string::npos) return {};
@@ -38,6 +49,12 @@ std::string Trim(std::string value) {
   return value.substr(first, last - first + 1);
 }
 
+/**
+ * @brief Parse and validate the path argument following /image or /video.
+ * @param line Complete interactive command.
+ * @param command Matched command prefix.
+ * @return Unquoted non-empty media path.
+ */
 std::string PathArgument(const std::string& line, const std::string& command) {
   std::string value = Trim(line.substr(command.size()));
   if (value.size() >= 2 &&
@@ -49,6 +66,11 @@ std::string PathArgument(const std::string& line, const std::string& command) {
   return value;
 }
 
+/**
+ * @brief Check whether a line is one of the supported task commands.
+ * @param value Trimmed interactive command.
+ * @return True when a public LocateAnything task prefix matches.
+ */
 bool IsTaskCommand(const std::string& value) {
   static const std::string commands[] = {
       "/detect", "/ground", "/ground_single", "/gui", "/gui_box",
@@ -59,6 +81,12 @@ bool IsTaskCommand(const std::string& value) {
                      });
 }
 
+/**
+ * @brief Match a Console command exactly or with a space-delimited argument.
+ * @param value Trimmed interactive command.
+ * @param command Command prefix to match.
+ * @return True when value belongs to command.
+ */
 bool IsCommand(const std::string& value, const std::string& command) {
   return value == command || value.rfind(command + " ", 0) == 0;
 }
@@ -75,12 +103,17 @@ struct Colors {
   std::string red;
 };
 
+/** Select ANSI colors only when output is an interactive terminal. */
 Colors TerminalColors() {
   if (!isatty(STDOUT_FILENO) || std::getenv("NO_COLOR") != nullptr) return {};
   return {"\033[0m", "\033[1m", "\033[2m", "\033[36m", "\033[32m",
           "\033[33m", "\033[34m", "\033[35m", "\033[31m"};
 }
 
+/**
+ * @brief Print the fixed LocateAnything Console banner.
+ * @param color Terminal color palette, empty for plain output.
+ */
 void PrintBanner(const Colors& color) {
   static const char* lines[] = {
       "  ██╗      ██████╗  ██████╗ █████╗ ████████╗███████╗",
@@ -100,6 +133,10 @@ void PrintBanner(const Colors& color) {
   }
 }
 
+/**
+ * @brief Print interactive task, media, and session commands.
+ * @param color Terminal color palette, empty for plain output.
+ */
 void PrintHelp(const Colors& color) {
   std::cout << color.bold << color.cyan << "Tasks" << color.reset << '\n'
             << "  /detect cat,dog              目标检测\n"
@@ -135,10 +172,16 @@ struct ConsoleOptions {
   float nms_iou = 0.9f;
 };
 
+/** Print the process-level command-line usage. */
 void PrintUsage() {
   std::cout << "usage: console [--config FILE]\n";
 }
 
+/**
+ * @brief Load shared runtime settings from the ROS-compatible YAML file.
+ * @param path Explicit configuration file path.
+ * @param options Destination options initialized with defaults by the caller.
+ */
 void LoadConfig(const fs::path& path, ConsoleOptions* options) {
   YAML::Node root;
   try {
@@ -184,6 +227,12 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
   }
 }
 
+/**
+ * @brief Parse --config and validate the resulting Console settings.
+ * @param argc Process argument count.
+ * @param argv Process argument values.
+ * @return Validated absolute-path Console settings.
+ */
 ConsoleOptions ParseArguments(int argc, char** argv) {
   ConsoleOptions options;
   options.config = "config.yaml";
@@ -245,24 +294,28 @@ struct Request {
   std::string command;
 };
 
-std::string Timestamp() {
-  const auto now = std::chrono::system_clock::now();
-  const std::time_t time = std::chrono::system_clock::to_time_t(now);
-  std::tm local{};
-  localtime_r(&time, &local);
-  std::ostringstream stream;
-  stream << std::put_time(&local, "%Y%m%d_%H%M%S");
-  return stream.str();
-}
-
-fs::path OutputPath(const ConsoleOptions& options, const std::string& type,
-                    uint64_t index) {
-  const fs::path path = options.output_directory /
-                        (type + "_" + Timestamp() + "_" + std::to_string(index));
+/**
+ * @brief Create the stable output directory for one media file.
+ * @param options Console settings containing the output root.
+ * @param source Input image or video path.
+ * @return Created output directory path.
+ */
+fs::path OutputPath(const ConsoleOptions& options, const fs::path& source) {
+  const std::string name = source.stem().string();
+  if (name.empty() || name == "." || name == "..") {
+    throw std::runtime_error("input file has no usable output name: " +
+                             source.string());
+  }
+  const fs::path path = options.output_directory / name;
   fs::create_directories(path);
   return path;
 }
 
+/**
+ * @brief Print compact performance and result summaries after one inference.
+ * @param output Shared-core inference output.
+ * @param color Terminal color palette, empty for plain output.
+ */
 void PrintPerformance(const locateanything::InferenceOutput& output,
                       const Colors& color) {
   const auto& metrics = output.metrics;
@@ -300,11 +353,16 @@ void PrintPerformance(const locateanything::InferenceOutput& output,
 
 class Console {
  public:
+  /**
+   * @brief Create a Console around the shared inference core.
+   * @param options Validated Console configuration.
+   */
   explicit Console(ConsoleOptions options)
       : options_(std::move(options)),
         color_(TerminalColors()),
         session_(BuildInferenceOptions()) {}
 
+  /** Run initialization and the interactive command loop until shutdown. */
   int Run() {
     PrintBanner(color_);
     const auto initialization_started = std::chrono::steady_clock::now();
@@ -365,6 +423,11 @@ class Console {
   }
 
  private:
+  /**
+   * @brief Render a moving initialization bar and elapsed seconds.
+   * @param stage Current model-loading stage.
+   * @param started Monotonic initialization start time.
+   */
   void PrintInitializationProgress(
       const std::string& stage,
       const std::chrono::steady_clock::time_point started) {
@@ -393,6 +456,10 @@ class Console {
               << " s" << std::flush;
   }
 
+  /**
+   * @brief Replace the moving bar with the final HBM initialization status.
+   * @param started Monotonic initialization start time.
+   */
   void PrintInitializationComplete(
       const std::chrono::steady_clock::time_point started) const {
     const double elapsed = std::chrono::duration<double>(
@@ -404,6 +471,7 @@ class Console {
               << std::setprecision(1) << elapsed << " s\n";
   }
 
+  /** Translate YAML Console settings into shared inference options. */
   locateanything::InferenceOptions BuildInferenceOptions() const {
     locateanything::InferenceOptions inference;
     if (setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1) != 0) {
@@ -424,6 +492,10 @@ class Console {
     return inference;
   }
 
+  /**
+   * @brief Validate and remember one local image for the next task.
+   * @param value User-provided image path.
+   */
   void LoadImage(const std::string& value) {
     const fs::path path = fs::absolute(fs::path(value));
     if (!fs::is_regular_file(path) || cv::imread(path.string()).empty()) {
@@ -433,6 +505,10 @@ class Console {
     std::cout << color_.green << "Image loaded  " << color_.reset << path << '\n';
   }
 
+  /**
+   * @brief Validate and remember one local video for the next task.
+   * @param value User-provided video path.
+   */
   void LoadVideo(const std::string& value) {
     const fs::path path = fs::absolute(fs::path(value));
     cv::VideoCapture video(path.string());
@@ -448,6 +524,12 @@ class Console {
               << " frames\n";
   }
 
+  /**
+   * @brief Dispatch a task to the selected media adapter.
+   * @param media Selected image or video.
+   * @param command Public LocateAnything task command.
+   * @param remember Store this request for `regen` when true.
+   */
   void Execute(const Media& media, const std::string& command, bool remember) {
     if (remember) {
       last_request_ = {media, command};
@@ -462,15 +544,21 @@ class Console {
     }
   }
 
+  /**
+   * @brief Run one local image and save annotated image and JSON result.
+   * @param path Validated image path.
+   * @param command Public LocateAnything task command.
+   */
   void RunImage(const fs::path& path, const std::string& command) {
     const cv::Mat image = cv::imread(path.string());
     if (image.empty()) throw std::runtime_error("failed to read image: " + path.string());
     locateanything::InferenceOutputOptions output_options;
     output_options.render_annotated = true;
     output_options.serialize_json = true;
+    output_options.pretty_json = true;
     locateanything::InferenceOutput output =
         session_.Infer(image, command, 1, output_options);
-    const fs::path directory = OutputPath(options_, "image", ++request_index_);
+    const fs::path directory = OutputPath(options_, path);
     const fs::path annotated = directory / "annotated.jpg";
     const fs::path prediction = directory / "prediction.json";
     if (!cv::imwrite(annotated.string(), output.annotated_image)) {
@@ -483,6 +571,11 @@ class Console {
               << "  JSON   " << prediction << "\n\n";
   }
 
+  /**
+   * @brief Run every local-video frame and save media plus structured reports.
+   * @param path Validated video path.
+   * @param command Public LocateAnything task command applied to every frame.
+   */
   void RunVideo(const fs::path& path, const std::string& command) {
     cv::VideoCapture video(path.string());
     if (!video.isOpened()) throw std::runtime_error("failed to open video: " + path.string());
@@ -492,7 +585,7 @@ class Console {
     double fps = video.get(cv::CAP_PROP_FPS);
     if (!(fps > 0.0)) fps = 25.0;
 
-    const fs::path directory = OutputPath(options_, "video", ++request_index_);
+    const fs::path directory = OutputPath(options_, path);
     fs::path annotated = directory / "annotated.mp4";
     cv::VideoWriter writer(annotated.string(), cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
                            fps, cv::Size(width, height));
@@ -555,12 +648,17 @@ class Console {
   Media media_;
   Request last_request_;
   bool has_last_request_ = false;
-  uint64_t request_index_ = 0;
   std::string loading_stage_;
 };
 
 }  // namespace
 
+/**
+ * @brief Run the independent Console process without initializing ROS.
+ * @param argc Process argument count.
+ * @param argv Process argument values.
+ * @return Zero after normal shutdown, or one after a fatal error.
+ */
 int main(int argc, char** argv) {
   try {
     std::signal(SIGINT, HandleSignal);

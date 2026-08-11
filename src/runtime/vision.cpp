@@ -24,6 +24,7 @@ constexpr int32_t kFp16 = 4;
 const std::vector<int32_t> kInputShape{1, 2304, 588};
 const std::vector<int32_t> kOutputShape{1, 576, 2048};
 
+/** Return the number of scalar elements represented by a tensor shape. */
 int64_t ElementCount(const std::vector<int32_t>& shape) {
   return std::accumulate(shape.begin(), shape.end(), int64_t{1},
                          std::multiplies<int64_t>());

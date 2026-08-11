@@ -7,6 +7,7 @@
 
 namespace locateanything_runtime {
 
+/** Convert FP32 to binary16 with round-to-nearest-even semantics. */
 uint16_t FloatToFp16Bits(float f) {
   // IEEE 754 binary32 -> binary16 conversion (round to nearest, ties to even).
   uint32_t bits;
@@ -59,6 +60,7 @@ uint16_t FloatToFp16Bits(float f) {
   return static_cast<uint16_t>(sign);
 }
 
+/** Build the fixed-width causal/PBD attention mask consumed by Language HBM. */
 bool BuildAttentionMask(int32_t q_len,
                         int32_t cache_len,
                         int32_t past_len,

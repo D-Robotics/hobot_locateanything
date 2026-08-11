@@ -23,25 +23,36 @@ namespace locateanything_runtime {
 
 class EmbedLookup {
  public:
+  /** Create an unopened embedding lookup. */
   EmbedLookup() = default;
+  /** Unmap the embedding file and close its descriptor. */
   ~EmbedLookup();
 
   EmbedLookup(const EmbedLookup &) = delete;
   EmbedLookup &operator=(const EmbedLookup &) = delete;
 
-  // Open `embed_tokens.bin` and validate its size against
-  // (vocab_size * hidden_dim * sizeof(fp16)). Returns false on mismatch.
+  /**
+   * @brief Memory-map an embedding table and validate its minimum size.
+   * @param path Path to the fp16 row-major embedding file.
+   * @param vocab_size Number of vocabulary rows.
+   * @param hidden_dim Number of fp16 elements per row.
+   * @return True when the file was opened and mapped successfully.
+   */
   bool Open(const std::string &path, int32_t vocab_size, int32_t hidden_dim);
 
-  // Gather `count` rows by the token IDs in `token_ids` (length `count`),
-  // writing `count * hidden_dim * 2` bytes of fp16 into `out` (caller-
-  // allocated). Out-of-range token IDs map to the row at index 0 (the
-  // <pad>/<bos> row) rather than crashing — matches the upstream
-  // `get_input_embeddings` fallback behaviour for safety.
+  /**
+   * @brief Gather token rows into a caller-owned contiguous fp16 buffer.
+   * @param token_ids Token IDs to gather; invalid IDs map to row zero.
+   * @param count Number of token IDs and output rows.
+   * @param out Destination with room for count times hidden_dim fp16 values.
+   */
   void Gather(const int32_t *token_ids, int32_t count, void *out) const;
 
+  /** Return the vocabulary row count configured by Open. */
   int32_t VocabSize() const { return vocab_size_; }
+  /** Return the embedding hidden dimension configured by Open. */
   int32_t HiddenDim() const { return hidden_dim_; }
+  /** Return whether an embedding file is currently mapped. */
   bool IsOpen() const { return base_ != nullptr; }
 
  private:

@@ -54,6 +54,11 @@ constexpr int32_t kTypeS64 = 11;
 constexpr int32_t kTypeU64 = 12;
 constexpr int32_t kTypeBool8 = 13;
 
+/**
+ * @brief Return the vendor tensor element width used for packing.
+ * @param dtype Vendor tensor-type integer.
+ * @return Element width in bytes, or zero when unsupported.
+ */
 int32_t ElementBytesForType(int32_t dtype) {
   switch (dtype) {
     case kTypeS4:
@@ -76,6 +81,11 @@ int32_t ElementBytesForType(int32_t dtype) {
 
 // Total element count from a hbDNNTensorShape. Skips the numDimensions
 // tail of the dimensionSize[] array.
+/**
+ * @brief Multiply all declared tensor dimensions into an element count.
+ * @param shape Vendor tensor shape.
+ * @return Logical element count.
+ */
 int64_t ElementCount(const hbDNNTensorShape &shape) {
   int64_t total = 1;
   for (int32_t i = 0; i < shape.numDimensions; ++i) {
@@ -84,6 +94,12 @@ int64_t ElementCount(const hbDNNTensorShape &shape) {
   return total;
 }
 
+/**
+ * @brief Build contiguous row-major byte strides for a tensor shape.
+ * @param shape Vendor tensor shape.
+ * @param element_bytes Byte width of one element.
+ * @return Byte stride for every dimension.
+ */
 std::vector<int64_t> CompactStrides(const hbDNNTensorShape &shape,
                                     int32_t element_bytes) {
   std::vector<int64_t> strides(shape.numDimensions);
@@ -95,6 +111,12 @@ std::vector<int64_t> CompactStrides(const hbDNNTensorShape &shape,
   return strides;
 }
 
+/**
+ * @brief Read vendor strides, falling back to compact strides when absent.
+ * @param properties Vendor tensor properties.
+ * @param element_bytes Byte width of one element.
+ * @return Effective byte stride for every dimension.
+ */
 std::vector<int64_t> DeclaredStrides(const hbDNNTensorProperties &properties,
                                      int32_t element_bytes) {
   auto strides = CompactStrides(properties.validShape, element_bytes);
@@ -104,6 +126,13 @@ std::vector<int64_t> DeclaredStrides(const hbDNNTensorProperties &properties,
   return strides;
 }
 
+/**
+ * @brief Compute the byte span required by a shape and its strides.
+ * @param shape Vendor tensor shape.
+ * @param strides Effective byte strides.
+ * @param element_bytes Byte width of one element.
+ * @return Required byte span.
+ */
 int64_t LayoutBytes(const hbDNNTensorShape &shape,
                     const std::vector<int64_t> &strides,
                     int32_t element_bytes) {
@@ -114,6 +143,16 @@ int64_t LayoutBytes(const hbDNNTensorShape &shape,
   return bytes;
 }
 
+/**
+ * @brief Copy a tensor between compact or strided host/vendor layouts.
+ * @param source Source tensor bytes.
+ * @param source_strides Source byte strides.
+ * @param destination Destination tensor bytes.
+ * @param destination_strides Destination byte strides.
+ * @param shape Shared logical tensor shape.
+ * @param element_bytes Byte width of one element.
+ * @return True when source and destination layouts are valid.
+ */
 bool CopyLayout(const uint8_t *source, const std::vector<int64_t> &source_strides,
                 uint8_t *destination, const std::vector<int64_t> &destination_strides,
                 const hbDNNTensorShape &shape, int32_t element_bytes) {
@@ -155,6 +194,12 @@ bool CopyLayout(const uint8_t *source, const std::vector<int64_t> &source_stride
 
 // Deep-copy a hbDNNTensorProperties into our plain C++ vectors so we can drop
 // the C handle and not worry about lifetime.
+/**
+ * @brief Copy vendor IO metadata into lifetime-independent vectors.
+ * @param props Vendor tensor properties.
+ * @param shape_out Destination logical dimensions.
+ * @param dtype_out Destination vendor tensor-type integer.
+ */
 void CopyPropsToVectors(const hbDNNTensorProperties &props,
                         std::vector<int32_t> *shape_out,
                         int32_t *dtype_out) {
@@ -163,6 +208,11 @@ void CopyPropsToVectors(const hbDNNTensorProperties &props,
   *dtype_out = props.tensorType;
 }
 
+/**
+ * @brief Map a vendor dtype integer to a stable diagnostic name.
+ * @param dtype Vendor tensor-type integer.
+ * @return Static short name.
+ */
 const char *DtypeNameImpl(int32_t dtype) {
   switch (dtype) {
     case kTypeS4: return "S4";
@@ -189,8 +239,10 @@ struct DeviceBuffer::Impl {
   hbUCPSysMem memory{};
 };
 
+/** Allocate the private vendor-memory state without allocating device bytes. */
 DeviceBuffer::DeviceBuffer() : impl_(std::make_unique<Impl>()) {}
 
+/** Release the UCP allocation owned by this buffer. */
 DeviceBuffer::~DeviceBuffer() {
   if (impl_ != nullptr && impl_->memory.virAddr != nullptr) {
     hbUCPFree(&impl_->memory);
@@ -198,10 +250,12 @@ DeviceBuffer::~DeviceBuffer() {
   }
 }
 
+/** Return the allocated UCP byte count, or zero for an empty buffer. */
 size_t DeviceBuffer::size() const {
   return impl_ == nullptr ? 0 : static_cast<size_t>(impl_->memory.memSize);
 }
 
+/** Allocate cacheable UCP memory and optionally clean an all-zero buffer. */
 Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
                             std::shared_ptr<DeviceBuffer> *buffer) {
   if (buffer == nullptr || bytes == 0) {
@@ -225,6 +279,7 @@ Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
   return Result::Ok();
 }
 
+/** Copy and cache-clean one changed range in a device-backed tensor. */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes) {
   if (buffer == nullptr || buffer->impl_ == nullptr || source == nullptr ||
@@ -250,6 +305,7 @@ struct Graph::PersistentBuffers {
   std::vector<hbDNNTensor> inputs;
   std::vector<hbDNNTensor> outputs;
 
+  /** Release every graph-private input and output UCP allocation. */
   ~PersistentBuffers() {
     for (auto &tensor : inputs) {
       if (tensor.sysMem.virAddr != nullptr) hbUCPFree(&tensor.sysMem);
@@ -260,17 +316,22 @@ struct Graph::PersistentBuffers {
   }
 };
 
+/** Create an empty graph metadata/cache wrapper. */
 Graph::Graph() = default;
+/** Release graph-owned persistent IO buffers. */
 Graph::~Graph() = default;
 
+/** Drop reusable graph IO allocations while retaining metadata and handle. */
 void Graph::ReleasePersistentBuffers() {
   buffers_.reset();
 }
 
+/** Expose the vendor-independent element width to the Language runtime. */
 int32_t DtypeElementBytes(int32_t dtype) {
   return ElementBytesForType(dtype);
 }
 
+/** Expose a short vendor-independent dtype name for diagnostics. */
 const char *DtypeName(int32_t dtype) {
   return DtypeNameImpl(dtype);
 }
@@ -279,6 +340,7 @@ const char *DtypeName(int32_t dtype) {
 // HbmSession
 // ---------------------------------------------------------------------------
 
+/** Release all graph wrappers before releasing the packed HBM handle. */
 HbmSession::~HbmSession() {
   active_graph_ = nullptr;
   graphs_.clear();
@@ -288,6 +350,7 @@ HbmSession::~HbmSession() {
   }
 }
 
+/** Load one packed HBM file and cache its graph-name contract. */
 Result HbmSession::Load(const std::string &hbm_path) {
   constexpr char kL2MemoryVariable[] = "HB_DNN_USER_DEFINED_L2M_SIZES";
   if (std::getenv(kL2MemoryVariable) == nullptr &&
@@ -322,6 +385,7 @@ Result HbmSession::Load(const std::string &hbm_path) {
   return Result::Ok();
 }
 
+/** Lazily resolve a named graph and refresh its IO metadata once. */
 Graph *HbmSession::GetGraph(const std::string &name) {
   auto it = graphs_.find(name);
   if (it != graphs_.end()) {
@@ -349,6 +413,7 @@ Graph *HbmSession::GetGraph(const std::string &name) {
   return raw;
 }
 
+/** Resolve and execute a named graph using owned input tensor values. */
 Result HbmSession::ExecuteGraphByName(const std::string &graph_name,
                                        const std::vector<Tensor> &inputs,
                                        std::vector<Tensor> *outputs,
@@ -365,6 +430,7 @@ Result HbmSession::ExecuteGraphByName(const std::string &graph_name,
   return g->Execute(inputs, outputs, metrics, output_slices);
 }
 
+/** Resolve and execute a named graph using caller-owned tensor views. */
 Result HbmSession::ExecuteGraphByName(
     const std::string &graph_name,
     const std::vector<const Tensor *> &inputs,
@@ -386,6 +452,7 @@ Result HbmSession::ExecuteGraphByName(
 // Graph
 // ---------------------------------------------------------------------------
 
+/** Read and cache the graph's input/output names, shapes, and dtypes. */
 Result Graph::RefreshIO(hbDNNHandle_t handle) {
   if (io_ready_) {
     return Result::Ok();
@@ -453,6 +520,7 @@ Result Graph::RefreshIO(hbDNNHandle_t handle) {
   return Result::Ok();
 }
 
+/** Adapt owned input values to views and execute through the shared path. */
 Result Graph::Execute(const std::vector<Tensor> &inputs,
                       std::vector<Tensor> *outputs,
                       ExecutionMetrics *metrics,
@@ -463,6 +531,7 @@ Result Graph::Execute(const std::vector<Tensor> &inputs,
   return Execute(views, outputs, metrics, output_slices);
 }
 
+/** Execute using the handle remembered by SetHandle. */
 Result Graph::Execute(const std::vector<const Tensor *> &inputs,
                       std::vector<Tensor> *outputs,
                       ExecutionMetrics *metrics,
@@ -473,6 +542,7 @@ Result Graph::Execute(const std::vector<const Tensor *> &inputs,
   return Execute(c_handle_, inputs, outputs, metrics, output_slices);
 }
 
+/** Adapt owned input values for an explicitly supplied vendor handle. */
 Result Graph::Execute(hbDNNHandle_t handle,
                       const std::vector<Tensor> &inputs,
                       std::vector<Tensor> *outputs,
@@ -484,6 +554,7 @@ Result Graph::Execute(hbDNNHandle_t handle,
   return Execute(handle, views, outputs, metrics, output_slices);
 }
 
+/** Allocate reusable vendor IO tensors using the graph's declared layout. */
 Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
   if (buffers_ != nullptr) return Result::Ok();
 
@@ -553,6 +624,7 @@ Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
   return Result::Ok();
 }
 
+/** Pack inputs, submit one synchronous BPU task, and materialize outputs. */
 Result Graph::Execute(hbDNNHandle_t handle,
                       const std::vector<const Tensor *> &inputs,
                       std::vector<Tensor> *outputs,

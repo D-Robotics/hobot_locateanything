@@ -21,6 +21,11 @@ struct Coefficients {
   std::vector<std::vector<int32_t>> weights;
 };
 
+/**
+ * @brief Evaluate the Pillow-compatible cubic reconstruction kernel.
+ * @param value Distance from the sample center in filter units.
+ * @return Cubic reconstruction weight.
+ */
 double Bicubic(double value) {
   value = std::abs(value);
   if (value < 1.0) return ((1.5 * value - 2.5) * value) * value + 1.0;
@@ -28,6 +33,12 @@ double Bicubic(double value) {
   return 0.0;
 }
 
+/**
+ * @brief Precompute fixed-point resize taps for one image axis.
+ * @param input_size Source-axis pixel count.
+ * @param output_size Destination-axis pixel count.
+ * @return Source starts and normalized fixed-point weights per output pixel.
+ */
 Coefficients BuildCoefficients(int input_size, int output_size) {
   const double scale = static_cast<double>(input_size) / output_size;
   const double filter_scale = std::max(1.0, scale);
@@ -59,11 +70,23 @@ Coefficients BuildCoefficients(int input_size, int output_size) {
   return coefficients;
 }
 
+/**
+ * @brief Convert a fixed-point accumulated pixel value to an 8-bit channel.
+ * @param value Accumulated value with kPrecisionBits fractional bits.
+ * @return Clamped 8-bit channel value.
+ */
 uint8_t ClipByte(int64_t value) {
   value >>= kPrecisionBits;
   return static_cast<uint8_t>(std::clamp<int64_t>(value, 0, 255));
 }
 
+/**
+ * @brief Resize BGR pixels with the cubic convention used by calibration.
+ * @param source Source BGR image.
+ * @param width Destination width.
+ * @param height Destination height.
+ * @return Resized BGR image.
+ */
 cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
   const Coefficients horizontal = BuildCoefficients(source.cols, width);
   cv::Mat intermediate(source.rows, width, CV_8UC3);
@@ -104,6 +127,11 @@ cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
   return resized;
 }
 
+/**
+ * @brief Convert one fp32 value to an IEEE-754 binary16 bit pattern.
+ * @param value Normalized image value.
+ * @return Raw fp16 bits.
+ */
 uint16_t FloatToHalf(float value) {
   uint32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));

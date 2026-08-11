@@ -34,16 +34,15 @@ struct PositionIds {
   std::vector<int32_t> data;    // int32, row-major
 };
 
-// Build position IDs for one prefill or decode step.
-//
-//   q_len      : number of query positions (256 prefill, 6 decode)
-//   past_len   : number of tokens already in the cache (0 for cold prefill)
-//   block_size : PBD block size (6). Pass 0 to disable the [-block_size:]-=1
-//                tweak (used for prefill and for plain AR decode).
-//   is_pbd     : if true, apply the pos_ids[-block_size:] -= 1 tweak
-//                (PBD decode only).
-//
-// Returns the (1, 1, q_len) int32 tensor.
+/**
+ * @brief Build position IDs for one prefill or decode step.
+ * @param q_len Number of query positions.
+ * @param past_len Number of cache rows committed before this step.
+ * @param block_size PBD block width, or zero to disable shared positions.
+ * @param is_pbd Apply the upstream PBD position adjustment when true.
+ * @param out Destination [1, 1, q_len] position tensor.
+ * @return True when dimensions are valid and positions were built.
+ */
 bool BuildPositionIds(int32_t q_len,
                       int32_t past_len,
                       int32_t block_size,

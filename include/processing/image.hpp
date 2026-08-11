@@ -8,13 +8,33 @@
 
 namespace locateanything {
 
+/**
+ * @brief Convert an NV12 buffer, including an optional row stride, to BGR.
+ * @param data Source NV12 bytes.
+ * @param data_size Available source bytes.
+ * @param width Source width in pixels.
+ * @param height Source height in pixels.
+ * @param step Source row stride, or zero to infer tightly packed rows.
+ * @return Owned three-channel BGR image.
+ */
 cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                   uint32_t height, uint32_t step = 0);
 
+/**
+ * @brief Convert packed BGR/RGB bytes to a tightly packed BGR image.
+ * @param data Source packed-color bytes.
+ * @param data_size Available source bytes.
+ * @param width Source width in pixels.
+ * @param height Source height in pixels.
+ * @param step Source row stride, or zero for tightly packed rows.
+ * @param input_is_rgb Convert RGB channel order to BGR when true.
+ * @return Owned three-channel BGR image.
+ */
 cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
                          uint32_t width, uint32_t height, uint32_t step,
                          bool input_is_rgb);
 
+/** Geometric transform needed to map model coordinates to source pixels. */
 struct ImageTransform {
   int source_width = 0;
   int source_height = 0;
@@ -26,6 +46,7 @@ struct ImageTransform {
   float scale_y = 1.0f;
 };
 
+/** Prepared 672x672 Vision input and its source-to-model transform. */
 struct PreparedImage {
   std::vector<uint16_t> patches;
   ImageTransform transform;
@@ -33,6 +54,11 @@ struct PreparedImage {
 
 class ImagePreprocessor {
  public:
+  /**
+   * @brief Resize, pad, normalize, and tile a BGR image for Vision.
+   * @param bgr Non-empty three-channel source image.
+   * @return FP16 Vision patches and source-coordinate transform.
+   */
   PreparedImage Prepare(const cv::Mat& bgr) const;
 };
 

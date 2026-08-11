@@ -7,6 +7,10 @@
 
 namespace locateanything_runtime {
 
+/**
+ * @brief Return the fixed fused-decode graph contract expected by runtime.
+ * @return Ordered list of required Language graph names.
+ */
 inline std::vector<std::string> LanguageGraphNames() {
   std::vector<std::string> names = {"prefill", "decode", "decode_ar"};
   for (int q_len = 7; q_len <= 12; ++q_len) {
@@ -23,11 +27,17 @@ struct GraphValidation {
   std::vector<std::string> unexpected;
   std::vector<std::string> duplicates;
 
+  /** Return true when the actual HBM graph set exactly matches the contract. */
   bool ok() const {
     return missing.empty() && unexpected.empty() && duplicates.empty();
   }
 };
 
+/**
+ * @brief Compare packed HBM graph names with the fixed runtime contract.
+ * @param actual Graph names reported by the HBM session.
+ * @return Missing, unexpected, and duplicate graph names.
+ */
 inline GraphValidation ValidateLanguageGraphs(
     const std::vector<std::string>& actual) {
   const std::vector<std::string> expected = LanguageGraphNames();

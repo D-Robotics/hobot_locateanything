@@ -1,48 +1,12 @@
-# Inference-owned model files and generated outputs
+# Local deployment models
 /models/*
 !/models/.gitignore
+
+# Console inference results
 /outputs/*
 !/outputs/.gitignore
 
-# Colcon workspace outputs live at the repository root, outside the ROS package.
+# colcon build outputs
 /build/
 /install/
 /log/
-
-# Model weights and generated artifacts
-*.safetensors
-*.bin
-*.hbm
-*.hbo
-*.bc
-*.onnx
-*.pt
-*.pth
-*.gguf
-*.npy
-*.npz
-*.tar
-*.tar.gz
-*.tgz
-*.zip
-*.xz
-
-# Python / editor
-__pycache__/
-*.pyc
-.venv/
-venv/
-.ipynb_checkpoints/
-.vscode/
-.idea/
-.claude/
-.worktrees/
-.DS_Store
-/.pytest_cache/
-*.egg-info/
-*.dist-info/
-.understand-anything/
-demo_build/
-oellm_runtime/
-
-!README.md

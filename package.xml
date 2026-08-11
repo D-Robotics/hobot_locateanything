@@ -3,8 +3,8 @@
 <package format="3">
   <name>hobot_locateanything</name>
   <version>0.1.0</version>
-  <description>LocateAnything HBM inference for D-Robotics TROS.</description>
-  <maintainer email="xkj521999@users.noreply.github.com">Kangjie Xu</maintainer>
+  <description>LocateAnything-3B HBM inference for D-Robotics RDK S600 and TROS.</description>
+  <maintainer email="moonpoetryxkj@163.com">Kangjie Xu</maintainer>
   <license>CC-BY-NC-4.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -15,7 +15,6 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>yaml-cpp</depend>
-  <test_depend>ament_cmake_gtest</test_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

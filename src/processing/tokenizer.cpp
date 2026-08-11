@@ -11,6 +11,11 @@
 namespace locateanything {
 namespace {
 
+/**
+ * @brief Read a tokenizer asset as an unmodified binary string.
+ * @param path Tokenizer asset path.
+ * @return Complete file contents.
+ */
 std::string ReadText(const std::string& path) {
   std::ifstream stream(path, std::ios::binary);
   if (!stream) throw std::runtime_error("cannot open tokenizer asset: " + path);
@@ -18,6 +23,11 @@ std::string ReadText(const std::string& path) {
                      std::istreambuf_iterator<char>());
 }
 
+/**
+ * @brief Append one Unicode scalar value encoded as UTF-8.
+ * @param codepoint Unicode scalar value.
+ * @param output Destination UTF-8 string.
+ */
 void AppendUtf8(uint32_t codepoint, std::string* output) {
   if (codepoint <= 0x7fU) {
     output->push_back(static_cast<char>(codepoint));
@@ -36,6 +46,12 @@ void AppendUtf8(uint32_t codepoint, std::string* output) {
   }
 }
 
+/**
+ * @brief Parse four hexadecimal digits from a JSON Unicode escape.
+ * @param text Complete JSON text.
+ * @param offset Offset of the first hexadecimal digit.
+ * @return Parsed 16-bit code unit.
+ */
 uint32_t ReadHex4(const std::string& text, size_t offset) {
   uint32_t value = 0;
   for (size_t index = 0; index < 4; ++index) {
@@ -49,6 +65,12 @@ uint32_t ReadHex4(const std::string& text, size_t offset) {
   return value;
 }
 
+/**
+ * @brief Parse one JSON string including escapes and surrogate pairs.
+ * @param text Complete JSON text.
+ * @param offset In/out parser cursor positioned at the opening quote.
+ * @return Decoded UTF-8 string.
+ */
 std::string ParseJsonString(const std::string& text, size_t* offset) {
   if (*offset >= text.size() || text[*offset] != '"') {
     throw std::runtime_error("invalid tokenizer JSON string");
@@ -95,6 +117,11 @@ std::string ParseJsonString(const std::string& text, size_t* offset) {
   throw std::runtime_error("unterminated tokenizer JSON string");
 }
 
+/**
+ * @brief Parse a compact tokenizer string-to-integer JSON object.
+ * @param path JSON asset path.
+ * @return Parsed token-to-ID mapping.
+ */
 std::unordered_map<std::string, int32_t> ParseStringIntMap(
     const std::string& path) {
   const std::string text = ReadText(path);
@@ -137,6 +164,11 @@ std::unordered_map<std::string, int32_t> ParseStringIntMap(
   return result;
 }
 
+/**
+ * @brief Decode UTF-8 into scalar values for tokenizer byte conversion.
+ * @param value Valid UTF-8 input.
+ * @return Unicode scalar values.
+ */
 std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
   std::vector<uint32_t> output;
   for (size_t index = 0; index < value.size();) {
@@ -167,6 +199,11 @@ std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
   return output;
 }
 
+/**
+ * @brief Split UTF-8 into byte-aligned codepoint substrings.
+ * @param value Valid UTF-8 input.
+ * @return One substring per encoded codepoint.
+ */
 std::vector<std::string> SplitUtf8(const std::string& value) {
   std::vector<std::string> output;
   for (size_t index = 0; index < value.size();) {
@@ -182,10 +219,20 @@ std::vector<std::string> SplitUtf8(const std::string& value) {
   return output;
 }
 
+/**
+ * @brief Classify letters for the model's byte-level pretokenization.
+ * @param item Input byte.
+ * @return True for ASCII letters or a non-ASCII leading/continuation byte.
+ */
 bool IsLetterByte(unsigned char item) {
   return std::isalpha(item) != 0 || item >= 0x80U;
 }
 
+/**
+ * @brief Apply tokenizer whitespace, letter, digit, and punctuation rules.
+ * @param text UTF-8 prompt segment without added tokens.
+ * @return Pretokenized byte strings for BPE merging.
+ */
 std::vector<std::string> Pretokenize(const std::string& text) {
   std::vector<std::string> pieces;
   for (size_t index = 0; index < text.size();) {
@@ -235,6 +282,12 @@ std::vector<std::string> Pretokenize(const std::string& text) {
   return pieces;
 }
 
+/**
+ * @brief Build an unambiguous lookup key for an adjacent BPE symbol pair.
+ * @param left Left BPE symbol.
+ * @param right Right BPE symbol.
+ * @return Null-delimited pair key.
+ */
 std::string PairKey(const std::string& left, const std::string& right) {
   return left + '\0' + right;
 }
@@ -250,6 +303,11 @@ struct Tokenizer::Impl {
   std::vector<std::string> byte_encoder;
   std::unordered_map<uint32_t, uint8_t> byte_decoder;
 
+  /**
+   * @brief Merge one pretokenized piece according to loaded BPE ranks.
+   * @param piece Pretokenized UTF-8/byte segment.
+   * @return Final vocabulary symbols.
+   */
   std::vector<std::string> EncodePiece(const std::string& piece) const {
     std::string encoded;
     for (unsigned char byte : piece) encoded += byte_encoder[byte];

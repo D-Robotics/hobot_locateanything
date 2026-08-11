@@ -48,17 +48,33 @@ constexpr int32_t kImEndToken = 151645;
 constexpr int32_t kNoneToken = 4064;
 constexpr uint16_t kMaskValue = 0xf800;  // fp16(-32768.0)
 
+/**
+ * @brief Multiply tensor dimensions into an element count.
+ * @param shape Tensor dimensions.
+ * @return Number of logical tensor elements.
+ */
 int64_t ElementCount(const std::vector<int32_t>& shape) {
   int64_t count = 1;
   for (int32_t value : shape) count *= value;
   return count;
 }
 
+/**
+ * @brief Compare a runtime shape with a fixed expected shape.
+ * @param left Runtime tensor shape.
+ * @param right Expected dimensions.
+ * @return True when every dimension matches.
+ */
 bool SameShape(const std::vector<int32_t>& left,
                std::initializer_list<int32_t> right) {
   return left == std::vector<int32_t>(right);
 }
 
+/**
+ * @brief Encode one host float as an IEEE-754 binary16 bit pattern.
+ * @param value Host floating-point value.
+ * @return Raw fp16 bits consumed by the HBM graph.
+ */
 uint16_t FloatToFp16(float value) {
   uint32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
@@ -96,6 +112,11 @@ struct EngineState {
   uint64_t dump_invocation = 0;
 };
 
+/**
+ * @brief Locate the first KV output for host- or BPU-sampled graph layouts.
+ * @param outputs Graph outputs in vendor order.
+ * @return Index of the first KV tensor.
+ */
 size_t CacheOutputOffset(const std::vector<rt::Tensor>& outputs) {
   return !outputs.empty() && outputs[0].dtype == kS32 &&
                  SameShape(outputs[0].shape, {1, 6, 1})
@@ -103,6 +124,11 @@ size_t CacheOutputOffset(const std::vector<rt::Tensor>& outputs) {
              : 1;
 }
 
+/**
+ * @brief Compute a compact FNV-1a marker for optional graph dumps.
+ * @param cache Current Language KV-cache state.
+ * @return Deterministic cache fingerprint.
+ */
 uint64_t FingerprintCache(const CacheState& cache) {
   // A small identity marker for a graph input state.  Full cache dumps are
   // deliberately avoided because a 4096-token cache is large on the board.
@@ -116,6 +142,19 @@ uint64_t FingerprintCache(const CacheState& cache) {
   return value;
 }
 
+/**
+ * @brief Write opt-in graph logits and metadata when LA_GRAPH_DUMP_DIR is set.
+ * @param graph_name Executed graph name.
+ * @param token_base Synthetic-token base used by diagnostic calls.
+ * @param past_len Number of committed cache rows before execution.
+ * @param pbd Whether this was a PBD graph.
+ * @param pbd_prefix_len Accepted prefix carried into the PBD graph.
+ * @param explicit_tokens Explicit graph input tokens, when present.
+ * @param cache Cache state supplied to the graph.
+ * @param outputs Graph outputs in vendor order.
+ * @param invocation Monotonic dump sequence counter.
+ * @return True when dumping is disabled or every requested file was written.
+ */
 bool DumpGraphDebug(const std::string& graph_name, int32_t token_base,
                      int32_t past_len, bool pbd, int32_t pbd_prefix_len,
                      const std::vector<int32_t>* explicit_tokens,
@@ -206,6 +245,12 @@ struct GenerationMetrics {
 
 using TokenCallback = std::function<void(int32_t)>;
 
+/**
+ * @brief Emit up to count accepted tokens through an optional callback.
+ * @param callback Consumer invoked once per accepted token.
+ * @param tokens Candidate token sequence.
+ * @param count Maximum number of tokens to emit.
+ */
 void EmitTokens(const TokenCallback& callback,
                 const std::vector<int32_t>& tokens,
                 size_t count) {
@@ -215,6 +260,11 @@ void EmitTokens(const TokenCallback& callback,
   }
 }
 
+/**
+ * @brief Recognize complete empty, point, or rectangle box token structures.
+ * @param tokens Candidate output tokens.
+ * @return True when the sequence is a complete LocateAnything box structure.
+ */
 bool IsCompleteDetectionBox(const std::vector<int32_t>& tokens) {
   if (tokens.size() == 3 && tokens[0] == kBoxStartToken &&
       tokens[1] == kNoneToken && tokens[2] == kBoxEndToken) {
@@ -231,6 +281,12 @@ bool IsCompleteDetectionBox(const std::vector<int32_t>& tokens) {
          tokens[5] == kBoxEndToken;
 }
 
+/**
+ * @brief Check whether a candidate box already appears in the response.
+ * @param response Tokens accepted so far.
+ * @param candidate Candidate box tokens.
+ * @return True when an identical complete box is already present.
+ */
 bool HasRepeatedDetectionBox(const std::vector<int32_t>& response,
                              const std::vector<int32_t>& candidate) {
   if (!IsCompleteDetectionBox(candidate) || response.size() < candidate.size()) {
@@ -240,6 +296,11 @@ bool HasRepeatedDetectionBox(const std::vector<int32_t>& response,
                      candidate.end()) != response.end();
 }
 
+/**
+ * @brief Check whether the response ends with a previously emitted box.
+ * @param response Tokens accepted so far.
+ * @return True when the trailing complete box is a duplicate.
+ */
 bool HasRepeatedTrailingDetectionBox(const std::vector<int32_t>& response) {
   for (const size_t length : {size_t{6}, size_t{4}, size_t{3}}) {
     if (response.size() < length) continue;
@@ -253,6 +314,14 @@ bool HasRepeatedTrailingDetectionBox(const std::vector<int32_t>& response) {
   return false;
 }
 
+/**
+ * @brief Build deterministic synthetic embeddings for runtime diagnostics.
+ * @param graph Graph whose input contract determines the output tensor.
+ * @param embed Memory-mapped embedding table.
+ * @param token_base First synthetic token ID.
+ * @param output Destination embedding tensor.
+ * @return True when the graph contract is supported and output was built.
+ */
 bool BuildEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
                      int32_t token_base, rt::Tensor* output) {
   const auto& shape = graph.GetInputShapes()[0];
@@ -272,6 +341,14 @@ bool BuildEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
   return true;
 }
 
+/**
+ * @brief Gather embeddings for an exact decode token sequence.
+ * @param graph Decode graph defining query length and dtype.
+ * @param embed Memory-mapped embedding table.
+ * @param ids Token IDs whose count must equal graph query length.
+ * @param output Destination embedding tensor.
+ * @return True when inputs satisfy the graph contract.
+ */
 bool BuildExplicitEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
                              const std::vector<int32_t>& ids,
                              rt::Tensor* output) {
@@ -288,6 +365,15 @@ bool BuildExplicitEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embe
   return true;
 }
 
+/**
+ * @brief Right-align prompt embeddings and replace image tokens with Vision features.
+ * @param graph Prefill graph defining the fixed query length.
+ * @param embed Memory-mapped text embedding table.
+ * @param payload Prompt IDs and Vision features; null selects diagnostic data.
+ * @param output Destination prefill embedding tensor.
+ * @param active_len Receives the number of non-padding prompt rows.
+ * @return True when prompt and graph dimensions are compatible.
+ */
 bool BuildPrefillEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
                             const InputPayload* payload, rt::Tensor* output,
                             int32_t* active_len) {
@@ -331,6 +417,15 @@ bool BuildPrefillEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed
   return true;
 }
 
+/**
+ * @brief Build q1 AR or q6 PBD embeddings from the latest prompt token.
+ * @param graph Decode graph defining the fixed query length.
+ * @param embed Memory-mapped embedding table.
+ * @param payload Prompt payload containing the latest token.
+ * @param pbd True for the six-row masked PBD input.
+ * @param output Destination decode embedding tensor.
+ * @return True when the requested mode matches the graph contract.
+ */
 bool BuildDecodeEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
                            const InputPayload* payload, bool pbd,
                            rt::Tensor* output) {
@@ -351,6 +446,16 @@ bool BuildDecodeEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
   return true;
 }
 
+/**
+ * @brief Build fixed-shape prefill or decode position IDs.
+ * @param graph Graph defining position tensor dimensions and dtype.
+ * @param start First committed position for decode.
+ * @param pbd Whether PBD shared-position semantics apply.
+ * @param active_len Non-padding prefill rows, or -1 for decode.
+ * @param pbd_prefix_len Accepted prefix included in an extended PBD graph.
+ * @param output Destination position tensor.
+ * @return True when positions satisfy the graph contract.
+ */
 bool BuildPositions(const rt::Graph& graph, int32_t start, bool pbd,
                     int32_t active_len, int32_t pbd_prefix_len,
                     rt::Tensor* output) {
@@ -383,6 +488,15 @@ bool BuildPositions(const rt::Graph& graph, int32_t start, bool pbd,
   return true;
 }
 
+/**
+ * @brief Build a right-aligned prefill mask or a PBD-aware decode mask.
+ * @param graph Graph defining mask dimensions and dtype.
+ * @param past_len Number of committed cache rows.
+ * @param block_size PBD block width; zero selects causal behavior.
+ * @param active_len Non-padding prefill rows, or -1 for decode.
+ * @param output Destination fp16 attention-mask tensor.
+ * @return True when the requested mask fits the graph contract.
+ */
 bool BuildMask(const rt::Graph& graph, int32_t past_len, int32_t block_size,
                int32_t active_len, rt::Tensor* output) {
   const auto& shape = graph.GetInputShapes()[2];
@@ -419,6 +533,12 @@ bool BuildMask(const rt::Graph& graph, int32_t past_len, int32_t block_size,
   return true;
 }
 
+/**
+ * @brief Allocate zeroed device-resident KV inputs for prefill.
+ * @param graph Prefill graph defining all 72 cache tensors.
+ * @param state Destination cache state.
+ * @return True when every cache buffer was allocated.
+ */
 bool BuildZeroCaches(const rt::Graph& graph, CacheState* state) {
   const auto& shapes = graph.GetInputShapes();
   const auto& dtypes = graph.GetInputDtypes();
@@ -442,6 +562,14 @@ bool BuildZeroCaches(const rt::Graph& graph, CacheState* state) {
   return true;
 }
 
+/**
+ * @brief Seed mirrored device KV caches from valid prefill output rows.
+ * @param graph Prefill graph defining the full cache contract.
+ * @param updates Prefill logits followed by 72 KV tensors.
+ * @param cache_offset Number of valid right-aligned prefill rows.
+ * @param state Destination mirrored cache state.
+ * @return True when all KV tensors were validated and copied.
+ */
 bool BuildFullCaches(const rt::Graph& graph,
                      const std::vector<rt::Tensor>& updates,
                      int32_t cache_offset,
@@ -500,6 +628,23 @@ bool BuildFullCaches(const rt::Graph& graph,
   return true;
 }
 
+/**
+ * @brief Assemble ordered embedding, position, mask, cache, and sampling inputs.
+ * @param graph Target Language graph.
+ * @param embed Memory-mapped embedding table.
+ * @param token_base Synthetic token base used only by diagnostic calls.
+ * @param past_len Number of committed cache rows.
+ * @param pbd Whether the target graph performs PBD.
+ * @param cache Current KV-cache tensors.
+ * @param payload Prompt and Vision payload, when running real inference.
+ * @param explicit_tokens Exact decode tokens, when already selected.
+ * @param active_len In/out count of active prefill rows.
+ * @param inputs Storage for tensors and ordered non-owning views.
+ * @param pbd_prefix_len Accepted prefix included by an extended PBD graph.
+ * @param generated_tokens History used by BPU sampling inputs.
+ * @param random_state Mutable PRNG state for BPU sampling.
+ * @return True when every tensor matches the target graph contract.
+ */
 bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
                   int32_t token_base, int32_t past_len, bool pbd,
                   const CacheState& cache, const InputPayload* payload,
@@ -577,6 +722,12 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
   return true;
 }
 
+/**
+ * @brief Accumulate one graph execution into generation diagnostics.
+ * @param name Executed graph name.
+ * @param execution_metrics HBM wrapper timings and byte counters.
+ * @param metrics Optional generation metrics destination.
+ */
 void RecordGraphTiming(const std::string& name,
                        const rt::ExecutionMetrics& execution_metrics,
                        GenerationMetrics* metrics) {
@@ -590,6 +741,23 @@ void RecordGraphTiming(const std::string& name,
   timing.output_bytes += execution_metrics.output_bytes;
 }
 
+/**
+ * @brief Build inputs, execute one named graph, and collect selected outputs.
+ * @param engine Loaded Language HBM and embedding state.
+ * @param name Target graph name.
+ * @param token_base Synthetic token base used by diagnostic calls.
+ * @param past_len Number of committed cache rows.
+ * @param pbd Whether the graph is a PBD graph.
+ * @param cache Current KV-cache state.
+ * @param outputs Destination graph outputs.
+ * @param payload Optional real prompt and Vision payload.
+ * @param active_len Optional destination for active prefill length.
+ * @param explicit_tokens Optional exact decode tokens.
+ * @param pbd_prefix_len Accepted prefix carried by an extended PBD graph.
+ * @param metrics Optional generation diagnostics.
+ * @param generated_tokens Optional history for BPU sampling inputs.
+ * @return True when input construction, execution, and optional dump succeed.
+ */
 bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
               int32_t past_len, bool pbd, const CacheState& cache,
               std::vector<rt::Tensor>* outputs,
@@ -690,6 +858,15 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
   return true;
 }
 
+/**
+ * @brief Commit accepted graph KV rows into all mirrored cache tensors.
+ * @param outputs Graph outputs containing logits and KV updates.
+ * @param history_len Number of committed rows before this update.
+ * @param state Destination mirrored cache state.
+ * @param valid_query Accepted prefix rows; negative commits all query rows.
+ * @param metrics Optional cache-copy timing destination.
+ * @return True when every KV tensor accepted the update.
+ */
 bool AppendCacheUpdate(const std::vector<rt::Tensor>& outputs,
                        int32_t history_len, CacheState* state,
                        int32_t valid_query = -1,
@@ -744,6 +921,13 @@ bool AppendCacheUpdate(const std::vector<rt::Tensor>& outputs,
   return true;
 }
 
+/**
+ * @brief Materialize one vocabulary row from a multi-row logits tensor.
+ * @param logits Source fp16 logits tensor.
+ * @param row Sequence-axis row to copy.
+ * @param selected Destination shaped as [1, 1, vocab].
+ * @return True when the row and tensor contract are valid.
+ */
 bool SelectLogitsRow(const rt::Tensor& logits, int32_t row,
                      rt::Tensor* selected) {
   if (logits.dtype != kF16 || logits.shape.size() != 3 ||
@@ -760,11 +944,23 @@ bool SelectLogitsRow(const rt::Tensor& logits, int32_t row,
   return true;
 }
 
+/**
+ * @brief Select the first decision row in q6 or extended PBD logits.
+ * @param logits PBD logits tensor.
+ * @param prefix_len Prefix rows already accepted.
+ * @return First row used by the six-row Host decoder.
+ */
 int32_t PbdLogitStart(const rt::Tensor& logits, int32_t prefix_len) {
   if (logits.shape.size() != 3 || logits.shape[1] != 6) return prefix_len;
   return 0;
 }
 
+/**
+ * @brief Select the next-token row from q1 or multi-token AR output.
+ * @param logits AR logits tensor.
+ * @param accepted Number of tokens committed by the bridge graph.
+ * @return Row containing logits for the next token.
+ */
 int32_t ArLogitRow(const rt::Tensor& logits, int32_t accepted) {
   if (logits.shape.size() != 3 || logits.shape[1] != 1) {
     return accepted - 1;
@@ -772,13 +968,24 @@ int32_t ArLogitRow(const rt::Tensor& logits, int32_t accepted) {
   return 0;
 }
 
+/** Return the sequence capacity declared by the first KV-cache tensor. */
 int32_t CacheCapacity(const CacheState& cache);
 
+/**
+ * @brief Resolve the fixed PBD graph name for an accepted prefix length.
+ * @param prefix_len Number of accepted prefix tokens, from zero through six.
+ * @return HBM graph name.
+ */
 std::string PbdGraphName(int32_t prefix_len) {
   return prefix_len == 0 ? "decode"
                          : "decode_pbd_q" + std::to_string(6 + prefix_len);
 }
 
+/**
+ * @brief Resolve the fixed AR graph name for a query length.
+ * @param q_len Number of AR tokens evaluated together.
+ * @return HBM graph name.
+ */
 std::string ArGraphName(int32_t q_len) {
   return q_len == 1 ? "decode_ar" : "decode_ar_q" + std::to_string(q_len);
 }
@@ -788,6 +995,20 @@ int32_t CacheCapacity(const CacheState& cache) {
   return cache.tensors.front().shape[1];
 }
 
+/**
+ * @brief Generate with PBD and temporary AR fallback for incomplete boxes.
+ * @param engine Loaded Language runtime state.
+ * @param payload Prompt and Vision features.
+ * @param max_new_tokens Hard output-token limit.
+ * @param cache Mutable committed KV-cache state.
+ * @param history_len Mutable committed-token count.
+ * @param response Destination generated tokens.
+ * @param stop_reason Destination terminal reason.
+ * @param protect_detection_structure Enable duplicate/incomplete-box guards.
+ * @param metrics Optional generation diagnostics.
+ * @param token_callback Optional accepted-token callback.
+ * @return True when generation reached a controlled terminal condition.
+ */
 bool RunHybridGeneration(EngineState* engine,
                          const InputPayload& payload,
                          int32_t max_new_tokens, CacheState* cache,
@@ -942,6 +1163,20 @@ bool RunHybridGeneration(EngineState* engine,
   return true;
 }
 
+/**
+ * @brief Generate strictly autoregressively from prefill logits.
+ * @param engine Loaded Language runtime state.
+ * @param payload Prompt and Vision features.
+ * @param max_new_tokens Hard output-token limit.
+ * @param prefill_outputs Prefill logits and KV updates.
+ * @param cache Mutable committed KV-cache state.
+ * @param history_len Mutable committed-token count.
+ * @param response Destination generated tokens.
+ * @param stop_reason Destination terminal reason.
+ * @param metrics Optional generation diagnostics.
+ * @param token_callback Optional accepted-token callback.
+ * @return True when generation reached a controlled terminal condition.
+ */
 bool RunArGeneration(EngineState* engine,
                      const InputPayload& payload, int32_t max_new_tokens,
                      const std::vector<rt::Tensor>& prefill_outputs,
@@ -993,6 +1228,21 @@ bool RunArGeneration(EngineState* engine,
   return true;
 }
 
+/**
+ * @brief Run prefill, seed KV state, and dispatch the configured decoder.
+ * @param engine Loaded Language runtime state.
+ * @param payload Prompt and Vision features.
+ * @param max_new_tokens Hard output-token limit.
+ * @param generation_mode Requested 'hybrid' or 'slow' mode.
+ * @param response Destination generated tokens.
+ * @param stop_reason Destination terminal reason.
+ * @param metrics Optional generation diagnostics.
+ * @param protect_detection_structure Enable guarded detection fallback.
+ * @param executed_mode Destination actual mode after fallback.
+ * @param fallback_reason Destination reason for switching to slow mode.
+ * @param token_callback Optional accepted-token callback.
+ * @return True when prefill and generation complete successfully.
+ */
 bool RunPayload(EngineState* engine,
                  const InputPayload& payload, int32_t max_new_tokens,
                  const std::string& generation_mode,
