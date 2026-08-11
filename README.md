@@ -260,8 +260,6 @@ Point localization, prompt: `/point succulent`
 
 ### Performance
 
-Measurements were collected on an RDK S600 with the stable W8 HBM. Times are single-image latency and vary with output length.
-
 | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Object detection | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
