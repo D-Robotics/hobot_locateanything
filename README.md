@@ -212,7 +212,7 @@ ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
   publish_image_format:=jpg \
   publish_message_topic_name:=/hbmem_img \
-  publish_fps:=10 \
+  publish_fps:=2 \
   publish_is_loop:=True \
   publish_is_shared_mem:=True \
   publish_encoding:=nv12
