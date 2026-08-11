@@ -161,7 +161,9 @@ Result
 
 #### ROS 2 node
 
-Start the inference node. It waits for a valid prompt before accepting images.
+Run terminals 1 through 4 in order. The inference node ignores images until it receives a valid prompt.
+
+Terminal 1: start the inference node and wait for `ready`.
 
 ```bash
 cd "$HOME/tros_ws/src/hobot_locateanything"
@@ -175,10 +177,20 @@ ros2 run hobot_locateanything hobot_locateanything \
   -p is_shared_mem_sub:=true
 ```
 
-Publish a prompt from another terminal:
+Terminal 2: wait for one structured result before publishing an image.
 
 ```bash
 source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
+
+ros2 topic echo --once /perception/locateanything
+```
+
+Terminal 3: publish a prompt.
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
 
 ros2 topic pub --once \
   /locateanything/prompt \
@@ -188,24 +200,28 @@ ros2 topic pub --once \
 
 A valid prompt remains active until another valid prompt replaces it or the node restarts.
 
-For a one-shot local image replay, start the official TROS image publisher in a third terminal:
+Terminal 4: replay one local image with the official TROS image publisher.
 
 ```bash
 source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
 
-ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
+timeout --signal=INT --kill-after=2s 3s \
+  ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
   publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
   publish_image_format:=jpg \
   publish_message_topic_name:=/hbmem_img \
-  publish_is_loop:=False \
+  publish_fps:=1 \
+  publish_is_loop:=True \
   publish_is_shared_mem:=True \
   publish_encoding:=nv12
 ```
 
-For a USB camera, replace the image publisher with the official TROS camera node:
+For USB camera input, run `ros2 topic echo /perception/locateanything` in terminal 2 and replace terminal 4 with:
 
 ```bash
 source /opt/tros/jazzy/setup.bash
+source "$HOME/tros_ws/install/setup.bash"
 
 ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
   usb_video_device:=/dev/video0 \
@@ -215,13 +231,6 @@ ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
   usb_pixel_format:=mjpeg \
   usb_io_method:=mmap \
   usb_zero_copy:=True
-```
-
-Inspect the structured output in another terminal:
-
-```bash
-source /opt/tros/jazzy/setup.bash
-ros2 topic echo /perception/locateanything
 ```
 
 The ROS node publishes results only. Rendering, encoding, and file storage belong to downstream TROS nodes.

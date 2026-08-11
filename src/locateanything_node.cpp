@@ -242,8 +242,7 @@ class LocateAnythingNode : public rclcpp::Node {
       shared_image_subscription_ =
           create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
               input_topic, rclcpp::SensorDataQoS(),
-              [this](
-                  const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr message) {
+              [this](const hbm_img_msgs::msg::HbmMsg1080P& message) {
                 OnSharedImage(message);
               });
     } else {
@@ -322,32 +321,29 @@ class LocateAnythingNode : public rclcpp::Node {
    * @param message Incoming `hbm_img_msgs/msg/HbmMsg1080P` frame.
    */
   void OnSharedImage(
-      const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr message) {
+      const hbm_img_msgs::msg::HbmMsg1080P& message) {
     try {
-      if (!message) {
-        throw std::runtime_error("received a null shared image");
-      }
       const auto encoding_end = std::find(
-          message->encoding.begin(), message->encoding.end(), uint8_t{0});
-      const std::string encoding(message->encoding.begin(), encoding_end);
-      if (message->data_size > message->data.size()) {
+          message.encoding.begin(), message.encoding.end(), uint8_t{0});
+      const std::string encoding(message.encoding.begin(), encoding_end);
+      if (message.data_size > message.data.size()) {
         throw std::runtime_error(
             "shared-memory data_size exceeds message buffer");
       }
       cv::Mat image;
       if (encoding == "nv12") {
-        image = Nv12ToBgr(message->data.data(), message->data_size,
-                          message->width, message->height, message->step);
+        image = Nv12ToBgr(message.data.data(), message.data_size,
+                          message.width, message.height, message.step);
       } else if (encoding == "jpeg" || encoding == "jpg") {
-        image = JpegToBgr(message->data.data(), message->data_size);
+        image = JpegToBgr(message.data.data(), message.data_size);
       } else {
         throw std::runtime_error(
             "unsupported shared-memory encoding '" + encoding +
             "'; expected nv12 or jpeg");
       }
       std_msgs::msg::Header header;
-      header.stamp = message->time_stamp;
-      header.frame_id = std::to_string(message->index);
+      header.stamp = message.time_stamp;
+      header.frame_id = std::to_string(message.index);
       QueueFrame(header, std::move(image));
     } catch (const std::exception& error) {
       RCLCPP_WARN(get_logger(), "cannot process shared image: %s",
@@ -481,9 +477,9 @@ class LocateAnythingNode : public rclcpp::Node {
                      LogText(frame.header.frame_id).c_str(),
                      TokenIdsText(output.generated_token_ids).c_str());
         if (!language.fallback_reason.empty()) {
-          RCLCPP_WARN(get_logger(), "frame_id=%s language fallback: %s",
-                      LogText(frame.header.frame_id).c_str(),
-                      LogText(language.fallback_reason).c_str());
+          RCLCPP_DEBUG(get_logger(), "frame_id=%s language fallback: %s",
+                       LogText(frame.header.frame_id).c_str(),
+                       LogText(language.fallback_reason).c_str());
         }
       } catch (const std::exception& error) {
         RCLCPP_ERROR(get_logger(), "frame_id=%s inference failed: %s",
