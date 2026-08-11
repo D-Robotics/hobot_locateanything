@@ -13,7 +13,7 @@
   <img src="assets/LocateAnything.jpg" alt="LocateAnything 在 RDK S600 上运行" width="100%">
 </p>
 
-`hobot_locateanything` 是 LocateAnything-3B 在地瓜机器人 RDK S600 上的 TROS 推理功能包。项目提供读取本地媒体的交互终端，以及订阅 TROS 图像与 Prompt、发布 `ai_msgs/msg/PerceptionTargets` 的 ROS 2 节点。两个程序共用同一套 C++ 推理核心。
+`hobot_locateanything` 是 LocateAnything-3B 的 RDK S600 TROS 推理功能包。Console 读取本地图片和视频，并保存标注结果；ROS 2 节点订阅 TROS 图像与 Prompt，发布 `ai_msgs/msg/PerceptionTargets`。两个入口共用同一套 C++ 推理核心。
 
 ## 功能介绍
 
@@ -37,7 +37,7 @@
   <img src="assets/LocateAnything_pipeline.png" alt="LocateAnything 推理流程" width="100%">
 </p>
 
-共用推理流程为 `图像 + Prompt -> 预处理 -> MoonViT -> Qwen2.5 Decoder -> 结构化结果解析`。
+推理流程为 `图像 + Prompt -> 预处理 -> MoonViT -> Qwen2.5 Decoder -> 结构化结果解析`。
 
 | 项目 | 配置 |
 | --- | --- |
@@ -50,7 +50,7 @@
 | 解码 | PBD q=6、AR q=1、Host 采样 |
 | 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
-模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ) 维护。
+模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ) 维护。部署文件发布在 [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600)。
 
 ## 开发环境
 
@@ -74,10 +74,10 @@ git clone https://github.com/LiuAnclouds/hobot_locateanything.git
 cd hobot_locateanything
 
 python3 -m pip install -U huggingface_hub
-hf download LiuAnclouds/LocateAnything-3B-S600 --local-dir models
+hf download xkj521999/LocateAnything-3B-S600 --local-dir models
 ```
 
-运行时需要以下文件：
+运行时读取以下文件：
 
 ```text
 models/
@@ -95,11 +95,11 @@ models/
 ```bash
 source /opt/tros/jazzy/setup.bash
 cd "$HOME/tros_ws"
-colcon build --packages-select hobot_locateanything
+colcon build --merge-install --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-### 3. 启动 TROS 推理
+### 3. 启动推理
 
 #### 交互终端推理
 
@@ -111,6 +111,35 @@ source "$HOME/tros_ws/install/setup.bash"
 ros2 run hobot_locateanything console --config "$PWD/config.yaml"
 ```
 
+先加载图片，再输入任务命令：
+
+```text
+[User] <<< /image image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
+```
+
+视频输入使用：
+
+```text
+[User] <<< /video image/person_video.avi
+[User] <<< /detect person
+```
+
+Console 以输入文件名创建输出目录。同一文件重复推理时覆盖原结果。
+
+```text
+outputs/07_detection_multiclass/
+├── annotated.jpg
+└── prediction.json
+
+outputs/person_video/
+├── annotated.mp4
+├── predictions.jsonl
+└── summary.json
+```
+
+系统缺少 MP4 编码器时，标注视频保存为 `annotated.avi`。
+
 RDK S600 终端输出：
 
 ```text
@@ -118,22 +147,20 @@ RDK S600 终端输出：
 [DNN]: 3.12.3_(4.5.4 HBRT)
 HBM loaded  [============================] 15.9 s
 Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
-[User] <<< /image image/07_detection_multiclass.jpg
-Image loaded  image/07_detection_multiclass.jpg
-[User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
-  Vision   251.8 ms
-  Prefill  150.0 ms  620 tokens
-  Decode   525.2 ms  47 tokens  89.5 tokens/s
-  Total    969.5 ms
+  Vision   252.5 ms
+  Prefill  149.9 ms  620 tokens
+  Decode   525.0 ms  47 tokens  89.5 tokens/s
+  Host     41.6 ms
+  Total    970.5 ms
 Result
   Labels bicycle, bus, person  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
-#### ROS 节点推理
+#### ROS 2 节点推理
 
-订阅 `/hbmem_img` 共享内存图像：
+启动推理节点。收到有效 Prompt 前，节点不会处理图像。
 
 ```bash
 cd "$HOME/tros_ws/src/hobot_locateanything"
@@ -147,32 +174,56 @@ ros2 run hobot_locateanything hobot_locateanything \
   -p is_shared_mem_sub:=true
 ```
 
-订阅 `/image` 普通 `sensor_msgs/msg/Image`：
+在另一个终端发布 Prompt：
 
 ```bash
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/image \
-  -p is_shared_mem_sub:=false
+source /opt/tros/jazzy/setup.bash
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/detect person,bus,bicycle'}"
 ```
 
-节点运行期间可更新 Prompt：
+有效 Prompt 会持续生效，直到新的有效 Prompt 覆盖或节点重启。
+
+本地图片单次回灌使用 TROS 官方图像发布节点：
 
 ```bash
-ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
-  '{data: "/detect kite"}'
+source /opt/tros/jazzy/setup.bash
+
+ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
+  publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
+  publish_image_format:=jpg \
+  publish_message_topic_name:=/hbmem_img \
+  publish_is_loop:=False \
+  publish_is_shared_mem:=True \
+  publish_encoding:=nv12
 ```
 
-RDK S600 节点输出：
+USB 摄像头使用 TROS 官方摄像头节点：
 
-```text
-[INFO] [hobot_locateanything]: ready: input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything
-[INFO] [hobot_locateanything]: prompt updated: /detect kite
-[INFO] [hobot_locateanything]: frame_id=24643 prompt="/detect kite" output="<ref>kite</ref><box><403><458><832><999></box><|im_end|>" labels="kite" boxes=1 points=0 fps=2 stop_reason=im_end prompt_tokens=615 generated_tokens=11 pbd_calls=3 pbd_accepted_tokens=11 mode=hybrid preprocess_ms=15.850 vision_ms=247.862 language_ms=303.215 postprocess_ms=0.013 total_ms=566.942
+```bash
+source /opt/tros/jazzy/setup.bash
+
+ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
+  usb_video_device:=/dev/video0 \
+  usb_image_width:=1280 \
+  usb_image_height:=720 \
+  usb_framerate:=30 \
+  usb_pixel_format:=mjpeg \
+  usb_io_method:=mmap \
+  usb_zero_copy:=True
 ```
 
-MIPI、USB 摄像头和本地媒体发布由 TROS 节点负责。本节点只订阅 `/hbmem_img` 或 `/image`。
+在另一个终端查看结构化结果：
+
+```bash
+source /opt/tros/jazzy/setup.bash
+ros2 topic echo /perception/locateanything
+```
+
+ROS 节点只发布结果，不绘图、不编码、不保存文件。渲染和存储由下游 TROS 节点完成。
 
 ## 结果展示
 
@@ -208,11 +259,11 @@ OCR，Prompt：`/text`
 
 ### 性能
 
-以下数据来自 RDK S600 上的稳定 W8 HBM。表中时间为单图推理耗时，不是摄像头输入帧率。
+以下数据来自 RDK S600 上的稳定 W8 HBM。表中时间为单图推理耗时，输出越长，Decode 耗时通常越高。
 
 | 任务 | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 目标检测 | 47 | 251.8 | 150.0 | 525.2 | 969.5 | 89.5 |
+| 目标检测 | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
 | GUI 定位 | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
 | 指代定位 | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |

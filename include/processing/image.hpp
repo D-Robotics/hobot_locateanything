@@ -21,6 +21,14 @@ cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                   uint32_t height, uint32_t step = 0);
 
 /**
+ * @brief Decode a JPEG buffer to an owned BGR image.
+ * @param data Source JPEG bytes.
+ * @param data_size Available source bytes.
+ * @return Owned three-channel BGR image.
+ */
+cv::Mat JpegToBgr(const uint8_t* data, size_t data_size);
+
+/**
  * @brief Convert packed BGR/RGB bytes to a tightly packed BGR image.
  * @param data Source packed-color bytes.
  * @param data_size Available source bytes.

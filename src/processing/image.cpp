@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace locateanything {
@@ -177,6 +178,20 @@ cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                    row_stride);
   cv::Mat bgr;
   cv::cvtColorTwoPlane(y_plane, uv_plane, bgr, cv::COLOR_YUV2BGR_NV12);
+  return bgr;
+}
+
+cv::Mat JpegToBgr(const uint8_t* data, size_t data_size) {
+  if (data == nullptr || data_size == 0 ||
+      data_size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("invalid JPEG image buffer");
+  }
+  const cv::Mat encoded(1, static_cast<int>(data_size), CV_8UC1,
+                        const_cast<uint8_t*>(data));
+  cv::Mat bgr = cv::imdecode(encoded, cv::IMREAD_COLOR);
+  if (bgr.empty()) {
+    throw std::runtime_error("cannot decode JPEG image buffer");
+  }
   return bgr;
 }
 

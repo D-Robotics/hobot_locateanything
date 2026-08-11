@@ -44,6 +44,7 @@ namespace locateanything {
 namespace {
 
 constexpr auto kDropWarningInterval = std::chrono::seconds(5);
+constexpr auto kPromptWaitWarningInterval = std::chrono::seconds(5);
 constexpr size_t kFpsWindowSize = 30;
 
 /**
@@ -174,9 +175,6 @@ class LocateAnythingNode : public rclcpp::Node {
     if (input_topic.empty() || prompt_topic.empty() || result_topic.empty()) {
       throw std::invalid_argument("input, prompt, and result topics must not be empty");
     }
-    prompt_ = declare_parameter<std::string>("default_prompt", "/detect person");
-    ValidatePrompt(prompt_);
-
     const std::string model_directory =
         declare_parameter<std::string>("model_directory", "models");
     const std::string tokenizer_directory =
@@ -261,6 +259,11 @@ class LocateAnythingNode : public rclcpp::Node {
                 input_topic.c_str(),
                 is_shared_mem_sub ? "hbmem" : "sensor_msgs/Image",
                 prompt_topic.c_str(), result_topic.c_str());
+    last_prompt_wait_warning_ = std::chrono::steady_clock::now();
+    RCLCPP_WARN(get_logger(),
+                "waiting for prompt on %s; image frames are ignored until a "
+                "valid prompt arrives",
+                prompt_topic.c_str());
   }
 
   /** Stop the worker and report any frames dropped during shutdown. */
@@ -315,7 +318,7 @@ class LocateAnythingNode : public rclcpp::Node {
   }
 
   /**
-   * @brief Convert an official TROS shared-memory NV12 message and queue it.
+   * @brief Convert an official TROS shared-memory NV12 or JPEG message and queue it.
    * @param message Incoming `hbm_img_msgs/msg/HbmMsg1080P` frame.
    */
   void OnSharedImage(
@@ -327,16 +330,21 @@ class LocateAnythingNode : public rclcpp::Node {
       const auto encoding_end = std::find(
           message->encoding.begin(), message->encoding.end(), uint8_t{0});
       const std::string encoding(message->encoding.begin(), encoding_end);
-      if (encoding != "nv12") {
-        throw std::runtime_error("shared-memory input must use nv12 encoding");
-      }
       if (message->data_size > message->data.size()) {
         throw std::runtime_error(
             "shared-memory data_size exceeds message buffer");
       }
-      cv::Mat image = Nv12ToBgr(
-          message->data.data(), message->data_size,
-          message->width, message->height, message->step);
+      cv::Mat image;
+      if (encoding == "nv12") {
+        image = Nv12ToBgr(message->data.data(), message->data_size,
+                          message->width, message->height, message->step);
+      } else if (encoding == "jpeg" || encoding == "jpg") {
+        image = JpegToBgr(message->data.data(), message->data_size);
+      } else {
+        throw std::runtime_error(
+            "unsupported shared-memory encoding '" + encoding +
+            "'; expected nv12 or jpeg");
+      }
       std_msgs::msg::Header header;
       header.stamp = message->time_stamp;
       header.frame_id = std::to_string(message->index);
@@ -384,23 +392,40 @@ class LocateAnythingNode : public rclcpp::Node {
     if (image.empty()) {
       throw std::runtime_error("input image conversion returned empty data");
     }
+    bool waiting_for_prompt = false;
+    bool warn_waiting_for_prompt = false;
     uint64_t warn_drops = 0;
     uint64_t total_drops = 0;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (pending_.has_value()) {
-        ++dropped_frames_;
-        ++dropped_since_warning_;
+      if (prompt_.empty()) {
+        waiting_for_prompt = true;
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_drop_warning_ >= kDropWarningInterval) {
-          warn_drops = dropped_since_warning_;
-          total_drops = dropped_frames_;
-          dropped_since_warning_ = 0;
-          last_drop_warning_ = now;
+        if (now - last_prompt_wait_warning_ >= kPromptWaitWarningInterval) {
+          warn_waiting_for_prompt = true;
+          last_prompt_wait_warning_ = now;
         }
+      } else {
+        if (pending_.has_value()) {
+          ++dropped_frames_;
+          ++dropped_since_warning_;
+          const auto now = std::chrono::steady_clock::now();
+          if (now - last_drop_warning_ >= kDropWarningInterval) {
+            warn_drops = dropped_since_warning_;
+            total_drops = dropped_frames_;
+            dropped_since_warning_ = 0;
+            last_drop_warning_ = now;
+          }
+        }
+        pending_ = PendingFrame{header, std::move(image), prompt_};
       }
-      pending_ = PendingFrame{header, std::move(image), prompt_};
     }
+    if (warn_waiting_for_prompt) {
+      RCLCPP_WARN(get_logger(),
+                  "waiting for prompt; image frames are ignored until a valid "
+                  "prompt arrives");
+    }
+    if (waiting_for_prompt) return;
     if (warn_drops > 0) {
       RCLCPP_WARN(get_logger(),
                   "latest-frame queue dropped %llu frame(s) in the last "
@@ -587,6 +612,8 @@ class LocateAnythingNode : public rclcpp::Node {
   uint64_t dropped_frames_ = 0;
   uint64_t dropped_since_warning_ = 0;
   std::chrono::steady_clock::time_point last_drop_warning_ =
+      std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point last_prompt_wait_warning_ =
       std::chrono::steady_clock::now();
   std::deque<std::chrono::steady_clock::time_point> output_timestamps_;
   std::thread worker_;

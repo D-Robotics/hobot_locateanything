@@ -32,8 +32,6 @@ hobot_locateanything:
     # -------------------------------------------------------------------------
     # ROS 入口只消费 TROS 图像话题；本地图片和视频由 Console 处理。
     input_topic: /hbmem_img
-    default_prompt: /detect person
-
     # true 订阅 hbm_img_msgs/HbmMsg1080P，
     # false 订阅 sensor_msgs/Image。摄像头和视频发布由其他 TROS 节点负责。
     is_shared_mem_sub: true

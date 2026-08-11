@@ -13,11 +13,11 @@ English | [简体中文](./README_ZH.md)
   <img src="assets/LocateAnything.jpg" alt="LocateAnything on RDK S600" width="100%">
 </p>
 
-`hobot_locateanything` runs LocateAnything-3B on the D-Robotics RDK S600. It provides an interactive Console for local media and a ROS 2 node that subscribes to TROS images and prompts, then publishes `ai_msgs/msg/PerceptionTargets`. Both programs use the same C++ inference core.
+`hobot_locateanything` runs LocateAnything-3B on the D-Robotics RDK S600. The Console reads local images and videos and saves annotated results. The ROS 2 node receives TROS images and prompts, then publishes `ai_msgs/msg/PerceptionTargets`. Both entry points use the same C++ inference core.
 
-## Introduction
+## Features
 
-### Supported tasks
+### Tasks
 
 | Command | Task |
 | --- | --- |
@@ -37,7 +37,7 @@ English | [简体中文](./README_ZH.md)
   <img src="assets/LocateAnything_pipeline.png" alt="LocateAnything inference pipeline" width="100%">
 </p>
 
-The shared inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 decoder -> structured result parsing`.
+The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 decoder -> structured result parsing`.
 
 | Item | Configuration |
 | --- | --- |
@@ -50,9 +50,9 @@ The shared inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen
 | Decoding | PBD q=6, AR q=1, Host sampling |
 | Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
 
-Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ).
+Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ). Runtime files are published at [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600).
 
-## Development environment
+## Environment
 
 | Item | Version |
 | --- | --- |
@@ -74,10 +74,10 @@ git clone https://github.com/LiuAnclouds/hobot_locateanything.git
 cd hobot_locateanything
 
 python3 -m pip install -U huggingface_hub
-hf download LiuAnclouds/LocateAnything-3B-S600 --local-dir models
+hf download xkj521999/LocateAnything-3B-S600 --local-dir models
 ```
 
-The runtime requires these files:
+The runtime reads these files:
 
 ```text
 models/
@@ -95,11 +95,11 @@ models/
 ```bash
 source /opt/tros/jazzy/setup.bash
 cd "$HOME/tros_ws"
-colcon build --packages-select hobot_locateanything
+colcon build --merge-install --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-### 3. Run TROS inference
+### 3. Run inference
 
 #### Interactive console
 
@@ -111,29 +111,56 @@ source "$HOME/tros_ws/install/setup.bash"
 ros2 run hobot_locateanything console --config "$PWD/config.yaml"
 ```
 
-Console output on the RDK S600:
+Load an image, then enter a task command:
+
+```text
+[User] <<< /image image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
+```
+
+For video input:
+
+```text
+[User] <<< /video image/person_video.avi
+[User] <<< /detect person
+```
+
+The Console uses the input file name as the output directory. Repeated runs overwrite the previous result for that file.
+
+```text
+outputs/07_detection_multiclass/
+├── annotated.jpg
+└── prediction.json
+
+outputs/person_video/
+├── annotated.mp4
+├── predictions.jsonl
+└── summary.json
+```
+
+The video writer falls back to `annotated.avi` when the MP4 codec is unavailable.
+
+Example output on the RDK S600:
 
 ```text
 [UCP]: UCP version = 3.12.3
 [DNN]: 3.12.3_(4.5.4 HBRT)
 HBM loaded  [============================] 15.9 s
 Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
-[User] <<< /image image/07_detection_multiclass.jpg
-Image loaded  image/07_detection_multiclass.jpg
-[User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
-  Vision   251.8 ms
-  Prefill  150.0 ms  620 tokens
-  Decode   525.2 ms  47 tokens  89.5 tokens/s
-  Total    969.5 ms
+  Vision   252.5 ms
+  Prefill  149.9 ms  620 tokens
+  Decode   525.0 ms  47 tokens  89.5 tokens/s
+  Host     41.6 ms
+  Total    970.5 ms
 Result
   Labels bicycle, bus, person  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
-#### ROS node
+#### ROS 2 node
 
-Shared-memory input from `/hbmem_img`:
+Start the inference node. It waits for a valid prompt before accepting images.
 
 ```bash
 cd "$HOME/tros_ws/src/hobot_locateanything"
@@ -147,36 +174,60 @@ ros2 run hobot_locateanything hobot_locateanything \
   -p is_shared_mem_sub:=true
 ```
 
-Standard `sensor_msgs/msg/Image` input from `/image`:
+Publish a prompt from another terminal:
 
 ```bash
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/image \
-  -p is_shared_mem_sub:=false
+source /opt/tros/jazzy/setup.bash
+
+ros2 topic pub --once \
+  /locateanything/prompt \
+  std_msgs/msg/String \
+  "{data: '/detect person,bus,bicycle'}"
 ```
 
-Update the prompt while the node is running:
+A valid prompt remains active until another valid prompt replaces it or the node restarts.
+
+For a one-shot local image replay, start the official TROS image publisher in a third terminal:
 
 ```bash
-ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
-  '{data: "/detect kite"}'
+source /opt/tros/jazzy/setup.bash
+
+ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
+  publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
+  publish_image_format:=jpg \
+  publish_message_topic_name:=/hbmem_img \
+  publish_is_loop:=False \
+  publish_is_shared_mem:=True \
+  publish_encoding:=nv12
 ```
 
-ROS node output on the RDK S600:
+For a USB camera, replace the image publisher with the official TROS camera node:
 
-```text
-[INFO] [hobot_locateanything]: ready: input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything
-[INFO] [hobot_locateanything]: prompt updated: /detect kite
-[INFO] [hobot_locateanything]: frame_id=24643 prompt="/detect kite" output="<ref>kite</ref><box><403><458><832><999></box><|im_end|>" labels="kite" boxes=1 points=0 fps=2 stop_reason=im_end prompt_tokens=615 generated_tokens=11 pbd_calls=3 pbd_accepted_tokens=11 mode=hybrid preprocess_ms=15.850 vision_ms=247.862 language_ms=303.215 postprocess_ms=0.013 total_ms=566.942
+```bash
+source /opt/tros/jazzy/setup.bash
+
+ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
+  usb_video_device:=/dev/video0 \
+  usb_image_width:=1280 \
+  usb_image_height:=720 \
+  usb_framerate:=30 \
+  usb_pixel_format:=mjpeg \
+  usb_io_method:=mmap \
+  usb_zero_copy:=True
 ```
 
-MIPI cameras, USB cameras, and local media publishers are provided by TROS. The inference node only subscribes to `/hbmem_img` or `/image`.
+Inspect the structured output in another terminal:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+ros2 topic echo /perception/locateanything
+```
+
+The ROS node publishes results only. Rendering, encoding, and file storage belong to downstream TROS nodes.
 
 ## Results
 
-### Inference examples
+### Examples
 
 Object detection, prompt: `/detect person,bus,bicycle`
 
@@ -208,11 +259,11 @@ Point localization, prompt: `/point succulent`
 
 ### Performance
 
-Measurements were collected on an RDK S600 with the stable W8 HBM. Times are single-image latency, not camera input FPS.
+Measurements were collected on an RDK S600 with the stable W8 HBM. Times are single-image latency and vary with output length.
 
 | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Object detection | 47 | 251.8 | 150.0 | 525.2 | 969.5 | 89.5 |
+| Object detection | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
