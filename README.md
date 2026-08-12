@@ -148,11 +148,11 @@ Image loaded  image/07_detection_multiclass.jpg
 [User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
-  Vision   253.5 ms
-  Prefill  153.0 ms  620 tokens
-  Decode   526.8 ms  47 tokens  89.2 tokens/s
-  Host     41.2 ms
-  Total    976.7 ms
+  Vision   254.7 ms
+  Prefill  151.6 ms  620 tokens
+  Decode   526.3 ms  47 tokens  89.3 tokens/s
+  Host     41.4 ms
+  Total    978.5 ms
 Result
   Labels bicycle, bus, person  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
@@ -342,14 +342,14 @@ source install/setup.bash
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
-  "{data: '/detect person'}"
+  "{data: '/detect person,bus,bicycle'}"
 ```
 
 Prompt publisher output:
 
 ```text
 publisher: beginning loop
-publishing #1: std_msgs.msg.String(data='/detect person')
+publishing #1: std_msgs.msg.String(data='/detect person,bus,bicycle')
 ```
 
 The launch file replays `image/07_detection_multiclass.jpg` at 2 FPS. Change `publish_image_source` to use another image.
@@ -372,37 +372,54 @@ Image publisher output:
 Inference output:
 
 ```text
-[INFO] [hobot_locateanything]: prompt updated: /detect person
-[INFO] [hobot_locateanything]: frame_id=2 prompt="/detect person" output="<ref>person</ref><box><125><356><248><766></box><box><720><400><862><769></box><|im_end|>" labels="person | person" boxes=2 points=0 fps=2 stop_reason=im_end prompt_tokens=615 generated_tokens=16 pbd_calls=4 pbd_accepted_tokens=16 mode=hybrid preprocess_ms=17.932 vision_ms=253.260 language_ms=341.119 postprocess_ms=0.014 total_ms=612.326
+[INFO] [hobot_locateanything]: prompt updated: /detect person,bus,bicycle
+[INFO] [hobot_locateanything]: frame_id=38 prompt="/detect person,bus,bicycle" output="<ref>person</ref><box><220><392><312><690></box><box><666><424><758><701></box><ref>bus</ref><box><124><265><595><653></box><ref>bicycle</ref><box><514><465><646><618></box><box><735><575><878><782></box><|im_end|>" labels="person | person | bus | bicycle | bicycle" boxes=5 points=0 fps=1 stop_reason=im_end prompt_tokens=620 generated_tokens=41 pbd_calls=9 pbd_accepted_tokens=41 mode=hybrid preprocess_ms=43.935 vision_ms=250.393 language_ms=557.831 postprocess_ms=0.023 total_ms=852.182
 ```
 
 Result topic output:
 
 ```yaml
 header:
-  frame_id: '2'
-fps: 2
+  frame_id: '38'
+fps: 1
 perfs:
   - type: preprocess
-    time_ms_duration: 17.932082
+    time_ms_duration: 43.935122
   - type: vision
-    time_ms_duration: 253.259757
+    time_ms_duration: 250.392581
   - type: language
-    time_ms_duration: 341.118596
+    time_ms_duration: 557.831141
   - type: postprocess
-    time_ms_duration: 0.013951
+    time_ms_duration: 0.022575
 targets:
   - type: person
     rois:
       - type: person
-        rect: {x_offset: 80, y_offset: 148, height: 262, width: 79}
+        rect: {x_offset: 422, y_offset: 333, height: 572, width: 177}
         confidence: -1.0
   - type: person
     rois:
       - type: person
-        rect: {x_offset: 461, y_offset: 176, height: 236, width: 91}
+        rect: {x_offset: 1279, y_offset: 394, height: 532, width: 176}
+        confidence: -1.0
+  - type: bus
+    rois:
+      - type: bus
+        rect: {x_offset: 238, y_offset: 89, height: 745, width: 904}
+        confidence: -1.0
+  - type: bicycle
+    rois:
+      - type: bicycle
+        rect: {x_offset: 987, y_offset: 473, height: 294, width: 253}
+        confidence: -1.0
+  - type: bicycle
+    rois:
+      - type: bicycle
+        rect: {x_offset: 1411, y_offset: 684, height: 396, width: 275}
         confidence: -1.0
 ```
+
+The image publisher supplies input at 2 FPS. The result topic's `fps: 1` is the measured inference result rate for this run.
 
 To run another task on the same image, keep terminals 1 and 2 running and publish a new prompt from terminal 3:
 
@@ -417,12 +434,27 @@ ros2 topic pub --once \
   "{data: '/detect bus'}"
 ```
 
-Subsequent replays of the same image use `/detect bus`. The image publisher and result subscription do not need to restart.
+Subsequent replays of the same image use `/detect bus`. The image publisher and result subscription do not need to restart. A frame already in inference may still produce one result for the previous prompt.
 
 Inference node output:
 
 ```text
 [INFO] [hobot_locateanything]: prompt updated: /detect bus
+[INFO] [hobot_locateanything]: frame_id=44 prompt="/detect bus" output="<ref>bus</ref><box><124><263><595><657></box><|im_end|>" labels="bus" boxes=1 points=0 fps=1 stop_reason=im_end prompt_tokens=615 generated_tokens=10 pbd_calls=3 pbd_accepted_tokens=10 mode=hybrid preprocess_ms=43.837 vision_ms=245.829 language_ms=304.013 postprocess_ms=0.013 total_ms=593.692
+```
+
+Result topic output:
+
+```yaml
+header:
+  frame_id: '48'
+fps: 1
+targets:
+  - type: bus
+    rois:
+      - type: bus
+        rect: {x_offset: 238, y_offset: 85, height: 756, width: 904}
+        confidence: -1.0
 ```
 
 ##### USB camera input
@@ -475,7 +507,7 @@ source install/setup.bash
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
-  "{data: '/ground cardboard box'}"
+  "{data: '/detect cardboard box,person'}"
 ```
 
 Prompt publisher output:
@@ -483,7 +515,7 @@ Prompt publisher output:
 ```text
 Waiting for at least 1 matching subscription(s)...
 publisher: beginning loop
-publishing #1: std_msgs.msg.String(data='/ground cardboard box')
+publishing #1: std_msgs.msg.String(data='/detect cardboard box,person')
 ```
 
 USB camera node output:
@@ -497,30 +529,35 @@ USB camera node output:
 Inference output:
 
 ```text
-[INFO] [hobot_locateanything]: prompt updated: /ground cardboard box
-[INFO] [hobot_locateanything]: frame_id=13 prompt="/ground cardboard box" output="<ref>cardboard box</ref><box><503><613><556><655></box><|im_end|>" labels="cardboard box" boxes=1 points=0 fps=2 stop_reason=im_end prompt_tokens=616 generated_tokens=12 pbd_calls=3 pbd_accepted_tokens=12 mode=hybrid preprocess_ms=27.256 vision_ms=253.491 language_ms=304.637 postprocess_ms=0.011 total_ms=585.397
+[INFO] [hobot_locateanything]: prompt updated: /detect cardboard box,person
+[INFO] [hobot_locateanything]: frame_id=532 prompt="/detect cardboard box,person" output="<ref>cardboard box</ref><box><461><615><516><656></box><ref>person</ref><box><381><638><420><780></box><|im_end|>" labels="cardboard box | person" boxes=2 points=0 fps=1 stop_reason=im_end prompt_tokens=618 generated_tokens=21 pbd_calls=5 pbd_accepted_tokens=16 mode=hybrid preprocess_ms=26.183 vision_ms=261.752 language_ms=552.914 postprocess_ms=0.017 total_ms=840.866
 ```
 
 Result topic output:
 
 ```yaml
 header:
-  frame_id: '13'
-fps: 2
+  frame_id: '532'
+fps: 1
 perfs:
   - type: preprocess
-    time_ms_duration: 27.255518
+    time_ms_duration: 26.182972
   - type: vision
-    time_ms_duration: 253.491319
+    time_ms_duration: 261.751575
   - type: language
-    time_ms_duration: 304.637464
+    time_ms_duration: 552.913972
   - type: postprocess
-    time_ms_duration: 0.011100
+    time_ms_duration: 0.017050
 targets:
   - type: cardboard box
     rois:
       - type: cardboard box
-        rect: {x_offset: 644, y_offset: 505, height: 53, width: 68}
+        rect: {x_offset: 590, y_offset: 507, height: 53, width: 70}
+        confidence: -1.0
+  - type: person
+    rois:
+      - type: person
+        rect: {x_offset: 488, y_offset: 537, height: 181, width: 50}
         confidence: -1.0
 ```
 
