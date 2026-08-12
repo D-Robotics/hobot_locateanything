@@ -50,7 +50,7 @@
 | 解码 | PBD q=6、AR q=1、Host 采样 |
 | 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
-模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ) 维护。部署文件发布在 [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600)。
+模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ) 维护。部署文件发布在 [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600)。
 
 ## 开发环境
 
@@ -61,27 +61,34 @@
 | TROS | Jazzy |
 | 开发语言 | C++17 |
 | 编译工具 | CMake、colcon |
-| 依赖 | `rclcpp`、`sensor_msgs`、`std_msgs`、`hbm_img_msgs`、`ai_msgs`、OpenCV、yaml-cpp |
+| 依赖 | `rclcpp`、`sensor_msgs`、`std_msgs`、`hbm_img_msgs`、`ai_msgs`、`hobot_codec`、OpenCV、yaml-cpp |
 
 ## 使用介绍
 
-### 1. 下载模型
+### 1. 编译功能包
 
 ```bash
-mkdir -p "$HOME/tros_ws/src"
-cd "$HOME/tros_ws/src"
-git clone https://github.com/LiuAnclouds/hobot_locateanything.git
+git clone https://github.com/D-Robotics/hobot_locateanything.git
 cd hobot_locateanything
 
+source /opt/tros/jazzy/setup.bash
+colcon build --merge-install --packages-select hobot_locateanything
+source install/setup.bash
+```
+
+### 2. 下载模型
+
+```bash
 python3 -m pip install -U huggingface_hub
 export HF_ENDPOINT="https://hf-mirror.com"
-hf download xkj521999/LocateAnything-3B-S600 --local-dir models
+hf download xkj521999/LocateAnything-3B-S600 \
+  --local-dir install/lib/hobot_locateanything/models
 ```
 
 运行时读取以下文件：
 
 ```text
-models/
+install/lib/hobot_locateanything/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 ├── LocateAnything-3B_embed_tokens.bin
@@ -91,25 +98,16 @@ models/
     └── added_tokens.json
 ```
 
-### 2. 编译功能包
-
-```bash
-source /opt/tros/jazzy/setup.bash
-cd "$HOME/tros_ws"
-colcon build --merge-install --packages-select hobot_locateanything
-source install/setup.bash
-```
-
 ### 3. 启动推理
 
 #### 交互终端推理
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything console --config "$PWD/config.yaml"
+ros2 run hobot_locateanything console
 ```
 
 先加载图片，再输入任务命令：
@@ -161,29 +159,27 @@ Result
 
 #### ROS 2 节点推理
 
-本地图片回灌和 USB 摄像头是两套独立流程，分别按各自的终端 1 至终端 4 执行。收到有效 Prompt 前，推理节点不会处理图像。
+本地图片回灌和 USB 摄像头是两套独立流程。Launch 同时启动官方图像节点、Codec 和 LocateAnything 推理节点；收到有效 Prompt 前，推理节点不会处理图像。
 
 ##### 本地图片回灌
 
-终端 1，启动推理节点并等待 `ready`：
+终端 1，启动本地图片回灌和推理节点并等待 `ready`：
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/hbmem_img \
-  -p is_shared_mem_sub:=true
+export CAM_TYPE=fb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py
 ```
 
 终端 2，持续订阅结构化结果：
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic echo \
   /perception/locateanything \
@@ -193,8 +189,9 @@ ros2 topic echo \
 终端 3，发布 Prompt：
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
@@ -204,29 +201,14 @@ ros2 topic pub --once \
 
 有效 Prompt 会持续生效，直到新的有效 Prompt 覆盖或节点重启。
 
-终端 4，使用 TROS 官方图像发布节点回灌本地图片：
+Launch 默认回灌安装目录中的 `07_detection_multiclass.jpg`，并以 2 FPS 持续发布。使用其他图片时传入 `publish_image_source:=/absolute/path/image.jpg`。
+
+需要在同一张图片上切换任务时，保持终端 1、2 运行，直接在终端 3 发布新的 Prompt：
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
-
-ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
-  publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
-  publish_image_format:=jpg \
-  publish_message_topic_name:=/hbmem_img \
-  publish_fps:=2 \
-  publish_is_loop:=True \
-  publish_is_shared_mem:=True \
-  publish_encoding:=nv12
-```
-
-图片节点以 2 FPS 持续发布同一张图片。
-
-需要在同一张图片上切换任务时，保持终端 1、2、4 运行，直接在终端 3 发布新的 Prompt：
-
-```bash
-source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
@@ -238,25 +220,26 @@ ros2 topic pub --once \
 
 ##### USB 摄像头输入
 
-终端 1，启动推理节点并等待 `ready`：
+终端 1，启动 USB 摄像头和推理节点并等待 `ready`：
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/hbmem_img \
-  -p is_shared_mem_sub:=true
+export CAM_TYPE=usb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  device:=/dev/video0 \
+  locateanything_image_width:=1280 \
+  locateanything_image_height:=720
 ```
 
 终端 2，持续订阅结构化结果：
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic echo \
   /perception/locateanything \
@@ -266,29 +249,14 @@ ros2 topic echo \
 终端 3，发布 Prompt：
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
   "{data: '/ground cardboard box'}"
-```
-
-终端 4，启动 TROS 官方 USB 摄像头节点：
-
-```bash
-source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
-
-ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
-  usb_video_device:=/dev/video0 \
-  usb_image_width:=1280 \
-  usb_image_height:=720 \
-  usb_framerate:=30 \
-  usb_pixel_format:=mjpeg \
-  usb_io_method:=mmap \
-  usb_zero_copy:=True
 ```
 
 摄像头持续发布期间可直接在终端 3 发布新的 Prompt，后续新帧使用新 Prompt，无需重启摄像头节点或结果订阅。

@@ -35,6 +35,7 @@
 
 #include "inference.hpp"
 #include "locateanything_node.hpp"
+#include "package_paths.hpp"
 #include "processing/image.hpp"
 #include "processing/prompt.hpp"
 
@@ -175,14 +176,19 @@ class LocateAnythingNode : public rclcpp::Node {
     if (input_topic.empty() || prompt_topic.empty() || result_topic.empty()) {
       throw std::invalid_argument("input, prompt, and result topics must not be empty");
     }
-    const std::string model_directory =
+    const std::string model_directory_parameter =
         declare_parameter<std::string>("model_directory", "models");
-    const std::string tokenizer_directory =
+    const std::string tokenizer_directory_parameter =
         declare_parameter<std::string>("tokenizer_directory", "models/tokenizer");
-    if (model_directory.empty() || tokenizer_directory.empty()) {
+    if (model_directory_parameter.empty() ||
+        tokenizer_directory_parameter.empty()) {
       throw std::invalid_argument(
           "model_directory and tokenizer_directory must be explicit");
     }
+    const fs::path model_directory =
+        ResolveRuntimePath(model_directory_parameter);
+    const fs::path tokenizer_directory =
+        ResolveRuntimePath(tokenizer_directory_parameter);
     const std::string l2m_sizes =
         declare_parameter<std::string>("l2m_sizes", "6:6:6:6");
     if (l2m_sizes.empty()) {
@@ -205,7 +211,7 @@ class LocateAnythingNode : public rclcpp::Node {
         (fs::path(model_directory) /
          declare_parameter<std::string>("embeddings", "LocateAnything-3B_embed_tokens.bin"))
             .string();
-    options.tokenizer_directory = tokenizer_directory;
+    options.tokenizer_directory = tokenizer_directory.string();
     options.generation_mode =
         declare_parameter<std::string>("generation_mode", "hybrid");
     options.max_new_tokens = declare_parameter<int>("max_new_tokens", 4096);

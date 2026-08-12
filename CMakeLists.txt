@@ -1,3 +1,17 @@
+# Copyright (c) 2025 D-Robotics.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 cmake_minimum_required(VERSION 3.10)
 project(hobot_locateanything)
 
@@ -12,6 +26,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(ai_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(hbm_img_msgs REQUIRED)
@@ -61,6 +76,10 @@ foreach(library HBDNN_LIB HBUCP_LIB HBRT4_LIB HBTL_LIB HBDSP_PLUGIN_LIB HBHPL_LI
   endif()
 endforeach()
 
+add_library(hobot_locateanything_package STATIC src/package_paths.cpp)
+target_include_directories(hobot_locateanything_package PUBLIC include)
+ament_target_dependencies(hobot_locateanything_package ament_index_cpp)
+
 add_library(hobot_locateanything_runtime STATIC
   src/runtime/attention_mask.cpp
   src/runtime/embedding.cpp
@@ -99,16 +118,34 @@ target_link_libraries(hobot_locateanything_inference PUBLIC
 add_executable(${PROJECT_NAME}
   src/main.cpp
   src/locateanything_node.cpp)
-target_link_libraries(${PROJECT_NAME} hobot_locateanything_inference)
+target_link_libraries(${PROJECT_NAME}
+  hobot_locateanything_inference
+  hobot_locateanything_package)
 ament_target_dependencies(${PROJECT_NAME}
   ai_msgs cv_bridge hbm_img_msgs rclcpp sensor_msgs std_msgs)
 
 add_executable(console src/cli.cpp)
-target_link_libraries(console hobot_locateanything_inference yaml-cpp::yaml-cpp)
+target_link_libraries(console
+  hobot_locateanything_inference
+  hobot_locateanything_package
+  yaml-cpp::yaml-cpp)
 
 install(TARGETS
   ${PROJECT_NAME}
   console
   RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY config/
+  DESTINATION lib/${PROJECT_NAME}/config)
+
+install(DIRECTORY image/
+  DESTINATION lib/${PROJECT_NAME}/image)
+
+# Model weights are downloaded after installation. Install only the placeholder.
+install(FILES models/.gitignore
+  DESTINATION lib/${PROJECT_NAME}/models)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch)
 
 ament_package()

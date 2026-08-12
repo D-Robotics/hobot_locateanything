@@ -10,3 +10,6 @@
 /build/
 /install/
 /log/
+
+# Python launch cache
+/launch/__pycache__/

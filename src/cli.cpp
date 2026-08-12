@@ -24,6 +24,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "inference.hpp"
+#include "package_paths.hpp"
 
 namespace fs = std::filesystem;
 
@@ -238,7 +239,8 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
  */
 ConsoleOptions ParseArguments(int argc, char** argv) {
   ConsoleOptions options;
-  options.config = "config.yaml";
+  options.config =
+      locateanything::PackageRuntimeDirectory() / "config" / "config.yaml";
   options.model_directory = "models";
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -275,12 +277,14 @@ ConsoleOptions ParseArguments(int argc, char** argv) {
     throw std::invalid_argument(
         "generation_mode in config must be hybrid or slow");
   }
-  options.model_directory = fs::absolute(options.model_directory);
+  options.model_directory =
+      locateanything::ResolveRuntimePath(options.model_directory);
   if (options.tokenizer_directory.empty()) {
     throw std::invalid_argument(
         "tokenizer_directory must be set explicitly in config");
   }
-  options.tokenizer_directory = fs::absolute(options.tokenizer_directory);
+  options.tokenizer_directory =
+      locateanything::ResolveRuntimePath(options.tokenizer_directory);
   options.output_directory = fs::absolute(options.output_directory);
   return options;
 }
@@ -542,11 +546,23 @@ class Console {
   }
 
   /**
+   * @brief Resolve Console media without depending on the source directory.
+   * @param value Absolute, working-directory-relative, or installed media path.
+   * @return Normalized media path.
+   */
+  fs::path ResolveMediaPath(const std::string& value) const {
+    const fs::path path(value);
+    if (path.is_absolute()) return path.lexically_normal();
+    if (fs::exists(path)) return fs::absolute(path).lexically_normal();
+    return locateanything::ResolveRuntimePath(path);
+  }
+
+  /**
    * @brief Validate and remember one local image for the next task.
    * @param value User-provided image path.
    */
   void LoadImage(const std::string& value) {
-    const fs::path path = fs::absolute(fs::path(value));
+    const fs::path path = ResolveMediaPath(value);
     if (!fs::is_regular_file(path) || cv::imread(path.string()).empty()) {
       throw std::runtime_error("image not found or unreadable: " + path.string());
     }
@@ -559,7 +575,7 @@ class Console {
    * @param value User-provided video path.
    */
   void LoadVideo(const std::string& value) {
-    const fs::path path = fs::absolute(fs::path(value));
+    const fs::path path = ResolveMediaPath(value);
     cv::VideoCapture video(path.string());
     if (!fs::is_regular_file(path) || !video.isOpened()) {
       throw std::runtime_error("video not found or unreadable: " + path.string());

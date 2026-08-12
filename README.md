@@ -50,7 +50,7 @@ The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 dec
 | Decoding | PBD q=6, AR q=1, Host sampling |
 | Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
 
-Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/LiuAnclouds/Locateanything_PTQ). Runtime files are published at [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600).
+Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ). Runtime files are published at [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600).
 
 ## Environment
 
@@ -61,27 +61,34 @@ Model calibration and HBM compilation are maintained in [Locateanything_PTQ](htt
 | TROS | Jazzy |
 | Language | C++17 |
 | Build | CMake, colcon |
-| Dependencies | `rclcpp`, `sensor_msgs`, `std_msgs`, `hbm_img_msgs`, `ai_msgs`, OpenCV, yaml-cpp |
+| Dependencies | `rclcpp`, `sensor_msgs`, `std_msgs`, `hbm_img_msgs`, `ai_msgs`, `hobot_codec`, OpenCV, yaml-cpp |
 
 ## Usage
 
-### 1. Download the model
+### 1. Build the package
 
 ```bash
-mkdir -p "$HOME/tros_ws/src"
-cd "$HOME/tros_ws/src"
-git clone https://github.com/LiuAnclouds/hobot_locateanything.git
+git clone https://github.com/D-Robotics/hobot_locateanything.git
 cd hobot_locateanything
 
+source /opt/tros/jazzy/setup.bash
+colcon build --merge-install --packages-select hobot_locateanything
+source install/setup.bash
+```
+
+### 2. Download the model
+
+```bash
 python3 -m pip install -U huggingface_hub
 export HF_ENDPOINT="https://hf-mirror.com"
-hf download xkj521999/LocateAnything-3B-S600 --local-dir models
+hf download xkj521999/LocateAnything-3B-S600 \
+  --local-dir install/lib/hobot_locateanything/models
 ```
 
 The runtime reads these files:
 
 ```text
-models/
+install/lib/hobot_locateanything/models/
 ├── LocateAnything-3B_vision.hbm
 ├── LocateAnything-3B_language.hbm
 ├── LocateAnything-3B_embed_tokens.bin
@@ -91,25 +98,16 @@ models/
     └── added_tokens.json
 ```
 
-### 2. Build the package
-
-```bash
-source /opt/tros/jazzy/setup.bash
-cd "$HOME/tros_ws"
-colcon build --merge-install --packages-select hobot_locateanything
-source install/setup.bash
-```
-
 ### 3. Run inference
 
 #### Interactive console
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything console --config "$PWD/config.yaml"
+ros2 run hobot_locateanything console
 ```
 
 Load an image, then enter a task command:
@@ -161,29 +159,27 @@ Result
 
 #### ROS 2 node
 
-Local image replay and USB camera input are independent workflows. Run terminals 1 through 4 within the selected workflow. The inference node ignores images until it receives a valid prompt.
+Local image replay and USB camera input are independent workflows. The launch file starts the official image node, Codec, and LocateAnything inference node together. The inference node ignores images until it receives a valid prompt.
 
 ##### Local image replay
 
-Terminal 1: start the inference node and wait for `ready`.
+Terminal 1: start local image replay and the inference node, then wait for `ready`.
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/hbmem_img \
-  -p is_shared_mem_sub:=true
+export CAM_TYPE=fb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py
 ```
 
 Terminal 2: continuously subscribe to structured results.
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic echo \
   /perception/locateanything \
@@ -193,8 +189,9 @@ ros2 topic echo \
 Terminal 3: publish a prompt.
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
@@ -204,29 +201,14 @@ ros2 topic pub --once \
 
 A valid prompt remains active until another valid prompt replaces it or the node restarts.
 
-Terminal 4: replay a local image with the official TROS image publisher.
+The launch file replays the installed `07_detection_multiclass.jpg` at 2 FPS by default. Pass `publish_image_source:=/absolute/path/image.jpg` to use another image.
+
+To run another task on the same image, keep terminals 1 and 2 running and publish a new prompt from terminal 3:
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
-
-ros2 launch hobot_image_publisher hobot_image_publisher.launch.py \
-  publish_image_source:="$HOME/tros_ws/src/hobot_locateanything/image/07_detection_multiclass.jpg" \
-  publish_image_format:=jpg \
-  publish_message_topic_name:=/hbmem_img \
-  publish_fps:=2 \
-  publish_is_loop:=True \
-  publish_is_shared_mem:=True \
-  publish_encoding:=nv12
-```
-
-The image node publishes the same image continuously at 2 FPS.
-
-To run another task on the same image, keep terminals 1, 2, and 4 running and publish a new prompt from terminal 3:
-
-```bash
-source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
@@ -238,25 +220,26 @@ Subsequent replays of the same image use `/detect bus`. The image publisher and 
 
 ##### USB camera input
 
-Terminal 1: start the inference node and wait for `ready`.
+Terminal 1: start the USB camera and inference node, then wait for `ready`.
 
 ```bash
-cd "$HOME/tros_ws/src/hobot_locateanything"
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
-ros2 run hobot_locateanything hobot_locateanything \
-  --ros-args \
-  --params-file "$PWD/config.yaml" \
-  -p input_topic:=/hbmem_img \
-  -p is_shared_mem_sub:=true
+export CAM_TYPE=usb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  device:=/dev/video0 \
+  locateanything_image_width:=1280 \
+  locateanything_image_height:=720
 ```
 
 Terminal 2: continuously subscribe to structured results.
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic echo \
   /perception/locateanything \
@@ -266,29 +249,14 @@ ros2 topic echo \
 Terminal 3: publish a prompt.
 
 ```bash
+cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
+source install/setup.bash
 
 ros2 topic pub --once \
   /locateanything/prompt \
   std_msgs/msg/String \
   "{data: '/ground cardboard box'}"
-```
-
-Terminal 4: start the official TROS USB camera node.
-
-```bash
-source /opt/tros/jazzy/setup.bash
-source "$HOME/tros_ws/install/setup.bash"
-
-ros2 launch hobot_usb_cam hobot_usb_cam.launch.py \
-  usb_video_device:=/dev/video0 \
-  usb_image_width:=1280 \
-  usb_image_height:=720 \
-  usb_framerate:=30 \
-  usb_pixel_format:=mjpeg \
-  usb_io_method:=mmap \
-  usb_zero_copy:=True
 ```
 
 While the camera is publishing, send a new prompt directly from terminal 3. Subsequent frames use the new prompt without restarting the camera node or result subscription.
