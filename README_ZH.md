@@ -92,13 +92,12 @@ source install/setup.bash
 
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
-cd install/lib/hobot_locateanything/models
-
-wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
-wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
-wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
-
-cd ../../../..
+wget -c -P install/lib/hobot_locateanything/models \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
+wget -c -P install/lib/hobot_locateanything/models \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
+wget -c -P install/lib/hobot_locateanything/models \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
 ```
 
 运行时文件：
