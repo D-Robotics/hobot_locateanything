@@ -4,8 +4,8 @@
   <name>hobot_locateanything</name>
   <version>0.1.0</version>
   <description>LocateAnything-3B HBM inference for D-Robotics RDK S600 and TROS.</description>
-  <maintainer email="moonpoetryxkj@163.com">Kangjie Xu</maintainer>
-  <license>CC-BY-NC-4.0</license>
+  <maintainer email="3071744684@qq.com">Kangjie Xu</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>ai_msgs</depend>
