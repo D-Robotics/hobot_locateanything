@@ -556,7 +556,6 @@ USB camera node output:
 [INFO] [hobot_usb_cam-1]: process started
 [hobot_usb_cam]: framerate: 30
 [hobot_usb_cam]: pixel_format_name: mjpeg
-[hobot_usb_cam]: Camera calibration file: [/opt/tros/jazzy/lib/hobot_usb_cam/config/usb_camera_calibration.yaml] does not exist!
 ```
 
 Inference output:
