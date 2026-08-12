@@ -89,7 +89,7 @@ wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/Loca
 cd ../../../..
 ```
 
-The tokenizer files are installed with the package. The runtime reads these files:
+Runtime files:
 
 ```text
 install/lib/hobot_locateanything/models/

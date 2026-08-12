@@ -89,7 +89,7 @@ wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/Loca
 cd ../../../..
 ```
 
-词表随功能包安装。运行时读取以下文件：
+运行时文件：
 
 ```text
 install/lib/hobot_locateanything/models/
