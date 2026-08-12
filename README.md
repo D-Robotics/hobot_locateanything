@@ -341,7 +341,9 @@ Point localization, prompt: `/point succulent`
 
 ### Resource Usage
 
-| Task | Avg BPU (%) | CPU (%) | Console RSS (MiB) | DDR Read (GiB/s) | DDR Write (GiB/s) |
+#### Console
+
+| Task | Avg BPU (%) | CPU (%) | Console RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Object detection | 30.4 | 40.2 | 167.1 | 74.2 | 15.6 |
 | GUI grounding | 39.9 | 28.7 | 179.3 | 70.9 | 18.6 |
@@ -350,3 +352,15 @@ Point localization, prompt: `/point succulent`
 | Text grounding | 29.5 | 34.7 | 182.4 | 65.3 | 20.1 |
 | Layout grounding | 39.6 | 39.4 | 182.6 | 69.1 | 16.0 |
 | Point localization | 43.5 | 34.7 | 180.4 | 76.6 | 15.1 |
+
+#### ROS Real-Time Inference (2 FPS)
+
+| Task | Avg BPU (%) | Inference node CPU (%) | Inference node RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Object detection | 65.8 | 42.1 | 201.6 | 76.0 | 15.6 |
+| GUI grounding | 67.7 | 28.2 | 209.5 | 78.2 | 25.2 |
+| Referring grounding | 67.8 | 27.6 | 210.6 | 75.9 | 25.8 |
+| OCR | 62.4 | 50.4 | 208.8 | 71.6 | 13.0 |
+| Text grounding | 67.0 | 32.7 | 184.3 | 68.2 | 22.9 |
+| Layout grounding | 65.9 | 39.2 | 193.4 | 74.6 | 18.4 |
+| Point localization | 66.2 | 34.4 | 203.2 | 78.2 | 18.2 |
