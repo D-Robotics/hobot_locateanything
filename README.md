@@ -50,7 +50,7 @@ The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 dec
 | Decoding | PBD q=6, AR q=1, Host sampling |
 | Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
 
-Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ). Runtime files are published at [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600).
+Model calibration and HBM compilation are maintained in [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ). Runtime files are published at [D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU).
 
 ## Environment
 
@@ -79,10 +79,17 @@ source install/setup.bash
 ### 2. Download the model
 
 ```bash
-python3 -m pip install -U huggingface_hub
-export HF_ENDPOINT="https://hf-mirror.com"
-hf download xkj521999/LocateAnything-3B-S600 \
-  --local-dir install/lib/hobot_locateanything/models
+mkdir -p install/lib/hobot_locateanything/models/tokenizer
+cd install/lib/hobot_locateanything/models
+
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/vocab.json
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/merges.txt
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/added_tokens.json
+
+cd ../../../..
 ```
 
 The runtime reads these files:
@@ -306,29 +313,3 @@ Point localization, prompt: `/point succulent`
 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
-
-### Resource Usage
-
-#### Console
-
-| Task | Avg BPU (%) | CPU (%) | Console RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Object detection | 30.4 | 40.2 | 167.1 | 74.2 | 15.6 |
-| GUI grounding | 39.9 | 28.7 | 179.3 | 70.9 | 18.6 |
-| Referring grounding | 34.5 | 26.6 | 175.6 | 70.8 | 23.6 |
-| OCR | 41.3 | 49.0 | 185.3 | 65.9 | 12.4 |
-| Text grounding | 29.5 | 34.7 | 182.4 | 65.3 | 20.1 |
-| Layout grounding | 39.6 | 39.4 | 182.6 | 69.1 | 16.0 |
-| Point localization | 43.5 | 34.7 | 180.4 | 76.6 | 15.1 |
-
-#### ROS Real-Time Inference (2 FPS)
-
-| Task | Avg BPU (%) | Inference node CPU (%) | Inference node RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Object detection | 65.8 | 42.1 | 201.6 | 76.0 | 15.6 |
-| GUI grounding | 67.7 | 28.2 | 209.5 | 78.2 | 25.2 |
-| Referring grounding | 67.8 | 27.6 | 210.6 | 75.9 | 25.8 |
-| OCR | 62.4 | 50.4 | 208.8 | 71.6 | 13.0 |
-| Text grounding | 67.0 | 32.7 | 184.3 | 68.2 | 22.9 |
-| Layout grounding | 65.9 | 39.2 | 193.4 | 74.6 | 18.4 |
-| Point localization | 66.2 | 34.4 | 203.2 | 78.2 | 18.2 |

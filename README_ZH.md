@@ -50,7 +50,7 @@
 | 解码 | PBD q=6、AR q=1、Host 采样 |
 | 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
-模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ) 维护。部署文件发布在 [xkj521999/LocateAnything-3B-S600](https://huggingface.co/xkj521999/LocateAnything-3B-S600)。
+模型校准与 HBM 编译由 [Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ) 维护。部署文件发布在 [D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)。
 
 ## 开发环境
 
@@ -79,10 +79,17 @@ source install/setup.bash
 ### 2. 下载模型
 
 ```bash
-python3 -m pip install -U huggingface_hub
-export HF_ENDPOINT="https://hf-mirror.com"
-hf download xkj521999/LocateAnything-3B-S600 \
-  --local-dir install/lib/hobot_locateanything/models
+mkdir -p install/lib/hobot_locateanything/models/tokenizer
+cd install/lib/hobot_locateanything/models
+
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
+wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/vocab.json
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/merges.txt
+wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/added_tokens.json
+
+cd ../../../..
 ```
 
 运行时读取以下文件：
@@ -306,29 +313,3 @@ OCR，Prompt：`/text`
 | 指定文本定位 | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
 | 版面定位 | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
 | 点定位 | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
-
-### 资源占用
-
-#### Console
-
-| 任务 | Avg BPU (%) | CPU (%) | Console RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 目标检测 | 30.4 | 40.2 | 167.1 | 74.2 | 15.6 |
-| GUI 定位 | 39.9 | 28.7 | 179.3 | 70.9 | 18.6 |
-| 指代定位 | 34.5 | 26.6 | 175.6 | 70.8 | 23.6 |
-| OCR | 41.3 | 49.0 | 185.3 | 65.9 | 12.4 |
-| 指定文本定位 | 29.5 | 34.7 | 182.4 | 65.3 | 20.1 |
-| 版面定位 | 39.6 | 39.4 | 182.6 | 69.1 | 16.0 |
-| 点定位 | 43.5 | 34.7 | 180.4 | 76.6 | 15.1 |
-
-#### ROS 实时推理（2 FPS）
-
-| 任务 | Avg BPU (%) | 推理节点 CPU (%) | 推理节点 RSS (MiB) | System DDR Read (GiB/s) | System DDR Write (GiB/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 目标检测 | 65.8 | 42.1 | 201.6 | 76.0 | 15.6 |
-| GUI 定位 | 67.7 | 28.2 | 209.5 | 78.2 | 25.2 |
-| 指代定位 | 67.8 | 27.6 | 210.6 | 75.9 | 25.8 |
-| OCR | 62.4 | 50.4 | 208.8 | 71.6 | 13.0 |
-| 指定文本定位 | 67.0 | 32.7 | 184.3 | 68.2 | 22.9 |
-| 版面定位 | 65.9 | 39.2 | 193.4 | 74.6 | 18.4 |
-| 点定位 | 66.2 | 34.4 | 203.2 | 78.2 | 18.2 |
