@@ -15,6 +15,18 @@ English | [简体中文](./README_ZH.md)
 
 `hobot_locateanything` runs LocateAnything-3B on the D-Robotics RDK S600. The Console reads local images and videos and saves annotated results. The ROS 2 node receives TROS images and prompts, then publishes `ai_msgs/msg/PerceptionTargets`. Both entry points use the same C++ inference core.
 
+## Inference Performance
+
+| Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RDK S600 | Object detection | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
+| RDK S600 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
+| RDK S600 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
+| RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
+| RDK S600 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
+| RDK S600 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
+| RDK S600 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
+
 ## Features
 
 ### Tasks
@@ -581,15 +593,3 @@ targets:
 While the camera is publishing, send a new prompt directly from terminal 3. Subsequent frames use the new prompt without restarting the camera node or result subscription.
 
 The ROS node publishes results only. Rendering, encoding, and file storage belong to downstream TROS nodes.
-
-## Performance
-
-| Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Object detection | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
-| GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
-| OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
