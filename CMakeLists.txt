@@ -141,9 +141,12 @@ install(DIRECTORY config/
 install(DIRECTORY image/
   DESTINATION lib/${PROJECT_NAME}/image)
 
-# Model weights are downloaded after installation. Install only the placeholder.
-install(FILES models/.gitignore
-  DESTINATION lib/${PROJECT_NAME}/models)
+# Model weights are downloaded after installation. Tokenizer files ship with the package.
+install(FILES
+  models/tokenizer/vocab.json
+  models/tokenizer/merges.txt
+  models/tokenizer/added_tokens.json
+  DESTINATION lib/${PROJECT_NAME}/models/tokenizer)
 
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch)

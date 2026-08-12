@@ -1,6 +1,11 @@
 # Local deployment models
 /models/*
 !/models/.gitignore
+!/models/tokenizer/
+/models/tokenizer/*
+!/models/tokenizer/vocab.json
+!/models/tokenizer/merges.txt
+!/models/tokenizer/added_tokens.json
 
 # Console inference results
 /outputs/*

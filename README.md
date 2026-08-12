@@ -79,20 +79,17 @@ source install/setup.bash
 ### 2. Download the model
 
 ```bash
-mkdir -p install/lib/hobot_locateanything/models/tokenizer
+mkdir -p install/lib/hobot_locateanything/models
 cd install/lib/hobot_locateanything/models
 
 wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
 wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
 wget -c https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
-wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/vocab.json
-wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/merges.txt
-wget -c -P tokenizer https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/tokenizer/added_tokens.json
 
 cd ../../../..
 ```
 
-The runtime reads these files:
+The tokenizer files are installed with the package. The runtime reads these files:
 
 ```text
 install/lib/hobot_locateanything/models/
