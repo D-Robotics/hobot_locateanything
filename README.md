@@ -116,7 +116,7 @@ cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 
-ros2 run hobot_locateanything console
+ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
 Console output:
@@ -360,7 +360,8 @@ source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 
 export CAM_TYPE=fb
-ros2 launch hobot_locateanything hobot_locateanything.launch.py
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  publish_image_source:=image/07_detection_multiclass.jpg
 ```
 
 Inference node output:
@@ -407,7 +408,7 @@ publisher: beginning loop
 publishing #1: std_msgs.msg.String(data='/detect person')
 ```
 
-The launch file replays the installed `07_detection_multiclass.jpg` at 2 FPS by default. Pass `publish_image_source:=/absolute/path/image.jpg` to use another image.
+The launch file replays `image/07_detection_multiclass.jpg` at 2 FPS. Change `publish_image_source` to use another image.
 
 Image publisher output:
 

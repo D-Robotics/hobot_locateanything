@@ -116,7 +116,7 @@ cd hobot_locateanything
 source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 
-ros2 run hobot_locateanything console
+ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
 终端输出：
@@ -360,7 +360,8 @@ source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 
 export CAM_TYPE=fb
-ros2 launch hobot_locateanything hobot_locateanything.launch.py
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  publish_image_source:=image/07_detection_multiclass.jpg
 ```
 
 推理节点输出：
@@ -407,7 +408,7 @@ publisher: beginning loop
 publishing #1: std_msgs.msg.String(data='/detect person')
 ```
 
-Launch 默认回灌安装目录中的 `07_detection_multiclass.jpg`，并以 2 FPS 持续发布。使用其他图片时传入 `publish_image_source:=/absolute/path/image.jpg`。
+Launch 以 2 FPS 回灌 `image/07_detection_multiclass.jpg`。使用其他图片时修改 `publish_image_source`。
 
 图片发布节点输出：
 
