@@ -9,10 +9,10 @@
 
 namespace locateanything {
 
-/** Prompt tokens and Vision features consumed by Language generation. */
+/** Read-only Prompt tokens and Vision features for Language generation. */
 struct LanguageInput {
-  std::vector<int32_t> prompt_ids;
-  std::vector<uint8_t> visual_features_fp16;
+  const std::vector<int32_t>& prompt_ids;
+  const std::vector<uint8_t>& visual_features_fp16;
 };
 
 /** Generated tokens, stop reason, and Language timing counters. */
@@ -52,7 +52,7 @@ class LanguageEngine {
    * @param protect_detection_structure Enable guarded detection fallback.
    * @return Generated tokens, stop reason, and Language metrics.
    */
-  LanguageResult Generate(LanguageInput input, int32_t max_new_tokens,
+  LanguageResult Generate(const LanguageInput& input, int32_t max_new_tokens,
                           const std::string& generation_mode,
                           bool protect_detection_structure);
 

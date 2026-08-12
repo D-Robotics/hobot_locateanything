@@ -34,14 +34,16 @@ English | [简体中文](./README_ZH.md)
 | Command | Task |
 | --- | --- |
 | `/detect person,car` | Open-vocabulary object detection |
-| `/ground <phrase>` | Referring grounding |
-| `/ground_single <phrase>` | Single-instance grounding |
-| `/gui <element>` | GUI point grounding |
-| `/gui_box <element>` | GUI box grounding |
+| `/ground <query>[,<query>...]` | Referring grounding |
+| `/ground_single <query>[,<query>...]` | Single-instance grounding |
+| `/gui <query>[,<query>...]` | GUI point grounding |
+| `/gui_box <query>[,<query>...]` | GUI box grounding |
 | `/text` | OCR with text boxes |
-| `/ground_text <text>` | Text grounding |
+| `/ground_text <query>[,<query>...]` | Text grounding |
 | `/layout title,table,figure` | Document layout grounding |
-| `/point <target>` | Point localization |
+| `/point <query>[,<query>...]` | Point localization |
+
+Separate multiple queries with commas. The Console and ROS prompt share the same path: Vision runs once per image or video frame, followed by each Language query and merged results.
 
 ### Model and quantization
 
@@ -162,38 +164,16 @@ Result
 ```text
 [User] <<< /image image/02_gui_rstudio.jpg
 Image loaded  image/02_gui_rstudio.jpg
-[User] <<< /gui_box Go to file/function
-[Assistant] >>> /gui_box Go to file/function
+[User] <<< /gui_box Go to file/function,Environment tab,Files tab
+[Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
 Performance
-  Vision   245.8 ms
-  Prefill  155.5 ms  618 tokens
-  Decode   266.0 ms  14 tokens  52.6 tokens/s
-  Host     10.8 ms
-  Total    719.5 ms
+  Vision   252.9 ms
+  Prefill  463.7 ms  1848 tokens
+  Decode   519.8 ms  36 tokens  69.3 tokens/s
+  Host     29.4 ms
+  Total    1342.8 ms
 Result
-  Labels Go to file/function  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /gui_box Environment tab
-[Assistant] >>> /gui_box Environment tab
-Performance
-  Vision   246.0 ms
-  Prefill  156.0 ms  615 tokens
-  Decode   125.2 ms  11 tokens  87.8 tokens/s
-  Host     9.4 ms
-  Total    579.6 ms
-Result
-  Labels Environment tab  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /gui_box Files tab
-[Assistant] >>> /gui_box Files tab
-Performance
-  Vision   245.9 ms
-  Prefill  155.7 ms  615 tokens
-  Decode   124.6 ms  11 tokens  88.3 tokens/s
-  Host     8.8 ms
-  Total    578.6 ms
-Result
-  Labels Files tab  |  Boxes 1  |  Points 0  |  Stop im_end
+  Labels Environment tab, Files tab, Go to file/function  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
 <img src="assets/results/gui_rstudio.jpg" alt="GUI grounding" width="720">
@@ -203,38 +183,16 @@ Result
 ```text
 [User] <<< /image image/03_referring_graduation.jpg
 Image loaded  image/03_referring_graduation.jpg
-[User] <<< /ground person wearing a graduation cap
-[Assistant] >>> /ground person wearing a graduation cap
+[User] <<< /ground person wearing a graduation cap,woman in a black dress,clock tower
+[Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
 Performance
-  Vision   245.8 ms
-  Prefill  156.1 ms  619 tokens
-  Decode   165.9 ms  14 tokens  84.4 tokens/s
-  Host     10.7 ms
-  Total    608.8 ms
+  Vision   250.4 ms
+  Prefill  462.5 ms  1854 tokens
+  Decode   461.2 ms  39 tokens  84.6 tokens/s
+  Host     29.9 ms
+  Total    1268.8 ms
 Result
-  Labels person wearing a graduation cap  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /ground woman in a black dress
-[Assistant] >>> /ground woman in a black dress
-Performance
-  Vision   246.2 ms
-  Prefill  156.1 ms  619 tokens
-  Decode   164.5 ms  14 tokens  85.1 tokens/s
-  Host     9.3 ms
-  Total    608.1 ms
-Result
-  Labels woman in a black dress  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /ground clock tower
-[Assistant] >>> /ground clock tower
-Performance
-  Vision   245.7 ms
-  Prefill  155.9 ms  616 tokens
-  Decode   124.5 ms  11 tokens  88.3 tokens/s
-  Host     8.5 ms
-  Total    567.1 ms
-Result
-  Labels clock tower  |  Boxes 1  |  Points 0  |  Stop im_end
+  Labels clock tower, person wearing a graduation cap, woman in a black dress  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
 <img src="assets/results/referring_graduation.jpg" alt="Referring expression grounding" width="520">
@@ -264,38 +222,16 @@ Result
 ```text
 [User] <<< /image image/04_ocr_scrapbook.jpg
 Image loaded  image/04_ocr_scrapbook.jpg
-[User] <<< /ground_text LIVE love LAUGH
-[Assistant] >>> /ground_text LIVE love LAUGH
+[User] <<< /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
+[Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 Performance
-  Vision   245.3 ms
-  Prefill  155.5 ms  613 tokens
-  Decode   165.0 ms  15 tokens  90.9 tokens/s
-  Host     10.3 ms
-  Total    649.8 ms
+  Vision   246.0 ms
+  Prefill  471.6 ms  1838 tokens
+  Decode   459.4 ms  43 tokens  93.6 tokens/s
+  Host     30.4 ms
+  Total    1311.1 ms
 Result
-  Labels LIVE love LAUGH.  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /ground_text laugh giggle be silly
-[Assistant] >>> /ground_text laugh giggle be silly
-Performance
-  Vision   245.6 ms
-  Prefill  155.4 ms  614 tokens
-  Decode   164.8 ms  16 tokens  97.1 tokens/s
-  Host     10.6 ms
-  Total    650.2 ms
-Result
-  Labels laugh giggle be silly.  |  Boxes 1  |  Points 0  |  Stop im_end
-
-[User] <<< /ground_text Yes Virginia
-[Assistant] >>> /ground_text Yes Virginia
-Performance
-  Vision   245.5 ms
-  Prefill  155.3 ms  611 tokens
-  Decode   124.9 ms  12 tokens  96.1 tokens/s
-  Host     9.1 ms
-  Total    610.1 ms
-Result
-  Labels Yes Virginia.  |  Boxes 1  |  Points 0  |  Stop im_end
+  Labels LIVE love LAUGH., Yes Virginia., laugh giggle be silly.  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
 <img src="assets/results/ground_text_scrapbook.jpg" alt="Text grounding" width="720">
@@ -324,16 +260,16 @@ Result
 ```text
 [User] <<< /image image/06_pointing_succulent.jpg
 Image loaded  image/06_pointing_succulent.jpg
-[User] <<< /point succulent
-[Assistant] >>> /point succulent
+[User] <<< /point succulent,the succulent in the center
+[Assistant] >>> /point succulent,the succulent in the center
 Performance
-  Vision   246.6 ms
-  Prefill  155.6 ms  608 tokens
-  Decode   481.8 ms  37 tokens  76.8 tokens/s
-  Host     39.4 ms
-  Total    929.3 ms
+  Vision   245.9 ms
+  Prefill  310.5 ms  1220 tokens
+  Decode   645.4 ms  50 tokens  77.5 tokens/s
+  Host     47.4 ms
+  Total    1272.7 ms
 Result
-  Labels succulent  |  Boxes 0  |  Points 8  |  Stop im_end
+  Labels succulent, the succulent in the center  |  Boxes 0  |  Points 9  |  Stop im_end
 ```
 
 <img src="assets/results/point_succulent.jpg" alt="Point localization" width="512">

@@ -144,14 +144,14 @@ void PrintBanner(const Colors& color) {
 void PrintHelp(const Colors& color) {
   std::cout << color.bold << color.cyan << "Tasks" << color.reset << '\n'
             << "  /detect cat,dog              目标检测\n"
-            << "  /ground <phrase>             指代表达，多目标\n"
-            << "  /ground_single <phrase>      指代表达，单目标\n"
-            << "  /gui <element>               GUI 点定位\n"
-            << "  /gui_box <element>           GUI 框定位\n"
+            << "  /ground <query>[,<query>...] 指代表达，多查询\n"
+            << "  /ground_single <query>[,...] 指代表达，单目标查询\n"
+            << "  /gui <query>[,<query>...]    GUI 点定位\n"
+            << "  /gui_box <query>[,<query>...] GUI 框定位\n"
             << "  /text                        文本 OCR\n"
-            << "  /ground_text <text>          指定文本定位\n"
+            << "  /ground_text <query>[,...]   指定文本定位\n"
             << "  /layout title,table,figure   文档版面分析\n"
-            << "  /point <target>              通用点定位\n"
+            << "  /point <query>[,<query>...]  通用点定位\n"
             << color.bold << color.cyan << "Session" << color.reset << '\n'
             << "  /image <image_path>          加载图片\n"
             << "  /video <video_path>          加载视频并处理全部帧\n"

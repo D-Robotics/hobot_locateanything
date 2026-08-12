@@ -80,6 +80,20 @@ class InferenceSession {
   InferenceOutput Infer(const cv::Mat& bgr, const std::string& command,
                         uint64_t frame_index = 0,
                         InferenceOutputOptions output_options = {});
+  /**
+   * Run multiple independent queries against one shared Vision result.
+   * @param bgr Source image in non-empty three-channel BGR format.
+   * @param commands Task commands with the same LocateAnything task prefix.
+   * @param frame_index Source frame identifier copied into diagnostics/output.
+   * @param output_options Select optional annotated image and JSON generation.
+   * @return Merged predictions and aggregate timings for all queries.
+   * @throws std::exception if commands are empty, incompatible, or inference
+   * fails.
+   */
+  InferenceOutput InferQueries(
+      const cv::Mat& bgr, const std::vector<std::string>& commands,
+      uint64_t frame_index = 0,
+      InferenceOutputOptions output_options = {});
 
  private:
   struct Impl;

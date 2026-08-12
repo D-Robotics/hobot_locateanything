@@ -217,8 +217,8 @@ bool DumpGraphDebug(const std::string& graph_name, int32_t token_base,
 }
 
 struct InputPayload {
-  std::vector<int32_t> prompt_ids;
-  std::vector<uint8_t> visual_features;
+  const std::vector<int32_t>& prompt_ids;
+  const std::vector<uint8_t>& visual_features;
 };
 
 struct GenerationMetrics {
@@ -1377,7 +1377,7 @@ void LanguageEngine::Initialize(const std::string& model_path,
 }
 
 LanguageResult LanguageEngine::Generate(
-    LanguageInput input, int32_t max_new_tokens,
+    const LanguageInput& input, int32_t max_new_tokens,
     const std::string& generation_mode,
     bool protect_detection_structure) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1411,8 +1411,7 @@ LanguageResult LanguageEngine::Generate(
 
   const int32_t prompt_tokens =
       static_cast<int32_t>(input.prompt_ids.size());
-  InputPayload payload{std::move(input.prompt_ids),
-                       std::move(input.visual_features_fp16)};
+  InputPayload payload{input.prompt_ids, input.visual_features_fp16};
   GenerationMetrics runtime_metrics;
   LanguageResult result;
   std::string executed_mode;
