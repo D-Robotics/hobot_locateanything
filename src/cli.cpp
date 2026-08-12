@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -9,10 +10,12 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <opencv2/imgcodecs.hpp>
@@ -366,10 +369,7 @@ class Console {
   int Run() {
     PrintBanner(color_);
     const auto initialization_started = std::chrono::steady_clock::now();
-    PrintInitializationProgress("Starting", initialization_started);
-    session_.Initialize([&](const std::string& stage) {
-      PrintInitializationProgress(stage, initialization_started);
-    });
+    InitializeSession(initialization_started);
     PrintInitializationComplete(initialization_started);
     std::cout << color_.green << "Ready" << color_.reset
               << "  S600/Nash-P  |  " << options_.generation_mode
@@ -423,6 +423,55 @@ class Console {
   }
 
  private:
+  /**
+   * @brief Load both HBM files while a lightweight thread refreshes the UI.
+   * @param started Monotonic initialization start time.
+   */
+  void InitializeSession(
+      const std::chrono::steady_clock::time_point started) {
+    std::mutex state_mutex;
+    std::condition_variable state_changed;
+    bool loading = true;
+    std::string stage = "Starting";
+
+    std::thread renderer([&] {
+      std::unique_lock<std::mutex> lock(state_mutex);
+      while (loading) {
+        const std::string current_stage = stage;
+        lock.unlock();
+        PrintInitializationProgress(current_stage, started);
+        lock.lock();
+        state_changed.wait_for(lock, std::chrono::milliseconds(100), [&] {
+          return !loading || stage != current_stage;
+        });
+      }
+    });
+
+    try {
+      session_.Initialize([&](const std::string& current_stage) {
+        {
+          std::lock_guard<std::mutex> lock(state_mutex);
+          stage = current_stage;
+        }
+        state_changed.notify_one();
+      });
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        loading = false;
+      }
+      state_changed.notify_one();
+      renderer.join();
+      throw;
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex);
+      loading = false;
+    }
+    state_changed.notify_one();
+    renderer.join();
+  }
+
   /**
    * @brief Render a moving initialization bar and elapsed seconds.
    * @param stage Current model-loading stage.
