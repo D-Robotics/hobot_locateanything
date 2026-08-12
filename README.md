@@ -19,7 +19,7 @@ English | [简体中文](./README_ZH.md)
 
 | Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | Object detection | 47 | 252.5 | 149.9 | 525.0 | 970.5 | 89.5 |
+| RDK S600 | Object detection | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
 | RDK S600 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
 | RDK S600 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
 | RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
