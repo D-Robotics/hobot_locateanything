@@ -338,3 +338,15 @@ Point localization, prompt: `/point succulent`
 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
+
+### Resource Usage
+
+| Task | Avg BPU (%) | CPU (%) | Console RSS (MiB) | DDR Read (GiB/s) | DDR Write (GiB/s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Object detection | 30.4 | 40.2 | 167.1 | 74.2 | 15.6 |
+| GUI grounding | 39.9 | 28.7 | 179.3 | 70.9 | 18.6 |
+| Referring grounding | 34.5 | 26.6 | 175.6 | 70.8 | 23.6 |
+| OCR | 41.3 | 49.0 | 185.3 | 65.9 | 12.4 |
+| Text grounding | 29.5 | 34.7 | 182.4 | 65.3 | 20.1 |
+| Layout grounding | 39.6 | 39.4 | 182.6 | 69.1 | 16.0 |
+| Point localization | 43.5 | 34.7 | 180.4 | 76.6 | 15.1 |
