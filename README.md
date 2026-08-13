@@ -19,6 +19,32 @@ English | [简体中文](./README_ZH.md)
 
 [LocateAnything](https://github.com/NVlabs/Eagle/tree/main/Embodied) is an open-semantic visual grounding model. It performs object detection, referring expression grounding, GUI and text grounding, document layout grounding, and point localization from text instructions. PBD (Parallel Box Decoding) generates bounding-box coordinates in parallel.
 
+### Task Categories
+
+| Type | Description | Output |
+| --- | --- | --- |
+| Open-vocabulary object detection | Detects objects by user-provided category names without a fixed category list | Object categories and bounding boxes |
+| Referring expression grounding | Locates objects from natural-language descriptions of appearance, attributes, position, or relationships | Object bounding boxes |
+| GUI grounding | Locates buttons, icons, input fields, and other controls from text descriptions | Control points or bounding boxes |
+| OCR | Recognizes text content and its position in an image | Recognized text and text bounding boxes |
+| Text grounding | Locates user-specified text in an image | Specified text and bounding boxes |
+| Document layout grounding | Locates titles, body text, tables, figures, and other document regions | Layout categories and bounding boxes |
+| Point localization | Locates objects in general visual scenes from natural-language descriptions | Object point coordinates |
+
+LocateAnything is designed primarily for visual detection and grounding tasks, whose Prompt formats are relatively fixed. We provide built-in task templates based on the Prompt formats used in the training data. Users only need to enter the query target through the corresponding command. `<query>` denotes a query target; separate multiple queries with commas. `<type>` denotes a document layout element type.
+
+| Command | Example | Description |
+| --- | --- | --- |
+| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | Detects all instances of the person, bus, and bicycle categories |
+| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | Locates all objects matching the three natural-language descriptions |
+| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | Locates one object matching the natural-language description |
+| `/gui <query>[,<query>...]` | `/gui Go to file/function` | Locates the specified GUI control and returns an interaction point |
+| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | Locates the three GUI controls and returns their bounding boxes |
+| `/text` | `/text` | Recognizes all text in the image and its position |
+| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | Locates the three specified text strings |
+| `/layout <type>[,<type>...]` | `/layout plot,text` | Locates plot and text regions in a document |
+| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | Returns point coordinates for the two queries |
+
 Model: [D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
 
 Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ)

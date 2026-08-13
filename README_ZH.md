@@ -19,6 +19,32 @@
 
 [LocateAnything](https://github.com/NVlabs/Eagle/tree/main/Embodied) 是开放语义视觉定位模型，通过文本指令完成目标检测、指代定位、GUI 与文本定位、文档版面定位和点定位。PBD（Parallel Box Decoding）以并行方式生成边界框坐标。
 
+### 任务类型
+
+| 类型 | 任务说明 | 输出 |
+| --- | --- | --- |
+| 开放词汇目标检测 | 根据用户给出的类别名称检测目标，不受预设类别表限制 | 目标类别及边界框 |
+| 指代定位 | 根据目标的外观、属性、位置或关系等自然语言描述定位目标 | 目标边界框 |
+| GUI 定位 | 根据文字描述定位软件界面中的按钮、图标、输入框等控件 | 控件点坐标或边界框 |
+| OCR | 识别图像中的文字内容及其所在位置 | 识别文字及文字边界框 |
+| 文本定位 | 根据用户给出的文字内容定位其在图像中的位置 | 指定文字及边界框 |
+| 文档版面定位 | 定位文档中的标题、正文、表格、图片等结构区域 | 版面元素类别及边界框 |
+| 点定位 | 根据自然语言描述定位普通视觉场景中的目标位置 | 目标点坐标 |
+
+LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固定。我们按照训练数据采用的提示词格式内置了各类任务模板，使用时只需通过对应命令输入查询目标（Query）。`<query>` 表示查询目标，多个 Query 使用英文逗号分隔；`<type>` 表示版面元素类型。
+
+| 命令 | 使用示例 | 说明 |
+| --- | --- | --- |
+| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | 检测 person、bus 和 bicycle 类别的全部目标 |
+| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | 分别定位符合三个自然语言描述的全部目标 |
+| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | 定位一个符合自然语言描述的目标 |
+| `/gui <query>[,<query>...]` | `/gui Go to file/function` | 定位指定界面控件并返回操作点 |
+| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | 分别定位三个界面控件并返回边界框 |
+| `/text` | `/text` | 识别图像中的全部文字及其位置 |
+| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | 分别定位三段指定文字 |
+| `/layout <type>[,<type>...]` | `/layout plot,text` | 定位文档中的图表和文本区域 |
+| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | 分别返回两处目标的点坐标 |
+
 模型仓库：[D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
 
 模型校准与 HBM 编译：[D-Robotics/Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ)
