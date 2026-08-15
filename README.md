@@ -77,7 +77,7 @@ The `fast_336` branch keeps the stable 672 profile and adds an independently con
 | Four-core BPU utilization | 64.1% | 67.2% |
 | DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
 
-fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/develop/docs/fast_336/06_s600_comparison.md).
+fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md).
 
 ## Model and Quantization
 

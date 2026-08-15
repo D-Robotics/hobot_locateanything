@@ -77,7 +77,7 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 | 四核 BPU 利用率 | 64.1% | 67.2% |
 | DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
 
-fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整逐帧 IoU 与资源统计见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/develop/docs/fast_336/06_s600_comparison.md)。
+fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整逐帧 IoU 与资源统计见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md)。
 
 ## 模型与量化
 
