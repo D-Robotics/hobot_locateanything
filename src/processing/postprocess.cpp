@@ -448,6 +448,13 @@ std::string Postprocessor::ToJson(const Prediction& prediction,
   output << "\"ar_tokens\"" << colon << language.ar_tokens << ',';
   newline();
   indent(2);
+  output << "\"cache_initialize_ms\"" << colon
+         << language.cache_initialize_ms << ',';
+  newline();
+  indent(2);
+  output << "\"cache_seed_ms\"" << colon << language.cache_seed_ms << ',';
+  newline();
+  indent(2);
   output << "\"graph_timings\"" << colon << '[';
   if (!language.graph_timings.empty()) newline();
   for (size_t index = 0; index < language.graph_timings.size(); ++index) {
@@ -456,14 +463,38 @@ std::string Postprocessor::ToJson(const Prediction& prediction,
     output << "{\"graph\"" << colon << '"' << JsonEscape(timing.graph) << '"'
            << comma << "\"calls\"" << colon << timing.calls << comma
            << "\"total_ms\"" << colon << timing.total_ms << comma
+           << "\"input_build_ms\"" << colon << timing.input_build_ms << comma
+           << "\"buffer_prepare_ms\"" << colon << timing.buffer_prepare_ms
+           << comma << "\"input_pack_ms\"" << colon << timing.input_pack_ms
+           << comma << "\"input_flush_ms\"" << colon << timing.input_flush_ms
+           << comma
            << "\"bpu_wait_ms\"" << colon << timing.bpu_wait_ms << comma
            << "\"submit_ms\"" << colon << timing.submit_ms << comma
+           << "\"output_flush_ms\"" << colon << timing.output_flush_ms
+           << comma << "\"output_unpack_ms\"" << colon
+           << timing.output_unpack_ms << comma
            << "\"input_bytes\"" << colon << timing.input_bytes << comma
+           << "\"resident_input_bytes\"" << colon
+           << timing.resident_input_bytes << comma
            << "\"output_bytes\"" << colon << timing.output_bytes << '}';
     if (index + 1 != language.graph_timings.size()) output << ',';
     newline();
   }
   if (!language.graph_timings.empty()) indent(2);
+  output << "],";
+  newline();
+  indent(2);
+  output << "\"decode_events\"" << colon << '[';
+  if (!language.decode_events.empty()) newline();
+  for (size_t index = 0; index < language.decode_events.size(); ++index) {
+    const DecodeEventCount& event = language.decode_events[index];
+    indent(3);
+    output << "{\"event\"" << colon << '"' << JsonEscape(event.event) << '"'
+           << comma << "\"count\"" << colon << event.count << '}';
+    if (index + 1 != language.decode_events.size()) output << ',';
+    newline();
+  }
+  if (!language.decode_events.empty()) indent(2);
   output << "],";
   newline();
   indent(2);

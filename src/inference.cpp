@@ -101,6 +101,8 @@ void AddLanguageMetrics(const LanguageMetrics& source,
   target->ar_tokens += source.ar_tokens;
   target->prefill_ms += source.prefill_ms;
   target->decode_ms += source.decode_ms;
+  target->cache_initialize_ms += source.cache_initialize_ms;
+  target->cache_seed_ms += source.cache_seed_ms;
   target->cache_update_ms += source.cache_update_ms;
   target->host_decode_ms += source.host_decode_ms;
   if (target->executed_mode.empty()) {
@@ -123,10 +125,27 @@ void AddLanguageMetrics(const LanguageMetrics& source,
     }
     existing->calls += item.calls;
     existing->total_ms += item.total_ms;
+    existing->input_build_ms += item.input_build_ms;
+    existing->buffer_prepare_ms += item.buffer_prepare_ms;
+    existing->input_pack_ms += item.input_pack_ms;
+    existing->input_flush_ms += item.input_flush_ms;
     existing->bpu_wait_ms += item.bpu_wait_ms;
     existing->submit_ms += item.submit_ms;
+    existing->output_flush_ms += item.output_flush_ms;
+    existing->output_unpack_ms += item.output_unpack_ms;
     existing->input_bytes += item.input_bytes;
+    existing->resident_input_bytes += item.resident_input_bytes;
     existing->output_bytes += item.output_bytes;
+  }
+  for (const DecodeEventCount& item : source.decode_events) {
+    auto existing = std::find_if(
+        target->decode_events.begin(), target->decode_events.end(),
+        [&](const DecodeEventCount& value) { return value.event == item.event; });
+    if (existing == target->decode_events.end()) {
+      target->decode_events.push_back(item);
+    } else {
+      existing->count += item.count;
+    }
   }
 }
 

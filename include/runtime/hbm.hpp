@@ -73,6 +73,7 @@ class DeviceBuffer {
   friend class Graph;
   friend Result AllocateDeviceBuffer(size_t, bool,
                                      std::shared_ptr<DeviceBuffer> *);
+  friend Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &);
   friend Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &,
                                   size_t, const void *, size_t);
 };
@@ -121,6 +122,9 @@ struct ExecutionMetrics {
 Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
                             std::shared_ptr<DeviceBuffer> *buffer);
 
+/** Zero and cache-clean a complete UCP allocation for reuse. */
+Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer);
+
 // Copy a changed range into UCP memory and clean only that range for the BPU.
 /**
  * @brief Copy a changed range into device memory and clean it for the BPU.
@@ -160,12 +164,6 @@ class Graph {
    * @return Vendor-backed success or failure result.
    */
   Result RefreshIO(hbDNNHandle_t handle);
-
-  // Release graph-private input/output allocations while retaining the graph
-  // handle and cached IO metadata. Device-resident KV buffers are owned by
-  // callers and are unaffected.
-  /** Release graph-private input/output allocations while retaining metadata. */
-  void ReleasePersistentBuffers();
 
   // Remember the C handle for later Execute calls. Kept separate from
   // RefreshIO so that the HbmSession can pass the handle in once when it
@@ -360,7 +358,6 @@ class HbmSession {
   void *packed_handle_ = nullptr;  // hbDNNPackedHandle_t
   std::vector<std::string> graph_names_;
   std::unordered_map<std::string, std::unique_ptr<Graph>> graphs_;
-  Graph *active_graph_ = nullptr;  // owned by graphs_
   uint32_t backend_mask_ = 15;
 };
 

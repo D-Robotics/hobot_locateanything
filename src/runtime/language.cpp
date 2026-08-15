@@ -1,11 +1,12 @@
 // LocateAnything Language HBM runner.
 //
 // Executes the compiled fixed graphs directly:
-//   prefill (q=1024) -> decode (q=6) / decode_ar (q=1)
+//   prefill (profile q) -> PBD (q=6..12) / AR (q=1..5)
 // It supports both Hybrid PBD and full autoregressive generation.
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -70,6 +71,131 @@ bool SameShape(const std::vector<int32_t>& left,
   return left == std::vector<int32_t>(right);
 }
 
+struct LanguageAbiProfile {
+  bool fused_prefill = false;
+  bool compact_logits = false;
+  int32_t prefill_len = 0;
+  int32_t cache_len = 0;
+};
+
+/** Return the fixed query length encoded by one Language graph name. */
+int32_t LanguageGraphQueryLength(const std::string& name,
+                                 int32_t prefill_len) {
+  if (name == "prefill") return prefill_len;
+  if (name == "decode") return 6;
+  if (name == "decode_ar") return 1;
+  for (const std::string prefix : {"decode_pbd_q", "decode_ar_q"}) {
+    if (name.rfind(prefix, 0) != 0) continue;
+    const std::string suffix = name.substr(prefix.size());
+    if (suffix.empty() || !std::all_of(
+                              suffix.begin(), suffix.end(),
+                              [](unsigned char value) {
+                                return std::isdigit(value) != 0;
+                              })) {
+      return -1;
+    }
+    return std::stoi(suffix);
+  }
+  return -1;
+}
+
+/** Return true for q6-q12 PBD graph names. */
+bool IsPbdGraph(const std::string& name) {
+  return name == "decode" || name.rfind("decode_pbd_q", 0) == 0;
+}
+
+/** Validate graph shapes shared by legacy and fused/compact Language HBMs. */
+LanguageAbiProfile ValidateLanguageAbi(rt::HbmSession* session) {
+  if (session == nullptr) {
+    throw std::runtime_error("Language HBM session is null");
+  }
+  rt::Graph* prefill = session->GetGraph("prefill");
+  if (prefill == nullptr || prefill->GetInputShapes().size() != 75 ||
+      prefill->GetOutputShapes().size() != 73) {
+    throw std::runtime_error(
+        "Language HBM Prefill must expose 75 inputs and 73 outputs");
+  }
+  const auto& prefill_inputs = prefill->GetInputShapes();
+  const auto& prefill_outputs = prefill->GetOutputShapes();
+  if (prefill_inputs[0].size() != 3 || prefill_inputs[0][0] != 1 ||
+      prefill_inputs[0][2] != kHidden || prefill_inputs[2].size() != 3 ||
+      prefill_inputs[2][0] != 1 || prefill_outputs[0].size() != 3 ||
+      prefill_outputs[0][0] != 1 || prefill_outputs[0][2] != kVocab) {
+    throw std::runtime_error("Language HBM Prefill has an invalid base ABI");
+  }
+  LanguageAbiProfile profile;
+  profile.prefill_len = prefill_inputs[0][1];
+  profile.cache_len = prefill_inputs[2][2];
+  const int32_t prefill_logits_rows = prefill_outputs[0][1];
+  if (prefill_logits_rows == 7) {
+    profile.fused_prefill = true;
+  } else if (prefill_logits_rows != 1) {
+    throw std::runtime_error(
+        "Language HBM Prefill logits must contain either 1 legacy row or "
+        "7 fused rows");
+  }
+  if (profile.prefill_len < 128 || profile.cache_len <= profile.prefill_len) {
+    throw std::runtime_error("Language HBM Prefill/cache capacity is invalid");
+  }
+  rt::Graph* pbd_q7 = session->GetGraph("decode_pbd_q7");
+  rt::Graph* ar_q2 = session->GetGraph("decode_ar_q2");
+  if (pbd_q7 == nullptr || ar_q2 == nullptr ||
+      pbd_q7->GetOutputShapes().empty() || ar_q2->GetOutputShapes().empty() ||
+      pbd_q7->GetOutputShapes()[0].size() != 3 ||
+      ar_q2->GetOutputShapes()[0].size() != 3) {
+    throw std::runtime_error("Language HBM cannot identify Compact Logits ABI");
+  }
+  const int32_t pbd_q7_rows = pbd_q7->GetOutputShapes()[0][1];
+  const int32_t ar_q2_rows = ar_q2->GetOutputShapes()[0][1];
+  if (pbd_q7_rows == 6 && ar_q2_rows == 1) {
+    profile.compact_logits = true;
+  } else if (pbd_q7_rows != 7 || ar_q2_rows != 2) {
+    throw std::runtime_error(
+        "Language HBM mixes compact and full-query Decode logits");
+  }
+
+  for (const std::string& name : rt::LanguageGraphNames()) {
+    rt::Graph* graph = session->GetGraph(name);
+    if (graph == nullptr) {
+      throw std::runtime_error("Language HBM graph is missing: " + name);
+    }
+    const auto& inputs = graph->GetInputShapes();
+    const auto& outputs = graph->GetOutputShapes();
+    const auto& input_dtypes = graph->GetInputDtypes();
+    const auto& output_dtypes = graph->GetOutputDtypes();
+    const int32_t query = LanguageGraphQueryLength(name, profile.prefill_len);
+    if (query <= 0 || inputs.size() != 75 || outputs.size() != 73 ||
+        input_dtypes.size() != inputs.size() ||
+        output_dtypes.size() != outputs.size()) {
+      throw std::runtime_error("Language HBM graph count ABI mismatch: " + name);
+    }
+    const int32_t expected_logits_rows =
+        name == "prefill"
+            ? (profile.fused_prefill ? 7 : 1)
+            : (profile.compact_logits ? (IsPbdGraph(name) ? 6 : 1) : query);
+    if (!SameShape(inputs[0], {1, query, kHidden}) ||
+        !SameShape(inputs[1], {1, 1, query}) ||
+        !SameShape(inputs[2], {1, query, profile.cache_len}) ||
+        !SameShape(outputs[0], {1, expected_logits_rows, kVocab}) ||
+        input_dtypes[0] != kF16 || input_dtypes[1] != kS32 ||
+        input_dtypes[2] != kF16 || output_dtypes[0] != kF16) {
+      throw std::runtime_error("Language HBM primary tensor ABI mismatch: " +
+                               name);
+    }
+    for (int32_t index = 0; index < kCacheCount; ++index) {
+      const size_t input_index = 3 + static_cast<size_t>(index);
+      const size_t output_index = 1 + static_cast<size_t>(index);
+      if (!SameShape(inputs[input_index],
+                     {1, profile.cache_len, 2, 128}) ||
+          !SameShape(outputs[output_index], {1, query, 2, 128}) ||
+          input_dtypes[input_index] != output_dtypes[output_index]) {
+        throw std::runtime_error("Language HBM KV ABI mismatch: " + name);
+      }
+    }
+  }
+  return profile;
+}
+
 /**
  * @brief Encode one host float as an IEEE-754 binary16 bit pattern.
  * @param value Host floating-point value.
@@ -108,6 +234,9 @@ struct PreparedInputs {
 struct EngineState {
   rt::HbmSession session;
   rt::EmbedLookup embed;
+  PreparedInputs prepared_inputs;
+  CacheState prefill_cache;
+  CacheState full_cache;
   uint32_t random_state = 0x9e3779b9u;
   uint64_t dump_invocation = 0;
 };
@@ -230,15 +359,25 @@ struct GenerationMetrics {
   int32_t pbd_accepted_tokens = 0;
   int32_t ar_calls = 0;
   int32_t ar_tokens = 0;
+  double cache_initialize_ms = 0.0;
+  double cache_seed_ms = 0.0;
   struct GraphTiming {
     int32_t calls = 0;
     double total_ms = 0.0;
+    double input_build_ms = 0.0;
+    double buffer_prepare_ms = 0.0;
+    double input_pack_ms = 0.0;
+    double input_flush_ms = 0.0;
     double bpu_wait_ms = 0.0;
     double submit_ms = 0.0;
+    double output_flush_ms = 0.0;
+    double output_unpack_ms = 0.0;
     uint64_t input_bytes = 0;
+    uint64_t resident_input_bytes = 0;
     uint64_t output_bytes = 0;
   };
   std::map<std::string, GraphTiming> graph_timings;
+  std::map<std::string, int32_t> decode_events;
   double cache_update_ms = 0.0;
   double host_decode_ms = 0.0;
 };
@@ -375,8 +514,9 @@ bool BuildExplicitEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embe
  * @return True when prompt and graph dimensions are compatible.
  */
 bool BuildPrefillEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
-                            const InputPayload* payload, rt::Tensor* output,
-                            int32_t* active_len) {
+                             const InputPayload* payload, rt::Tensor* output,
+                             int32_t* active_len,
+                             bool fused_initial_pbd) {
   const auto& shape = graph.GetInputShapes()[0];
   if (graph.GetInputDtypes()[0] != kF16 || shape.size() != 3 ||
       shape[0] != 1 || shape[1] < 128 || shape[2] != kHidden) {
@@ -394,13 +534,22 @@ bool BuildPrefillEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed
     return true;
   }
   const int32_t length = static_cast<int32_t>(payload->prompt_ids.size());
-  if (length <= 0 || length > query) return false;
+  const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+  if (length <= 0 || length + pbd_rows > query) return false;
   const int32_t row_offset = shape[1] - length;
   std::vector<uint8_t> text_embeddings(static_cast<size_t>(length) * kHidden * 2);
   embed.Gather(payload->prompt_ids.data(), length, text_embeddings.data());
   std::memcpy(output->data.data() +
                   static_cast<size_t>(row_offset) * kHidden * sizeof(uint16_t),
               text_embeddings.data(), text_embeddings.size());
+  if (fused_initial_pbd) {
+    const std::vector<int32_t> pbd_ids{
+        payload->prompt_ids.back(), kTextMaskToken, kTextMaskToken,
+        kTextMaskToken, kTextMaskToken, kTextMaskToken};
+    embed.Gather(
+        pbd_ids.data(), static_cast<int32_t>(pbd_ids.size()),
+        output->data.data());
+  }
   const auto* visual = payload->visual_features.data();
   size_t visual_index = 0;
   auto* destination = reinterpret_cast<uint16_t*>(output->data.data());
@@ -457,8 +606,8 @@ bool BuildDecodeEmbeddings(const rt::Graph& graph, const rt::EmbedLookup& embed,
  * @return True when positions satisfy the graph contract.
  */
 bool BuildPositions(const rt::Graph& graph, int32_t start, bool pbd,
-                    int32_t active_len, int32_t pbd_prefix_len,
-                    rt::Tensor* output) {
+                     int32_t active_len, int32_t pbd_prefix_len,
+                     bool fused_initial_pbd, rt::Tensor* output) {
   const auto& shape = graph.GetInputShapes()[1];
   if (graph.GetInputDtypes()[1] != kS32 || shape.size() != 3 ||
       shape[0] != 1 || shape[1] != 1) {
@@ -470,10 +619,18 @@ bool BuildPositions(const rt::Graph& graph, int32_t start, bool pbd,
   output->data.resize(static_cast<size_t>(query) * sizeof(int32_t));
   auto* values = reinterpret_cast<int32_t*>(output->data.data());
   if (query >= 128 && active_len > 0) {
-    if (active_len > query || start != 0 || pbd) return false;
+    const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+    if (active_len + pbd_rows > query || start != 0 ||
+        (pbd && !fused_initial_pbd)) return false;
     const int32_t row_offset = query - active_len;
     for (int32_t index = 0; index < query; ++index) {
-      values[index] = index < row_offset ? 0 : index - row_offset;
+      if (fused_initial_pbd && index < pbd_rows) {
+        values[index] = active_len - 1 + index;
+      } else if (index < row_offset) {
+        values[index] = 0;
+      } else {
+        values[index] = index - row_offset;
+      }
     }
   } else {
     if (pbd_prefix_len < 0 || pbd_prefix_len > query ||
@@ -498,7 +655,8 @@ bool BuildPositions(const rt::Graph& graph, int32_t start, bool pbd,
  * @return True when the requested mask fits the graph contract.
  */
 bool BuildMask(const rt::Graph& graph, int32_t past_len, int32_t block_size,
-               int32_t active_len, rt::Tensor* output) {
+                int32_t active_len, bool fused_initial_pbd,
+                rt::Tensor* output) {
   const auto& shape = graph.GetInputShapes()[2];
   if (graph.GetInputDtypes()[2] != kF16 || shape.size() != 3 || shape[0] != 1) {
     return false;
@@ -507,13 +665,23 @@ bool BuildMask(const rt::Graph& graph, int32_t past_len, int32_t block_size,
   const int32_t cache_len = shape[2];
   rt::AttentionMask mask;
   if (query >= 128 && active_len >= 0) {
-    if (active_len > query || past_len != 0) return false;
+    const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+    if (active_len + pbd_rows > query || past_len != 0) return false;
     mask.shape = {1, query, cache_len};
     mask.data.assign(static_cast<size_t>(query) * cache_len, kMaskValue);
     const int32_t current_start = cache_len - query;
     const int32_t row_offset = query - active_len;
     for (int32_t row_index = 0; row_index < query; ++row_index) {
       uint16_t* row = mask.data.data() + static_cast<size_t>(row_index) * cache_len;
+      if (fused_initial_pbd && row_index < pbd_rows) {
+        for (int32_t index = 0; index < pbd_rows; ++index) {
+          row[current_start + index] = 0;
+        }
+        for (int32_t index = row_offset; index < query - 1; ++index) {
+          row[current_start + index] = 0;
+        }
+        continue;
+      }
       if (row_index < row_offset) {
         row[current_start + row_index] = 0;
         continue;
@@ -543,6 +711,33 @@ bool BuildZeroCaches(const rt::Graph& graph, CacheState* state) {
   const auto& shapes = graph.GetInputShapes();
   const auto& dtypes = graph.GetInputDtypes();
   if (shapes.size() != 3 + kCacheCount) return false;
+
+  bool reusable = state->tensors.size() == kCacheCount;
+  if (reusable) {
+    for (int32_t index = 0; index < kCacheCount; ++index) {
+      const size_t input_index = static_cast<size_t>(index + 3);
+      const int32_t element_bytes = rt::DtypeElementBytes(dtypes[input_index]);
+      const size_t cache_bytes = element_bytes > 0
+          ? static_cast<size_t>(ElementCount(shapes[input_index])) *
+                static_cast<size_t>(element_bytes)
+          : 0;
+      const rt::Tensor& tensor = state->tensors[static_cast<size_t>(index)];
+      if (element_bytes <= 0 || tensor.shape != shapes[input_index] ||
+          tensor.dtype != dtypes[input_index] || tensor.device_buffer == nullptr ||
+          tensor.device_buffer->size() != cache_bytes) {
+        reusable = false;
+        break;
+      }
+    }
+  }
+  if (reusable) {
+    for (rt::Tensor& tensor : state->tensors) {
+      if (!rt::ZeroDeviceBuffer(tensor.device_buffer).ok()) return false;
+      tensor.byte_offset = 0;
+    }
+    return true;
+  }
+
   state->tensors.clear();
   state->tensors.reserve(kCacheCount);
   for (size_t index = 3; index < shapes.size(); ++index) {
@@ -580,8 +775,29 @@ bool BuildFullCaches(const rt::Graph& graph,
       updates.size() != 1 + kCacheCount) {
     return false;
   }
-  state->tensors.clear();
-  state->tensors.reserve(kCacheCount);
+  bool reusable = state->tensors.size() == kCacheCount;
+  if (reusable) {
+    for (int32_t index = 0; index < kCacheCount; ++index) {
+      const size_t input_index = static_cast<size_t>(index + 3);
+      const int32_t element_bytes = rt::DtypeElementBytes(input_dtypes[input_index]);
+      const size_t cache_bytes = element_bytes > 0
+          ? static_cast<size_t>(ElementCount(input_shapes[input_index])) *
+                static_cast<size_t>(element_bytes)
+          : 0;
+      const rt::Tensor& cache = state->tensors[static_cast<size_t>(index)];
+      if (element_bytes <= 0 || cache.shape != input_shapes[input_index] ||
+          cache.dtype != input_dtypes[input_index] ||
+          cache.device_buffer == nullptr ||
+          cache.device_buffer->size() != cache_bytes * 2) {
+        reusable = false;
+        break;
+      }
+    }
+  }
+  if (!reusable) {
+    state->tensors.clear();
+    state->tensors.reserve(kCacheCount);
+  }
   for (int32_t index = 0; index < kCacheCount; ++index) {
     const size_t output_index = static_cast<size_t>(index + 1);
     const size_t input_index = static_cast<size_t>(index + 3);
@@ -600,11 +816,16 @@ bool BuildFullCaches(const rt::Graph& graph,
       return false;
     }
     rt::Tensor cache;
-    cache.shape = input_shapes[input_index];
-    cache.dtype = input_dtypes[input_index];
+    if (reusable) {
+      cache = std::move(state->tensors[static_cast<size_t>(index)]);
+    } else {
+      cache.shape = input_shapes[input_index];
+      cache.dtype = input_dtypes[input_index];
+    }
     const size_t cache_bytes = static_cast<size_t>(ElementCount(cache.shape)) *
                                static_cast<size_t>(element_bytes);
-    if (!rt::AllocateDeviceBuffer(cache_bytes * 2, true,
+    if (!reusable &&
+        !rt::AllocateDeviceBuffer(cache_bytes * 2, true,
                                   &cache.device_buffer).ok()) {
       return false;
     }
@@ -623,7 +844,11 @@ bool BuildFullCaches(const rt::Graph& graph,
                                updates[output_index].data.data(), copy_bytes).ok()) {
       return false;
     }
-    state->tensors.push_back(std::move(cache));
+    if (reusable) {
+      state->tensors[static_cast<size_t>(index)] = std::move(cache);
+    } else {
+      state->tensors.push_back(std::move(cache));
+    }
   }
   return true;
 }
@@ -652,7 +877,8 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
                   int32_t* active_len, PreparedInputs* inputs,
                   int32_t pbd_prefix_len,
                   const std::vector<int32_t>* generated_tokens,
-                  uint32_t* random_state) {
+                  uint32_t* random_state,
+                  bool fused_initial_pbd) {
   if (cache.tensors.size() != kCacheCount) return false;
   const int32_t query = graph.GetInputShapes()[0][1];
   const bool embedding_ok =
@@ -661,7 +887,7 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
                                      &inputs->embeddings)
            : payload != nullptr && query >= 128
            ? BuildPrefillEmbeddings(graph, embed, payload, &inputs->embeddings,
-                                    active_len)
+                                     active_len, fused_initial_pbd)
            : payload != nullptr
                  ? BuildDecodeEmbeddings(graph, embed, payload, pbd,
                                          &inputs->embeddings)
@@ -673,12 +899,14 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
                           ? *active_len
                           : -1,
                       pbd_prefix_len,
+                      fused_initial_pbd,
                       &inputs->positions) ||
       !BuildMask(graph, past_len, pbd ? 6 : 0,
-                 payload != nullptr && graph.GetInputShapes()[0][1] >= 128
-                     ? *active_len
-                     : -1,
-                 &inputs->mask)) {
+                  payload != nullptr && graph.GetInputShapes()[0][1] >= 128
+                      ? *active_len
+                      : -1,
+                  fused_initial_pbd,
+                  &inputs->mask)) {
     return false;
   }
   inputs->views.clear();
@@ -726,19 +954,32 @@ bool BuildInputs(const rt::Graph& graph, const rt::EmbedLookup& embed,
  * @brief Accumulate one graph execution into generation diagnostics.
  * @param name Executed graph name.
  * @param execution_metrics HBM wrapper timings and byte counters.
+ * @param input_build_ms Host time spent constructing graph inputs.
  * @param metrics Optional generation metrics destination.
  */
 void RecordGraphTiming(const std::string& name,
                        const rt::ExecutionMetrics& execution_metrics,
+                       double input_build_ms,
                        GenerationMetrics* metrics) {
   if (metrics == nullptr) return;
   GenerationMetrics::GraphTiming& timing = metrics->graph_timings[name];
   ++timing.calls;
   timing.total_ms += execution_metrics.total_ms;
+  timing.input_build_ms += input_build_ms;
+  timing.buffer_prepare_ms += execution_metrics.buffer_prepare_ms;
+  timing.input_pack_ms += execution_metrics.input_pack_ms;
+  timing.input_flush_ms += execution_metrics.input_flush_ms;
   timing.bpu_wait_ms += execution_metrics.bpu_wait_ms;
   timing.submit_ms += execution_metrics.submit_ms;
+  timing.output_flush_ms += execution_metrics.output_flush_ms;
+  timing.output_unpack_ms += execution_metrics.output_unpack_ms;
   timing.input_bytes += execution_metrics.input_bytes;
+  timing.resident_input_bytes += execution_metrics.resident_input_bytes;
   timing.output_bytes += execution_metrics.output_bytes;
+}
+
+void RecordDecodeEvent(const std::string& event, GenerationMetrics* metrics) {
+  if (metrics != nullptr) ++metrics->decode_events[event];
 }
 
 /**
@@ -773,18 +1014,28 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
     std::fprintf(stderr, "[FAIL] graph not found: %s\n", name.c_str());
     return false;
   }
-  PreparedInputs inputs;
+  PreparedInputs& inputs = engine->prepared_inputs;
+  const bool fused_initial_pbd =
+      name == "prefill" && payload != nullptr &&
+      !graph->GetOutputShapes().empty() &&
+      graph->GetOutputShapes()[0].size() == 3 &&
+      graph->GetOutputShapes()[0][1] == 7 &&
+      payload->prompt_ids.size() + 6 <=
+          static_cast<size_t>(graph->GetInputShapes()[0][1]);
+  const auto input_build_started = std::chrono::steady_clock::now();
   int32_t local_active_len =
       graph->GetInputShapes()[0].size() > 1 && graph->GetInputShapes()[0][1] >= 128
           ? graph->GetInputShapes()[0][1]
           : -1;
   if (!BuildInputs(*graph, engine->embed, token_base, past_len, pbd, cache, payload,
                    explicit_tokens, &local_active_len, &inputs,
-                   pbd_prefix_len, generated_tokens,
-                   &engine->random_state)) {
+                    pbd_prefix_len, generated_tokens,
+                    &engine->random_state, fused_initial_pbd)) {
     std::fprintf(stderr, "[FAIL] cannot build %s inputs\n", name.c_str());
     return false;
   }
+  const double input_build_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - input_build_started).count();
   if (active_len != nullptr) *active_len = local_active_len;
   rt::ExecutionMetrics execution_metrics;
   std::vector<rt::OutputSlice> output_slices;
@@ -801,9 +1052,16 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
       const int32_t output_rows = output_shapes[index][1];
       if (index == 0 && output_rows == 1) {
         output_slices[index] = rt::OutputSlice{0, 1};
+      } else if (index == 0 && output_rows == 7) {
+        output_slices[index] = rt::OutputSlice{0, 7};
       } else if (local_active_len <= output_rows) {
-        output_slices[index] =
-            rt::OutputSlice{output_rows - local_active_len, local_active_len};
+        const int32_t offset = output_rows - local_active_len;
+        if (offset < 0) {
+          std::fprintf(stderr, "[FAIL] invalid fused prefill slice idx=%zu\n",
+                       index);
+          return false;
+        }
+        output_slices[index] = rt::OutputSlice{offset, local_active_len};
       } else {
         std::fprintf(stderr, "[FAIL] cannot slice prefill output idx=%zu\n",
                      index);
@@ -825,6 +1083,48 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
       output_slices[index] = rt::OutputSlice{0, -1, false};
     }
     selected_outputs = &output_slices;
+  } else if (pbd && pbd_prefix_len > 0) {
+    // Extended PBD graphs causally commit the accepted prefix, then evaluate
+    // a six-row decision window. Materialize only those two used regions.
+    const auto& output_shapes = graph->GetOutputShapes();
+    const auto& output_dtypes = graph->GetOutputDtypes();
+    output_slices.resize(output_shapes.size());
+    bool sliced = false;
+    if (output_dtypes.size() == output_shapes.size() &&
+        !output_shapes.empty() && output_dtypes[0] == kF16 &&
+        output_shapes[0].size() >= 2 &&
+        output_shapes[0][1] >= pbd_prefix_len + 6) {
+      output_slices[0] = rt::OutputSlice{pbd_prefix_len, 6};
+      sliced = true;
+    }
+    const size_t cache_offset =
+        output_dtypes.size() == output_shapes.size() &&
+                !output_shapes.empty() && output_dtypes[0] == kS32 &&
+                SameShape(output_shapes[0], {1, 6, 1})
+            ? 7
+            : 1;
+    for (size_t index = cache_offset; index < output_shapes.size(); ++index) {
+      if (output_shapes[index].size() >= 2 &&
+          output_shapes[index][1] > pbd_prefix_len) {
+        output_slices[index] = rt::OutputSlice{0, pbd_prefix_len};
+        sliced = true;
+      }
+    }
+    if (sliced) selected_outputs = &output_slices;
+  } else if (!pbd && explicit_tokens != nullptr &&
+             explicit_tokens->size() > 1) {
+    // A bridge AR graph commits every supplied token, but generation only
+    // consumes the final logits row.
+    const auto& output_shapes = graph->GetOutputShapes();
+    const auto& output_dtypes = graph->GetOutputDtypes();
+    const int32_t query = static_cast<int32_t>(explicit_tokens->size());
+    if (output_dtypes.size() == output_shapes.size() &&
+        !output_shapes.empty() && output_dtypes[0] == kF16 &&
+        output_shapes[0].size() >= 2 && output_shapes[0][1] >= query) {
+      output_slices.resize(output_shapes.size());
+      output_slices[0] = rt::OutputSlice{query - 1, 1};
+      selected_outputs = &output_slices;
+    }
   }
   const rt::Result result = engine->session.ExecuteGraphByName(
       name, inputs.views, outputs, &execution_metrics, selected_outputs);
@@ -833,7 +1133,7 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
                  result.code, result.message.c_str());
     return false;
   }
-  RecordGraphTiming(name, execution_metrics, metrics);
+  RecordGraphTiming(name, execution_metrics, input_build_ms, metrics);
   if (!DumpGraphDebug(name, token_base, past_len, pbd, pbd_prefix_len,
                       explicit_tokens, cache, *outputs,
                       &engine->dump_invocation)) {
@@ -843,10 +1143,10 @@ bool RunGraph(EngineState* engine, const std::string& name, int32_t token_base,
   }
   if (std::getenv("LA_PROFILE_EXECUTION") != nullptr) {
     std::printf(
-        "[profile] graph=%s total=%.3f prepare=%.3f pack=%.3f "
+        "[profile] graph=%s total=%.3f input_build=%.3f prepare=%.3f pack=%.3f "
         "input_flush=%.3f submit=%.3f bpu_wait=%.3f output_flush=%.3f "
         "unpack=%.3f input_mib=%.2f resident_input_mib=%.2f output_mib=%.2f\n",
-        name.c_str(), execution_metrics.total_ms,
+        name.c_str(), execution_metrics.total_ms, input_build_ms,
         execution_metrics.buffer_prepare_ms, execution_metrics.input_pack_ms,
         execution_metrics.input_flush_ms, execution_metrics.submit_ms,
         execution_metrics.bpu_wait_ms, execution_metrics.output_flush_ms,
@@ -1017,6 +1317,7 @@ bool RunHybridGeneration(EngineState* engine,
                          std::string* stop_reason,
                          bool protect_detection_structure,
                          GenerationMetrics* metrics,
+                         const rt::Tensor* initial_pbd_logits = nullptr,
                          const TokenCallback& token_callback = {}) {
   std::vector<int32_t> generated = payload.prompt_ids;
   std::vector<int32_t> pending_pbd;
@@ -1024,6 +1325,7 @@ bool RunHybridGeneration(EngineState* engine,
   bool use_pbd = true;
   const int32_t cache_len = CacheCapacity(*cache);
   if (cache_len <= 0) return false;
+  const rt::Tensor* bootstrap_logits = initial_pbd_logits;
 
   while (static_cast<int32_t>(response->size()) < max_new_tokens) {
     if (*history_len >= cache_len) {
@@ -1047,25 +1349,35 @@ bool RunHybridGeneration(EngineState* engine,
         tokens.insert(tokens.end(), 5, kTextMaskToken);
       }
       std::vector<rt::Tensor> outputs;
-      if (!RunGraph(engine, PbdGraphName(prefix_len), 0, *history_len,
-                    true, *cache, &outputs, nullptr, nullptr, &tokens,
-                    prefix_len, metrics, &generated)) {
-        return false;
-      }
-      if (metrics != nullptr) ++metrics->pbd_calls;
-      if (prefix_len > 0) {
-        if (!AppendCacheUpdate(outputs, *history_len, cache, prefix_len, metrics)) {
+      const rt::Tensor* logits = nullptr;
+      int32_t pbd_logit_start = 0;
+      if (prefix_len == 0 && bootstrap_logits != nullptr) {
+        logits = bootstrap_logits;
+        bootstrap_logits = nullptr;
+        pbd_logit_start = 1;
+      } else {
+        if (!RunGraph(engine, PbdGraphName(prefix_len), 0, *history_len,
+                      true, *cache, &outputs, nullptr, nullptr, &tokens,
+                      prefix_len, metrics, &generated)) {
           return false;
         }
-        *history_len += prefix_len;
+        logits = &outputs[0];
+        pbd_logit_start = PbdLogitStart(*logits, prefix_len);
+        if (prefix_len > 0) {
+          if (!AppendCacheUpdate(outputs, *history_len, cache, prefix_len, metrics)) {
+            return false;
+          }
+          *history_len += prefix_len;
+        }
       }
-      const int32_t pbd_logit_start = PbdLogitStart(outputs[0], prefix_len);
+      if (metrics != nullptr) ++metrics->pbd_calls;
       const auto pbd_decode_started = std::chrono::steady_clock::now();
       const rt::HybridDecision decision =
-          CacheOutputOffset(outputs) == 7
+          !outputs.empty() && CacheOutputOffset(outputs) == 7
               ? rt::DecodePbdCompact(outputs)
-              : rt::DecodePbd(outputs[0], generated, rt::PbdDecodeConfig{},
+              : rt::DecodePbd(*logits, generated, rt::PbdDecodeConfig{},
                               nullptr, pbd_logit_start);
+      RecordDecodeEvent("pbd_" + decision.type, metrics);
       if (metrics != nullptr) {
         metrics->host_decode_ms += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - pbd_decode_started).count();
@@ -1100,6 +1412,7 @@ bool RunHybridGeneration(EngineState* engine,
         return true;
       }
       if (decision.switch_to_ar) {
+        RecordDecodeEvent("pbd_to_ar", metrics);
         std::vector<rt::Tensor> bridge;
         if (!RunGraph(engine, ArGraphName(accepted), 0, *history_len,
                       false, *cache, &bridge, nullptr, nullptr,
@@ -1109,10 +1422,16 @@ bool RunHybridGeneration(EngineState* engine,
         }
         if (metrics != nullptr) ++metrics->ar_calls;
         *history_len += accepted;
-        rt::Tensor next_logits;
-        if (!SelectLogitsRow(bridge[0], ArLogitRow(bridge[0], accepted),
-                             &next_logits)) return false;
-        pending_ar = {std::move(next_logits)};
+        if (bridge[0].shape == std::vector<int32_t>{1, 1, kVocab}) {
+          pending_ar = {std::move(bridge[0])};
+        } else {
+          rt::Tensor next_logits;
+          if (!SelectLogitsRow(bridge[0], ArLogitRow(bridge[0], accepted),
+                               &next_logits)) {
+            return false;
+          }
+          pending_ar = {std::move(next_logits)};
+        }
         use_pbd = false;
       } else {
         pending_pbd = decision.tokens;
@@ -1126,6 +1445,15 @@ bool RunHybridGeneration(EngineState* engine,
 
     if (pending_ar.empty()) return false;
     const int32_t token = rt::DecodeArGreedy(pending_ar[0], generated);
+    if (token == kBoxEndToken) {
+      RecordDecodeEvent("ar_box_end", metrics);
+    } else if (rt::IsCoordinateToken(token)) {
+      RecordDecodeEvent("ar_coordinate", metrics);
+    } else if (token == kNoneToken) {
+      RecordDecodeEvent("ar_none", metrics);
+    } else {
+      RecordDecodeEvent("ar_other", metrics);
+    }
     response->push_back(token);
     generated.push_back(token);
     if (metrics != nullptr) ++metrics->ar_tokens;
@@ -1144,6 +1472,7 @@ bool RunHybridGeneration(EngineState* engine,
       // The next q7 PBD profile causally commits this token and evaluates its
       // following PBD window in one BPU execution.
       pending_pbd = {token};
+      RecordDecodeEvent("ar_to_pbd", metrics);
       pending_ar.clear();
       use_pbd = true;
       continue;
@@ -1193,7 +1522,10 @@ bool RunArGeneration(EngineState* engine,
   const int32_t prefill_logits_row =
       prefill_outputs[0].shape.size() == 3 && prefill_outputs[0].shape[1] == 1
           ? 0
-          : *history_len - 1;
+          : (prefill_outputs[0].shape.size() == 3 &&
+                     prefill_outputs[0].shape[1] == 7
+                 ? 0
+                 : prefill_outputs[0].shape[1] - 1);
   if (!SelectLogitsRow(prefill_outputs[0], prefill_logits_row,
                        &current_logits)) {
     return false;
@@ -1255,9 +1587,20 @@ bool RunPayload(EngineState* engine,
   if (engine == nullptr || response == nullptr) return false;
   rt::Graph* prefill = engine->session.GetGraph("prefill");
   if (prefill == nullptr) return false;
+  const bool prefill_supports_fused_pbd =
+      !prefill->GetOutputShapes().empty() &&
+      prefill->GetOutputShapes()[0].size() == 3 &&
+      prefill->GetOutputShapes()[0][1] == 7;
+  const bool fused_initial_pbd =
+      prefill_supports_fused_pbd && payload.prompt_ids.size() + 6 <=
+          static_cast<size_t>(prefill->GetInputShapes()[0][1]);
 
-  CacheState prefill_cache;
+  CacheState& prefill_cache = engine->prefill_cache;
+  const auto cache_initialize_started = std::chrono::steady_clock::now();
   if (!BuildZeroCaches(*prefill, &prefill_cache)) return false;
+  const double cache_initialize_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cache_initialize_started).count();
+  if (metrics != nullptr) metrics->cache_initialize_ms += cache_initialize_ms;
 
   std::vector<rt::Tensor> prefill_outputs;
   int32_t active_len = prefill->GetInputShapes()[0][1];
@@ -1271,9 +1614,17 @@ bool RunPayload(EngineState* engine,
       std::chrono::steady_clock::now() - prefill_started).count();
   const int32_t prefill_tokens = active_len;
 
-  CacheState full_cache;
+  CacheState& full_cache = engine->full_cache;
+  const auto cache_seed_started = std::chrono::steady_clock::now();
   if (!BuildFullCaches(*prefill, prefill_outputs, active_len, &full_cache)) {
     return false;
+  }
+  const double cache_seed_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cache_seed_started).count();
+  if (metrics != nullptr) metrics->cache_seed_ms += cache_seed_ms;
+  if (std::getenv("LA_PROFILE_EXECUTION") != nullptr) {
+    std::printf("[profile] cache_initialize=%.3f cache_seed=%.3f\n",
+                cache_initialize_ms, cache_seed_ms);
   }
 
   response->clear();
@@ -1292,6 +1643,7 @@ bool RunPayload(EngineState* engine,
                              &full_cache, &active_len, response, stop_reason,
                              protect_detection_structure,
                              metrics,
+                             fused_initial_pbd ? &prefill_outputs[0] : nullptr,
                              generation_callback);
   bool final_generated = generated;
   if (protect_detection_structure && generation_mode == "hybrid" &&
@@ -1300,8 +1652,13 @@ bool RunPayload(EngineState* engine,
     response->clear();
     *stop_reason = {};
     active_len = prefill_tokens;
+    const auto fallback_cache_seed_started = std::chrono::steady_clock::now();
     if (!BuildFullCaches(*prefill, prefill_outputs, active_len, &full_cache)) {
       return false;
+    }
+    if (metrics != nullptr) {
+      metrics->cache_seed_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - fallback_cache_seed_started).count();
     }
     selected_mode = "slow";
     final_generated = RunArGeneration(engine, payload, max_new_tokens,
@@ -1361,6 +1718,15 @@ void LanguageEngine::Initialize(const std::string& model_path,
   if (!validation.ok()) {
     throw std::runtime_error("Language HBM graph contract mismatch");
   }
+  const LanguageAbiProfile abi = ValidateLanguageAbi(&impl_->engine.session);
+  std::printf("[Language] ABI graphs=13 prefill=%d cache=%d "
+              "fused_prefill=%s compact_logits=%s logits=%d/%s/%s\n",
+              abi.prefill_len, abi.cache_len,
+              abi.fused_prefill ? "true" : "false",
+              abi.compact_logits ? "true" : "false",
+              abi.fused_prefill ? 7 : 1,
+              abi.compact_logits ? "6" : "query",
+              abi.compact_logits ? "1" : "query");
   if (!impl_->engine.embed.Open(embeddings_path, kVocab, kHidden)) {
     throw std::runtime_error("cannot open Language embeddings");
   }
@@ -1368,9 +1734,7 @@ void LanguageEngine::Initialize(const std::string& model_path,
   rt::Graph* prefill = impl_->engine.session.GetGraph("prefill");
   rt::Graph* decode = impl_->engine.session.GetGraph("decode");
   rt::Graph* decode_ar = impl_->engine.session.GetGraph("decode_ar");
-  if (prefill == nullptr || decode == nullptr || decode_ar == nullptr ||
-      prefill->GetInputShapes().empty() ||
-      decode->GetInputShapes().size() <= 3) {
+  if (prefill == nullptr || decode == nullptr || decode_ar == nullptr) {
     throw std::runtime_error("invalid Language HBM graph interface");
   }
   impl_->initialized = true;
@@ -1444,6 +1808,8 @@ LanguageResult LanguageEngine::Generate(
   result.metrics.ar_tokens = runtime_metrics.ar_tokens;
   result.metrics.prefill_ms = runtime_metrics.prefill_ms;
   result.metrics.decode_ms = runtime_metrics.decode_ms;
+  result.metrics.cache_initialize_ms = runtime_metrics.cache_initialize_ms;
+  result.metrics.cache_seed_ms = runtime_metrics.cache_seed_ms;
   result.metrics.cache_update_ms = runtime_metrics.cache_update_ms;
   result.metrics.host_decode_ms = runtime_metrics.host_decode_ms;
   result.metrics.executed_mode = std::move(executed_mode);
@@ -1454,11 +1820,25 @@ LanguageResult LanguageEngine::Generate(
     timing.graph = entry.first;
     timing.calls = entry.second.calls;
     timing.total_ms = entry.second.total_ms;
+    timing.input_build_ms = entry.second.input_build_ms;
+    timing.buffer_prepare_ms = entry.second.buffer_prepare_ms;
+    timing.input_pack_ms = entry.second.input_pack_ms;
+    timing.input_flush_ms = entry.second.input_flush_ms;
     timing.bpu_wait_ms = entry.second.bpu_wait_ms;
     timing.submit_ms = entry.second.submit_ms;
+    timing.output_flush_ms = entry.second.output_flush_ms;
+    timing.output_unpack_ms = entry.second.output_unpack_ms;
     timing.input_bytes = entry.second.input_bytes;
+    timing.resident_input_bytes = entry.second.resident_input_bytes;
     timing.output_bytes = entry.second.output_bytes;
     result.metrics.graph_timings.push_back(std::move(timing));
+  }
+  result.metrics.decode_events.reserve(runtime_metrics.decode_events.size());
+  for (const auto& entry : runtime_metrics.decode_events) {
+    DecodeEventCount event;
+    event.event = entry.first;
+    event.count = entry.second;
+    result.metrics.decode_events.push_back(std::move(event));
   }
   return result;
 }

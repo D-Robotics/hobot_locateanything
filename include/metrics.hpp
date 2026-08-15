@@ -11,10 +11,23 @@ struct GraphTiming {
   std::string graph;
   int32_t calls = 0;
   double total_ms = 0.0;
+  double input_build_ms = 0.0;
+  double buffer_prepare_ms = 0.0;
+  double input_pack_ms = 0.0;
+  double input_flush_ms = 0.0;
   double bpu_wait_ms = 0.0;
   double submit_ms = 0.0;
+  double output_flush_ms = 0.0;
+  double output_unpack_ms = 0.0;
   uint64_t input_bytes = 0;
+  uint64_t resident_input_bytes = 0;
   uint64_t output_bytes = 0;
+};
+
+/** Count of one decoder decision or token-transition category. */
+struct DecodeEventCount {
+  std::string event;
+  int32_t count = 0;
 };
 
 /** Host-side Language generation counters and fallback information. */
@@ -27,9 +40,12 @@ struct LanguageMetrics {
   int32_t ar_tokens = 0;
   double prefill_ms = 0.0;
   double decode_ms = 0.0;
+  double cache_initialize_ms = 0.0;
+  double cache_seed_ms = 0.0;
   double cache_update_ms = 0.0;
   double host_decode_ms = 0.0;
   std::vector<GraphTiming> graph_timings;
+  std::vector<DecodeEventCount> decode_events;
   std::string executed_mode;
   std::string fallback_reason;
 };

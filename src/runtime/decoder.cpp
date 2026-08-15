@@ -90,28 +90,29 @@ void ConvertFp16Row(const uint16_t *raw, std::vector<float> *values) {
  * @param row Sequence-axis row index.
  * @param history_tokens De-duplicated generated-token history.
  * @param repetition_penalty Positive repetition penalty.
- * @return Adjusted fp32 vocabulary scores.
+ * @param values Reusable fp32 vocabulary destination.
  */
-std::vector<float> Row(const Tensor &logits, int32_t row,
-                       const std::vector<int32_t> &history_tokens,
-                       float repetition_penalty) {
+void FillRow(const Tensor &logits, int32_t row,
+             const std::vector<int32_t> &history_tokens,
+             float repetition_penalty, std::vector<float> *values) {
   const auto *raw = reinterpret_cast<const uint16_t *>(logits.data.data());
-  std::vector<float> values(kVocab);
+  values->resize(kVocab);
   const size_t offset = static_cast<size_t>(row) * kVocab;
-  ConvertFp16Row(raw + offset, &values);
+  ConvertFp16Row(raw + offset, values);
   if (repetition_penalty != 1.0f) {
     for (const int32_t token : history_tokens) {
-      float &value = values[static_cast<size_t>(token)];
+      float &value = (*values)[static_cast<size_t>(token)];
       value = value > 0 ? value / repetition_penalty
                         : value * repetition_penalty;
     }
   }
-  return values;
 }
 
-struct NucleusDistribution {
-  std::vector<float> probabilities;
-  int32_t retained = 0;
+struct RowWorkspace {
+  RowWorkspace() : values(kVocab), indices(kVocab) {}
+
+  std::vector<float> values;
+  std::vector<int32_t> indices;
 };
 
 /** Normalize logits using a caller-provided maximum for numerical stability. */
@@ -137,21 +138,23 @@ std::vector<float> Softmax(const std::vector<float> &logits,
 
 /**
  * @brief Apply temperature scaling and top-p filtering to one logits row.
- * @param logits Repetition-adjusted vocabulary scores.
+ * @param values Repetition-adjusted vocabulary scores, replaced by filtered
+ * probabilities.
+ * @param indices Reusable sorting workspace.
  * @param temperature Positive sampling temperature.
  * @param top_p Retained probability mass in (0, 1].
- * @return Filtered probabilities and retained-token count.
+ * @return Retained-token count.
  */
-NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
-                                    float temperature, float top_p) {
-  std::vector<float> adjusted(logits.size());
+int32_t NucleusSoftmax(std::vector<float> *values,
+                       std::vector<int32_t> *indices,
+                       float temperature, float top_p) {
   const float inverse_temperature = 1.0f / temperature;
   float maximum = -std::numeric_limits<float>::infinity();
   float second_maximum = -std::numeric_limits<float>::infinity();
   size_t maximum_token = 0;
-  for (size_t index = 0; index < logits.size(); ++index) {
-    const float value = logits[index] * inverse_temperature;
-    adjusted[index] = value;
+  for (size_t index = 0; index < values->size(); ++index) {
+    const float value = (*values)[index] * inverse_temperature;
+    (*values)[index] = value;
     if (value > maximum) {
       second_maximum = maximum;
       maximum = value;
@@ -164,91 +167,153 @@ NucleusDistribution NucleusSoftmax(const std::vector<float> &logits,
   if (top_p < 1.0f && std::isfinite(maximum) &&
       std::isfinite(second_maximum)) {
     const double other_mass_upper_bound =
-        static_cast<double>(adjusted.size() - 1) *
+        static_cast<double>(values->size() - 1) *
         std::exp(static_cast<double>(second_maximum - maximum));
     const double maximum_probability_lower_bound =
         1.0 / (1.0 + other_mass_upper_bound);
     if (maximum_probability_lower_bound >
         static_cast<double>(top_p) + 1e-6) {
-      std::vector<float> probabilities(logits.size(), 0.0f);
-      probabilities[maximum_token] = 1.0f;
-      return {std::move(probabilities), 1};
+      std::fill(values->begin(), values->end(), 0.0f);
+      (*values)[maximum_token] = 1.0f;
+      return 1;
     }
   }
 
-  std::vector<float> raw = Softmax(adjusted, maximum);
+  double total = 0.0;
+  for (float &value : *values) {
+    value = std::exp(value - maximum);
+    total += value;
+  }
+  if (total > 0.0 && std::isfinite(total)) {
+    for (float &value : *values) value = static_cast<float>(value / total);
+  }
   if (top_p >= 1.0f) {
-    return {std::move(raw), static_cast<int32_t>(logits.size())};
+    return static_cast<int32_t>(values->size());
   }
 
-  const auto maximum_probability = std::max_element(raw.begin(), raw.end());
-  if (maximum_probability != raw.end() && *maximum_probability > top_p) {
-    const size_t token = static_cast<size_t>(maximum_probability - raw.begin());
-    std::fill(raw.begin(), raw.end(), 0.0f);
-    raw[token] = 1.0f;
-    return {std::move(raw), 1};
+  const auto maximum_probability =
+      std::max_element(values->begin(), values->end());
+  if (maximum_probability != values->end() &&
+      *maximum_probability > top_p) {
+    const size_t token =
+        static_cast<size_t>(maximum_probability - values->begin());
+    std::fill(values->begin(), values->end(), 0.0f);
+    (*values)[token] = 1.0f;
+    return 1;
   }
 
-  std::vector<int32_t> indices(logits.size());
-  std::iota(indices.begin(), indices.end(), 0);
+  indices->resize(values->size());
+  std::iota(indices->begin(), indices->end(), 0);
   auto greater = [&](int32_t left, int32_t right) {
-    return adjusted[static_cast<size_t>(left)] >
-           adjusted[static_cast<size_t>(right)];
+    const float lhs = (*values)[static_cast<size_t>(left)];
+    const float rhs = (*values)[static_cast<size_t>(right)];
+    return lhs > rhs || (lhs == rhs && left < right);
   };
   double cumulative = 0.0;
   size_t retained = 0;
-  size_t width = std::min<size_t>(kNucleusInitialWidth, indices.size());
+  size_t width = std::min<size_t>(kNucleusInitialWidth, indices->size());
   size_t partitioned = 0;
   while (true) {
-    if (width < indices.size()) {
-      std::nth_element(indices.begin() + partitioned,
-                       indices.begin() + width, indices.end(), greater);
-      std::sort(indices.begin(), indices.begin() + width, greater);
+    if (width < indices->size()) {
+      std::nth_element(indices->begin() + partitioned,
+                       indices->begin() + width, indices->end(), greater);
+      std::sort(indices->begin(), indices->begin() + width, greater);
     } else {
-      std::sort(indices.begin() + partitioned, indices.end(), greater);
+      std::sort(indices->begin() + partitioned, indices->end(), greater);
     }
     cumulative = 0.0;
     retained = 0;
     for (; retained < width; ++retained) {
-      cumulative += raw[static_cast<size_t>(indices[retained])];
+      cumulative += (*values)[static_cast<size_t>((*indices)[retained])];
       if (cumulative >= top_p) {
         ++retained;
         break;
       }
     }
-    if (cumulative >= top_p || width == indices.size()) break;
+    if (cumulative >= top_p || width == indices->size()) break;
     partitioned = width;
     if (width >= static_cast<size_t>(kNucleusMaximumWidth)) {
-      width = indices.size();
+      width = indices->size();
     } else {
-      width = std::min({width * 2, indices.size(),
+      width = std::min({width * 2, indices->size(),
                         static_cast<size_t>(kNucleusMaximumWidth)});
     }
   }
 
   if (retained == 0 || cumulative <= 0.0 || !std::isfinite(cumulative)) {
-    std::fill(raw.begin(), raw.end(), 0.0f);
-    return {std::move(raw), 0};
+    std::fill(values->begin(), values->end(), 0.0f);
+    return 0;
   }
-  // Keep the same retained-token values while reusing the full softmax
-  // allocation. The decoder only observes retained entries; all others must
-  // be zero after nucleus filtering.
-  for (size_t index = retained; index < indices.size(); ++index) {
-    raw[static_cast<size_t>(indices[index])] = 0.0f;
+  for (size_t index = retained; index < indices->size(); ++index) {
+    (*values)[static_cast<size_t>((*indices)[index])] = 0.0f;
   }
   for (size_t index = 0; index < retained; ++index) {
-    const size_t token = static_cast<size_t>(indices[index]);
-    raw[token] = static_cast<float>(raw[token] / cumulative);
+    const size_t token = static_cast<size_t>((*indices)[index]);
+    (*values)[token] = static_cast<float>((*values)[token] / cumulative);
   }
-  return {std::move(raw), static_cast<int32_t>(retained)};
+  return static_cast<int32_t>(retained);
 }
 
 struct PbdRowResult {
-  std::vector<float> probabilities;
+  std::array<int32_t, 5> top_tokens{};
+  std::array<float, 5> top_probabilities{};
   std::vector<float> legacy_probabilities;
   int32_t greedy_token = 0;
   int32_t retained_tokens = 0;
+  float box_start = 0.0f;
+  float ref_start = 0.0f;
+  float box_end = 0.0f;
+  float null_token = 0.0f;
+  float image_end = 0.0f;
+  float none = 0.0f;
+  float top_coordinate = 0.0f;
 };
+
+void SummarizeProbabilities(const std::vector<float> &probabilities,
+                            PbdRowResult *result) {
+  int32_t top_count = 0;
+  float top_coordinate = -std::numeric_limits<float>::infinity();
+  auto better = [&](int32_t left, int32_t right) {
+    const float lhs = probabilities[static_cast<size_t>(left)];
+    const float rhs = probabilities[static_cast<size_t>(right)];
+    return lhs > rhs || (lhs == rhs && left < right);
+  };
+  for (int32_t token = 0; token < kVocab; ++token) {
+    if (token >= kCoordStart && token <= kCoordEnd) {
+      top_coordinate =
+          std::max(top_coordinate, probabilities[static_cast<size_t>(token)]);
+    }
+    size_t position = 0;
+    if (top_count < static_cast<int32_t>(result->top_tokens.size())) {
+      position = static_cast<size_t>(top_count++);
+      result->top_tokens[position] = token;
+    } else if (!better(token, result->top_tokens.back())) {
+      continue;
+    } else {
+      position = result->top_tokens.size() - 1;
+      result->top_tokens[position] = token;
+    }
+    while (position > 0 &&
+           better(result->top_tokens[position],
+                  result->top_tokens[position - 1])) {
+      std::swap(result->top_tokens[position],
+                result->top_tokens[position - 1]);
+      --position;
+    }
+  }
+  for (size_t rank = 0; rank < result->top_tokens.size(); ++rank) {
+    result->top_probabilities[rank] =
+        probabilities[static_cast<size_t>(result->top_tokens[rank])];
+  }
+  result->greedy_token = result->top_tokens[0];
+  result->box_start = probabilities[kBoxStart];
+  result->ref_start = probabilities[kRefStart];
+  result->box_end = probabilities[kBoxEnd];
+  result->null_token = probabilities[kNull];
+  result->image_end = probabilities[kImEnd];
+  result->none = probabilities[kNone];
+  result->top_coordinate = top_coordinate;
+}
 
 /**
  * @brief Decode one PBD row and optionally retain comparison probabilities.
@@ -262,16 +327,19 @@ struct PbdRowResult {
 PbdRowResult DecodePbdRow(const Tensor &logits, int32_t row,
                           const std::vector<int32_t> &history_tokens,
                           const PbdDecodeConfig &config,
-                          bool collect_diagnostics) {
-  std::vector<float> adjusted =
-      Row(logits, row, history_tokens, config.repetition_penalty);
-  std::vector<float> legacy;
-  if (collect_diagnostics) legacy = Softmax(adjusted);
-  NucleusDistribution nucleus =
-      NucleusSoftmax(adjusted, config.temperature, config.top_p);
-  const int32_t greedy = Argmax(nucleus.probabilities);
-  return {std::move(nucleus.probabilities), std::move(legacy), greedy,
-          nucleus.retained};
+                          bool collect_diagnostics,
+                          RowWorkspace *workspace) {
+  FillRow(logits, row, history_tokens, config.repetition_penalty,
+          &workspace->values);
+  PbdRowResult result;
+  if (collect_diagnostics) {
+    result.legacy_probabilities = Softmax(workspace->values);
+  }
+  result.retained_tokens =
+      NucleusSoftmax(&workspace->values, &workspace->indices,
+                     config.temperature, config.top_p);
+  SummarizeProbabilities(workspace->values, &result);
+  return result;
 }
 
 class PbdRowExecutor {
@@ -327,7 +395,7 @@ class PbdRowExecutor {
 
     (*results)[5] =
         DecodePbdRow(logits, row_start + 5, history_tokens, config,
-                     collect_diagnostics);
+                     collect_diagnostics, &workspaces_[5]);
 
     std::unique_lock<std::mutex> lock(job_mutex_);
     job_done_.wait(lock, [this] { return pending_workers_ == 0; });
@@ -367,7 +435,8 @@ class PbdRowExecutor {
 
       (*results)[static_cast<size_t>(row)] =
           DecodePbdRow(*logits, row_start + row, *history_tokens, config,
-                       collect_diagnostics);
+                       collect_diagnostics,
+                       &workspaces_[static_cast<size_t>(row)]);
 
       {
         std::lock_guard<std::mutex> lock(job_mutex_);
@@ -382,6 +451,7 @@ class PbdRowExecutor {
   std::condition_variable job_ready_;
   std::condition_variable job_done_;
   std::vector<std::thread> workers_;
+  std::array<RowWorkspace, 6> workspaces_;
   const Tensor *logits_ = nullptr;
   const std::vector<int32_t> *history_tokens_ = nullptr;
   PbdDecodeConfig config_;
@@ -407,38 +477,6 @@ PbdRowExecutor &PbdRows() {
 std::vector<float> Softmax(const std::vector<float> &logits) {
   const float maximum = *std::max_element(logits.begin(), logits.end());
   return Softmax(logits, maximum);
-}
-
-/**
- * @brief Return token indices ordered by descending score.
- * @param values Scores indexed by token ID.
- * @param count Maximum number of indices to return.
- * @return Up to count best token IDs with stable numeric tie-breaking.
- */
-std::vector<int32_t> TopK(const std::vector<float> &values, int32_t count) {
-  count = std::min<int32_t>(count, static_cast<int32_t>(values.size()));
-  if (count <= 0) return {};
-  auto better = [&](int32_t left, int32_t right) {
-    const float lhs = values[static_cast<size_t>(left)];
-    const float rhs = values[static_cast<size_t>(right)];
-    return lhs > rhs || (lhs == rhs && left < right);
-  };
-  std::vector<int32_t> top;
-  top.reserve(static_cast<size_t>(count));
-  for (int32_t token = 0; token < static_cast<int32_t>(values.size()); ++token) {
-    if (static_cast<int32_t>(top.size()) < count) {
-      top.push_back(token);
-    } else if (!better(token, top.back())) {
-      continue;
-    } else {
-      top.back() = token;
-    }
-    for (size_t index = top.size() - 1;
-         index > 0 && better(top[index], top[index - 1]); --index) {
-      std::swap(top[index], top[index - 1]);
-    }
-  }
-  return top;
 }
 
 /**
@@ -501,31 +539,36 @@ float TopCoordinateProbability(const std::vector<float> &probabilities) {
  * @param tokens Destination accepted box tokens.
  * @return True when a valid complete pattern was recognized.
  */
-bool DecodeBox(const std::vector<std::vector<float>> &probabilities,
+bool DecodeBox(const std::array<PbdRowResult, 6> &rows,
                std::vector<int32_t> *tokens) {
-  const float start = probabilities[0][kBoxStart];
-  if (start >= 0.6f && probabilities[1][kNone] > 0.2f &&
-      probabilities[2][kBoxEnd] > 0.2f &&
-      probabilities[3][kNull] > 0.1f &&
-      probabilities[4][kNull] > 0.1f) {
+  const float start = rows[0].box_start;
+  if (start >= 0.6f && rows[1].none > 0.2f &&
+      rows[2].box_end > 0.2f && rows[3].null_token > 0.1f &&
+      rows[4].null_token > 0.1f) {
     *tokens = {kBoxStart, kNone, kBoxEnd, kNull, kNull, kNull};
     return true;
   }
-  const float end_score = EndScore(probabilities);
+  const float end_score =
+      rows[5].box_end + rows[5].null_token + rows[5].image_end;
   if (end_score < 0.2f) return false;
 
   std::vector<int32_t> coordinates;
   for (int32_t row = 1; row <= 4; ++row) {
-    const auto top = TopK(probabilities[static_cast<size_t>(row)], 4);
+    const PbdRowResult &result = rows[static_cast<size_t>(row)];
     std::vector<int32_t> valid;
-    for (int32_t token : top) {
-      if (token >= kCoordStart && token <= kCoordEnd) valid.push_back(token);
+    float first_probability = 0.0f;
+    for (size_t rank = 0; rank < 4; ++rank) {
+      const int32_t token = result.top_tokens[rank];
+      if (token >= kCoordStart && token <= kCoordEnd) {
+        if (valid.empty()) first_probability = result.top_probabilities[rank];
+        valid.push_back(token);
+      }
     }
     if (valid.empty()) return false;
     const int32_t first = valid.front();
     const auto range = std::minmax_element(valid.begin(), valid.end());
-    const bool abnormal = probabilities[static_cast<size_t>(row)][first] < 0.9f &&
-                          valid.size() > 1 && *range.second - *range.first > 60;
+    const bool abnormal = first_probability < 0.9f && valid.size() > 1 &&
+                          *range.second - *range.first > 60;
     coordinates.push_back(abnormal ? 0 : first);
   }
   *tokens = {kBoxStart, coordinates[0], coordinates[1], coordinates[2],
@@ -539,13 +582,13 @@ bool DecodeBox(const std::vector<std::vector<float>> &probabilities,
  * @param tokens Destination accepted reference tokens.
  * @return True when a valid reference pattern was recognized.
  */
-bool DecodeRef(const std::vector<std::vector<float>> &probabilities,
+bool DecodeRef(const std::array<PbdRowResult, 6> &rows,
                std::vector<int32_t> *tokens) {
-  if (probabilities[0][kRefStart] < 0.6f) return false;
+  if (rows[0].ref_start < 0.6f) return false;
   tokens->clear();
   tokens->push_back(kRefStart);
   for (int32_t row = 1; row < 6; ++row) {
-    const auto top = TopK(probabilities[static_cast<size_t>(row)], 5);
+    const auto &top = rows[static_cast<size_t>(row)].top_tokens;
     auto found = std::find_if(top.begin(), top.end(), [](int32_t token) {
       return token < kCoordStart || token > kCoordEnd;
     });
@@ -622,8 +665,8 @@ HybridDecision DecodePbd(const Tensor &logits,
                    row_start, &row_results);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
-  std::vector<std::vector<float>> probabilities;
   std::vector<int32_t> greedy;
+  greedy.reserve(6);
   for (int32_t row = 0; row < 6; ++row) {
     PbdRowResult &result = row_results[static_cast<size_t>(row)];
     if (diagnostics != nullptr) {
@@ -632,26 +675,26 @@ HybridDecision DecodePbd(const Tensor &logits,
           result.retained_tokens;
     }
     greedy.push_back(result.greedy_token);
-    probabilities.push_back(std::move(result.probabilities));
   }
   if (diagnostics != nullptr) {
     diagnostics->valid = true;
     diagnostics->legacy_box_start = legacy_probabilities[0][kBoxStart];
-    diagnostics->official_box_start = probabilities[0][kBoxStart];
+    diagnostics->official_box_start = row_results[0].box_start;
     diagnostics->legacy_ref_start = legacy_probabilities[0][kRefStart];
-    diagnostics->official_ref_start = probabilities[0][kRefStart];
+    diagnostics->official_ref_start = row_results[0].ref_start;
     diagnostics->legacy_end_score = EndScore(legacy_probabilities);
-    diagnostics->official_end_score = EndScore(probabilities);
+    diagnostics->official_end_score = row_results[5].box_end +
+                                      row_results[5].null_token +
+                                      row_results[5].image_end;
     for (int32_t row = 1; row <= 4; ++row) {
       diagnostics->legacy_coord_top[static_cast<size_t>(row - 1)] =
           TopCoordinateProbability(legacy_probabilities[static_cast<size_t>(row)]);
       diagnostics->official_coord_top[static_cast<size_t>(row - 1)] =
-          TopCoordinateProbability(probabilities[static_cast<size_t>(row)]);
+          row_results[static_cast<size_t>(row)].top_coordinate;
     }
   }
   std::vector<int32_t> decoded;
-  if (!DecodeBox(probabilities, &decoded) &&
-      !DecodeRef(probabilities, &decoded)) {
+  if (!DecodeBox(row_results, &decoded) && !DecodeRef(row_results, &decoded)) {
     decoded = std::move(greedy);
   }
   return HandlePattern(std::move(decoded));
@@ -763,7 +806,9 @@ int32_t DecodeArGreedy(const Tensor &logits,
     return kImEnd;
   }
   const std::vector<int32_t> &history_tokens = BuildHistoryTokens(generated);
-  return Argmax(Row(logits, 0, history_tokens, 1.1f));
+  static thread_local std::vector<float> values(kVocab);
+  FillRow(logits, 0, history_tokens, 1.1f, &values);
+  return Argmax(values);
 }
 
 std::string RenderLocateAnythingTokens(const std::vector<int32_t> &tokens) {

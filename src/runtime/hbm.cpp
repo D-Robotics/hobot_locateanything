@@ -279,6 +279,20 @@ Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
   return Result::Ok();
 }
 
+/** Zero and cache-clean a complete reusable device buffer. */
+Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer) {
+  if (buffer == nullptr || buffer->impl_ == nullptr || buffer->size() == 0) {
+    return Result::Err(-1, "ZeroDeviceBuffer: invalid buffer");
+  }
+  std::memset(buffer->impl_->memory.virAddr, 0, buffer->size());
+  const int32_t err = hbUCPMemFlush(
+      &buffer->impl_->memory, HB_SYS_MEM_CACHE_CLEAN);
+  if (err != 0) {
+    return Result::Err(err, "hbUCPMemFlush CLEAN device buffer failed");
+  }
+  return Result::Ok();
+}
+
 /** Copy and cache-clean one changed range in a device-backed tensor. */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes) {
@@ -321,11 +335,6 @@ Graph::Graph() = default;
 /** Release graph-owned persistent IO buffers. */
 Graph::~Graph() = default;
 
-/** Drop reusable graph IO allocations while retaining metadata and handle. */
-void Graph::ReleasePersistentBuffers() {
-  buffers_.reset();
-}
-
 /** Expose the vendor-independent element width to the Language runtime. */
 int32_t DtypeElementBytes(int32_t dtype) {
   return ElementBytesForType(dtype);
@@ -342,7 +351,6 @@ const char *DtypeName(int32_t dtype) {
 
 /** Release all graph wrappers before releasing the packed HBM handle. */
 HbmSession::~HbmSession() {
-  active_graph_ = nullptr;
   graphs_.clear();
   if (packed_handle_ != nullptr) {
     hbDNNRelease(packed_handle_);
@@ -423,10 +431,6 @@ Result HbmSession::ExecuteGraphByName(const std::string &graph_name,
   if (g == nullptr) {
     return Result::Err(-1, "graph not found: " + graph_name);
   }
-  if (active_graph_ != nullptr && active_graph_ != g) {
-    active_graph_->ReleasePersistentBuffers();
-  }
-  active_graph_ = g;
   return g->Execute(inputs, outputs, metrics, output_slices);
 }
 
@@ -441,10 +445,6 @@ Result HbmSession::ExecuteGraphByName(
   if (g == nullptr) {
     return Result::Err(-1, "graph not found: " + graph_name);
   }
-  if (active_graph_ != nullptr && active_graph_ != g) {
-    active_graph_->ReleasePersistentBuffers();
-  }
-  active_graph_ = g;
   return g->Execute(inputs, outputs, metrics, output_slices);
 }
 
@@ -584,11 +584,9 @@ Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
       return Result::Err(-1, "input stride layout exceeds allocation idx=" +
                                  std::to_string(index));
     }
-    err = hbUCPMallocCached(&tensor.sysMem, allocation_bytes, 0);
-    if (err != 0) {
-      return Result::Err(err, "hbUCPMallocCached input idx=" +
-                                 std::to_string(index));
-    }
+    // Input storage is allocated lazily in Execute. Device-resident KV inputs
+    // replace this view directly and must not reserve another private copy for
+    // every Language graph.
   }
 
   for (size_t index = 0; index < buffers->outputs.size(); ++index) {
@@ -696,6 +694,15 @@ Result Graph::Execute(hbDNNHandle_t handle,
       }
       continue;
     }
+    if (in_tensors[i].sysMem.virAddr == nullptr) {
+      const int32_t alloc_err = hbUCPMallocCached(
+          &in_tensors[i].sysMem, aligned_bytes, 0);
+      if (alloc_err != 0) {
+        return Result::Err(alloc_err, "hbUCPMallocCached input idx=" +
+                                         std::to_string(i));
+      }
+    }
+    bound_inputs[i].sysMem = in_tensors[i].sysMem;
     if (inputs[i]->byte_offset > inputs[i]->data.size() ||
         static_cast<int64_t>(inputs[i]->data.size() - inputs[i]->byte_offset) <
             want_bytes) {
@@ -845,8 +852,7 @@ Result Graph::Execute(hbDNNHandle_t handle,
     }
   }
 
-  // The synchronous task is per-inference. HbmSession releases these graph IO
-  // buffers when execution switches to another static graph.
+  // The task is per-inference; graph IO allocations stay cached for reuse.
   hbUCPReleaseTask(task);
 
   if (metrics != nullptr) {
