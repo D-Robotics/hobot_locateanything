@@ -138,9 +138,15 @@ struct InferenceSession::Impl {
    * @param value Explicit shared-core runtime options.
    */
   explicit Impl(InferenceOptions value)
-      : options(std::move(value)), postprocessor(options.nms_iou) {}
+      : options(std::move(value)),
+        vision_profile(options.image_width, options.image_height,
+                       options.resize_mode, options.letterbox_fill),
+        image_preprocessor(vision_profile),
+        prompt_builder(vision_profile),
+        postprocessor(options.nms_iou) {}
 
   InferenceOptions options;
+  VisionProfile vision_profile;
   ImagePreprocessor image_preprocessor;
   PromptBuilder prompt_builder;
   Tokenizer tokenizer;
@@ -181,7 +187,8 @@ void InferenceSession::Initialize(
 
   impl_->tokenizer.Load(options.tokenizer_directory);
   if (progress_callback) progress_callback("Vision HBM");
-  impl_->vision.Initialize(options.vision_model, options.vision_backend_mask);
+  impl_->vision.Initialize(options.vision_model, options.vision_backend_mask,
+                           impl_->vision_profile);
   if (progress_callback) progress_callback("Language HBM");
   impl_->language.Initialize(options.language_model, options.embeddings,
                              options.language_backend_mask);
@@ -217,9 +224,13 @@ InferenceOutput InferenceSession::InferQueries(
       throw std::invalid_argument("inference queries must use the same task");
     }
     prompt_tokens.push_back(impl_->tokenizer.Encode(prompts.back().model_input));
+    const int expected_visual_tokens = impl_->vision_profile.visual_token_count();
     if (std::count(prompt_tokens.back().begin(), prompt_tokens.back().end(),
-                   impl_->tokenizer.TokenId("<IMG_CONTEXT>")) != 576) {
-      throw std::runtime_error("prompt does not contain 576 visual tokens");
+                   impl_->tokenizer.TokenId("<IMG_CONTEXT>")) !=
+        expected_visual_tokens) {
+      throw std::runtime_error(
+          "prompt does not contain " + std::to_string(expected_visual_tokens) +
+          " visual tokens");
     }
   }
   const PreparedImage image = impl_->image_preprocessor.Prepare(bgr);

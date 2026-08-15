@@ -21,8 +21,6 @@ namespace {
 namespace rt = locateanything_runtime;
 
 constexpr int32_t kFp16 = 4;
-const std::vector<int32_t> kInputShape{1, 2304, 588};
-const std::vector<int32_t> kOutputShape{1, 576, 2048};
 
 /** Return the number of scalar elements represented by a tensor shape. */
 int64_t ElementCount(const std::vector<int32_t>& shape) {
@@ -34,6 +32,8 @@ int64_t ElementCount(const std::vector<int32_t>& shape) {
 
 struct VisionEngine::Impl {
   locateanything_runtime::HbmSession session;
+  std::vector<int32_t> input_shape;
+  std::vector<int32_t> output_shape;
   std::mutex mutex;
   bool initialized = false;
 };
@@ -44,13 +44,18 @@ VisionEngine::VisionEngine(VisionEngine&&) noexcept = default;
 VisionEngine& VisionEngine::operator=(VisionEngine&&) noexcept = default;
 
 void VisionEngine::Initialize(const std::string& model_path,
-                              uint32_t backend_mask) {
+                              uint32_t backend_mask,
+                              const VisionProfile& profile) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (impl_->initialized) return;
   if (model_path.empty()) {
     throw std::invalid_argument("Vision HBM path is empty");
   }
 
+  const std::vector<int32_t> expected_input_shape{
+      1, profile.patch_count(), profile.patch_flat_dim()};
+  const std::vector<int32_t> expected_output_shape{
+      1, profile.visual_token_count(), VisionProfile::kHiddenSize};
   impl_->session.SetBackendMask(backend_mask);
   const rt::Result loaded = impl_->session.Load(model_path);
   if (!loaded.ok()) {
@@ -61,12 +66,14 @@ void VisionEngine::Initialize(const std::string& model_path,
       graph->GetInputDtypes().size() != 1 ||
       graph->GetOutputShapes().size() != 1 ||
       graph->GetOutputDtypes().size() != 1 ||
-      graph->GetInputShapes()[0] != kInputShape ||
+      graph->GetInputShapes()[0] != expected_input_shape ||
       graph->GetInputDtypes()[0] != kFp16 ||
-      graph->GetOutputShapes()[0] != kOutputShape ||
+      graph->GetOutputShapes()[0] != expected_output_shape ||
       graph->GetOutputDtypes()[0] != kFp16) {
     throw std::runtime_error("unexpected Vision HBM graph contract");
   }
+  impl_->input_shape = expected_input_shape;
+  impl_->output_shape = expected_output_shape;
   impl_->initialized = true;
 }
 
@@ -76,7 +83,7 @@ VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
     throw std::logic_error("Vision engine is not initialized");
   }
   const size_t expected_elements =
-      static_cast<size_t>(ElementCount(kInputShape));
+      static_cast<size_t>(ElementCount(impl_->input_shape));
   if (patches.size() != expected_elements) {
     throw std::invalid_argument(
         "Vision input must contain exactly " +
@@ -84,7 +91,7 @@ VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
   }
 
   rt::Tensor input;
-  input.shape = kInputShape;
+  input.shape = impl_->input_shape;
   input.dtype = kFp16;
   input.data.resize(patches.size() * sizeof(uint16_t));
   std::memcpy(input.data.data(), patches.data(), input.data.size());
@@ -100,10 +107,11 @@ VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
     throw std::runtime_error("Vision HBM inference failed: " +
                              executed.message);
   }
-  if (outputs.size() != 1 || outputs[0].shape != kOutputShape ||
+  if (outputs.size() != 1 || outputs[0].shape != impl_->output_shape ||
       outputs[0].dtype != kFp16 ||
       outputs[0].data.size() !=
-          static_cast<size_t>(ElementCount(kOutputShape)) * sizeof(uint16_t)) {
+          static_cast<size_t>(ElementCount(impl_->output_shape)) *
+              sizeof(uint16_t)) {
     throw std::runtime_error("unexpected Vision HBM output contract");
   }
 

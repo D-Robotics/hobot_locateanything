@@ -14,8 +14,6 @@
 namespace locateanything {
 namespace {
 
-constexpr float kCanvasSize = 672.0f;
-
 const std::array<cv::Scalar, 8> kAnnotationColors = {
     cv::Scalar(255, 184, 45), cv::Scalar(66, 214, 164),
     cv::Scalar(80, 126, 255), cv::Scalar(72, 202, 255),
@@ -92,9 +90,14 @@ float RestoreCoordinate(int32_t value, bool vertical,
                         const ImageTransform& transform) {
   const float padding = vertical ? transform.pad_top : transform.pad_left;
   const float scale = vertical ? transform.scale_y : transform.scale_x;
+  const float canvas = static_cast<float>(
+      vertical ? transform.canvas_height : transform.canvas_width);
   const float limit = static_cast<float>(vertical ? transform.source_height
                                                    : transform.source_width);
-  const float pixel = (static_cast<float>(value) / 1000.0f * kCanvasSize - padding) /
+  if (canvas <= 0.0f || scale <= 0.0f) {
+    throw std::invalid_argument("invalid image transform");
+  }
+  const float pixel = (static_cast<float>(value) / 1000.0f * canvas - padding) /
                       scale;
   return std::clamp(pixel, 0.0f, limit);
 }

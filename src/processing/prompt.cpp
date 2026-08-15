@@ -8,8 +8,6 @@
 namespace locateanything {
 namespace {
 
-constexpr int kVisualTokens = 576;
-
 /**
  * @brief Remove leading and trailing whitespace from a task command.
  * @param value Raw command text.
@@ -73,6 +71,9 @@ bool IsCommand(const std::string& value, const std::string& command) {
 
 }  // namespace
 
+PromptBuilder::PromptBuilder(const VisionProfile& profile)
+    : visual_tokens_(profile.visual_token_count()) {}
+
 Prompt PromptBuilder::Build(const std::string& command) const {
   const std::string raw = Trim(command);
   if (raw.empty()) throw std::invalid_argument("prompt must not be empty");
@@ -118,7 +119,7 @@ Prompt PromptBuilder::Build(const std::string& command) const {
   }
 
   std::string image = "<image 1><img>";
-  for (int index = 0; index < kVisualTokens; ++index) image += "<IMG_CONTEXT>";
+  for (int index = 0; index < visual_tokens_; ++index) image += "<IMG_CONTEXT>";
   image += "</img>";
   output.model_input =
       "<|im_start|>system\nYou are a helpful assistant.\n<|im_end|>\n"

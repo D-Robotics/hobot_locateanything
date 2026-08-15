@@ -24,6 +24,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "inference.hpp"
+#include "model_profile.hpp"
 #include "package_paths.hpp"
 
 namespace fs = std::filesystem;
@@ -168,6 +169,10 @@ struct ConsoleOptions {
   std::string vision_model = "LocateAnything-3B_vision.hbm";
   std::string language_model = "LocateAnything-3B_language.hbm";
   std::string embeddings = "LocateAnything-3B_embed_tokens.bin";
+  int image_width = 672;
+  int image_height = 672;
+  std::string resize_mode = "letterbox";
+  int letterbox_fill = 128;
   std::string generation_mode = "hybrid";
   std::string l2m_sizes = "6:6:6:6";
   int max_new_tokens = 4096;
@@ -214,9 +219,19 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
   read_string("language_model", &options->language_model);
   read_string("embeddings", &options->embeddings);
   read_string("generation_mode", &options->generation_mode);
+  read_string("resize_mode", &options->resize_mode);
   read_string("l2m_sizes", &options->l2m_sizes);
   if (parameters["max_new_tokens"]) {
     options->max_new_tokens = parameters["max_new_tokens"].as<int>();
+  }
+  if (parameters["image_width"]) {
+    options->image_width = parameters["image_width"].as<int>();
+  }
+  if (parameters["image_height"]) {
+    options->image_height = parameters["image_height"].as<int>();
+  }
+  if (parameters["letterbox_fill"]) {
+    options->letterbox_fill = parameters["letterbox_fill"].as<int>();
   }
   if (parameters["vision_backend_mask"]) {
     options->vision_backend_mask =
@@ -273,6 +288,9 @@ ConsoleOptions ParseArguments(int argc, char** argv) {
   if (options.max_new_tokens <= 0) {
     throw std::invalid_argument("max_new_tokens in config must be positive");
   }
+  locateanything::VisionProfile(
+      options.image_width, options.image_height, options.resize_mode,
+      options.letterbox_fill);
   if (options.generation_mode != "hybrid" && options.generation_mode != "slow") {
     throw std::invalid_argument(
         "generation_mode in config must be hybrid or slow");
@@ -537,6 +555,10 @@ class Console {
     inference.embeddings =
         (options_.model_directory / options_.embeddings).string();
     inference.tokenizer_directory = options_.tokenizer_directory.string();
+    inference.image_width = options_.image_width;
+    inference.image_height = options_.image_height;
+    inference.resize_mode = options_.resize_mode;
+    inference.letterbox_fill = options_.letterbox_fill;
     inference.generation_mode = options_.generation_mode;
     inference.max_new_tokens = options_.max_new_tokens;
     inference.vision_backend_mask = options_.vision_backend_mask;

@@ -1408,6 +1408,18 @@ LanguageResult LanguageEngine::Generate(
     throw std::invalid_argument(
         "Language visual features do not match image tokens");
   }
+  rt::Graph* prefill = impl_->engine.session.GetGraph("prefill");
+  if (prefill == nullptr || prefill->GetInputShapes().empty() ||
+      prefill->GetInputShapes()[0].size() != 3) {
+    throw std::runtime_error("Language HBM has no valid Prefill graph");
+  }
+  const int32_t prefill_capacity = prefill->GetInputShapes()[0][1];
+  if (input.prompt_ids.size() > static_cast<size_t>(prefill_capacity)) {
+    throw std::invalid_argument(
+        "Language prompt has " + std::to_string(input.prompt_ids.size()) +
+        " tokens; HBM Prefill capacity is " +
+        std::to_string(prefill_capacity));
+  }
 
   const int32_t prompt_tokens =
       static_cast<int32_t>(input.prompt_ids.size());

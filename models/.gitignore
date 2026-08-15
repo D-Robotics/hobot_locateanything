@@ -5,3 +5,6 @@ tokenizer/*
 !tokenizer/vocab.json
 !tokenizer/merges.txt
 !tokenizer/added_tokens.json
+!fast_336/
+fast_336/*
+!fast_336/.gitkeep

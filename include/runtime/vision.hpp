@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "model_profile.hpp"
+
 namespace locateanything {
 
 /** Visual embedding tensor and measured Vision execution time. */
@@ -31,10 +33,11 @@ class VisionEngine {
    * @param model_path Explicit Vision HBM file path.
    * @param backend_mask S600 BPU backend bit mask.
    */
-  void Initialize(const std::string& model_path, uint32_t backend_mask);
+  void Initialize(const std::string& model_path, uint32_t backend_mask,
+                  const VisionProfile& profile);
   /**
    * @brief Execute Vision for one prepared FP16 patch tensor.
-   * @param patches FP16 bits in the fixed [1, 2304, 588] input layout.
+   * @param patches FP16 bits in the configured static Vision input layout.
    * @return FP16 visual features and measured execution time.
    */
   VisionResult Infer(const std::vector<uint16_t>& patches);

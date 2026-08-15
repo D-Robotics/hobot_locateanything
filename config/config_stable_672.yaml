@@ -1,6 +1,5 @@
 hobot_locateanything:
   ros__parameters:
-    # Runtime resources are relative to lib/hobot_locateanything.
     model_directory: models
     tokenizer_directory: models/tokenizer
     vision_model: LocateAnything-3B_vision.hbm
@@ -20,8 +19,7 @@ hobot_locateanything:
     language_backend_mask: 15
     l2m_sizes: "6:6:6:6"
 
-    # Console output remains writable and is relative to its working directory.
-    output_directory: outputs
+    output_directory: outputs/stable_672
 
     input_topic: /hbmem_img
     is_shared_mem_sub: true

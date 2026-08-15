@@ -6,6 +6,8 @@
 
 #include <opencv2/core/mat.hpp>
 
+#include "model_profile.hpp"
+
 namespace locateanything {
 
 /**
@@ -46,6 +48,8 @@ cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
 struct ImageTransform {
   int source_width = 0;
   int source_height = 0;
+  int canvas_width = 0;
+  int canvas_height = 0;
   int resized_width = 0;
   int resized_height = 0;
   int pad_left = 0;
@@ -54,7 +58,7 @@ struct ImageTransform {
   float scale_y = 1.0f;
 };
 
-/** Prepared 672x672 Vision input and its source-to-model transform. */
+/** Prepared Vision input and its source-to-model transform. */
 struct PreparedImage {
   std::vector<uint16_t> patches;
   ImageTransform transform;
@@ -62,12 +66,16 @@ struct PreparedImage {
 
 class ImagePreprocessor {
  public:
+  explicit ImagePreprocessor(VisionProfile profile = {});
   /**
    * @brief Resize, pad, normalize, and tile a BGR image for Vision.
    * @param bgr Non-empty three-channel source image.
    * @return FP16 Vision patches and source-coordinate transform.
    */
   PreparedImage Prepare(const cv::Mat& bgr) const;
+
+ private:
+  VisionProfile profile_;
 };
 
 }  // namespace locateanything

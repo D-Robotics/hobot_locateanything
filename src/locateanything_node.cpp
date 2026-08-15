@@ -212,6 +212,11 @@ class LocateAnythingNode : public rclcpp::Node {
          declare_parameter<std::string>("embeddings", "LocateAnything-3B_embed_tokens.bin"))
             .string();
     options.tokenizer_directory = tokenizer_directory.string();
+    options.image_width = declare_parameter<int>("image_width", 672);
+    options.image_height = declare_parameter<int>("image_height", 672);
+    options.resize_mode =
+        declare_parameter<std::string>("resize_mode", "letterbox");
+    options.letterbox_fill = declare_parameter<int>("letterbox_fill", 128);
     options.generation_mode =
         declare_parameter<std::string>("generation_mode", "hybrid");
     options.max_new_tokens = declare_parameter<int>("max_new_tokens", 4096);

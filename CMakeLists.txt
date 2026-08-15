@@ -148,6 +148,10 @@ install(FILES
   models/tokenizer/added_tokens.json
   DESTINATION lib/${PROJECT_NAME}/models/tokenizer)
 
+install(DIRECTORY models/fast_336/
+  DESTINATION lib/${PROJECT_NAME}/models/fast_336
+  PATTERN ".gitkeep" EXCLUDE)
+
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch)
 

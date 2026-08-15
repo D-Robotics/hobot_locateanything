@@ -35,8 +35,12 @@ def generate_launch_description():
         get_package_prefix(package_name), "lib", package_name
     )
     config_path = os.path.join(package_runtime, "config", "config.yaml")
-    model_directory = os.path.join(package_runtime, "models")
-    tokenizer_directory = os.path.join(model_directory, "tokenizer")
+
+    config_file_arg = DeclareLaunchArgument(
+        "config_file",
+        default_value=config_path,
+        description="LocateAnything ROS parameter file",
+    )
 
     image_width_arg = DeclareLaunchArgument(
         "locateanything_image_width", default_value=TextSubstitution(text="1920")
@@ -172,10 +176,8 @@ def generate_launch_description():
         executable=package_name,
         output="screen",
         parameters=[
-            config_path,
+            LaunchConfiguration("config_file"),
             {
-                "model_directory": model_directory,
-                "tokenizer_directory": tokenizer_directory,
                 "input_topic": "/hbmem_img",
                 "is_shared_mem_sub": True,
             },
@@ -195,6 +197,7 @@ def generate_launch_description():
         return LaunchDescription(
             [
                 camera_device_arg,
+                config_file_arg,
                 image_width_arg,
                 image_height_arg,
                 shared_memory_node,
@@ -207,6 +210,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             camera_device_arg,
+            config_file_arg,
             image_width_arg,
             image_height_arg,
             shared_memory_node,
