@@ -49,6 +49,17 @@ def generate_launch_description():
         "locateanything_image_height", default_value=TextSubstitution(text="1080")
     )
 
+    publish_image_format_arg = DeclareLaunchArgument(
+        "publish_image_format",
+        default_value=TextSubstitution(text="jpg"),
+        description="Local feedback media format, for example jpg or mp4",
+    )
+    publish_fps_arg = DeclareLaunchArgument(
+        "publish_fps",
+        default_value=TextSubstitution(text="2"),
+        description="Local feedback publishing frame rate",
+    )
+
     camera_type = os.getenv("CAM_TYPE")
     print("camera_type is ", camera_type)
     camera_node = None
@@ -92,9 +103,9 @@ def generate_launch_description():
             ),
             launch_arguments={
                 "publish_image_source": LaunchConfiguration("publish_image_source"),
-                "publish_image_format": "jpg",
+                "publish_image_format": LaunchConfiguration("publish_image_format"),
                 "publish_message_topic_name": "/hbmem_img",
-                "publish_fps": "2",
+                "publish_fps": LaunchConfiguration("publish_fps"),
                 "publish_is_loop": "True",
                 "publish_is_shared_mem": "True",
                 "publish_output_image_w": LaunchConfiguration(
@@ -200,6 +211,8 @@ def generate_launch_description():
                 config_file_arg,
                 image_width_arg,
                 image_height_arg,
+                publish_image_format_arg,
+                publish_fps_arg,
                 shared_memory_node,
                 camera_node,
                 jpeg_codec_node,
@@ -213,6 +226,8 @@ def generate_launch_description():
             config_file_arg,
             image_width_arg,
             image_height_arg,
+            publish_image_format_arg,
+            publish_fps_arg,
             shared_memory_node,
             camera_node,
             nv12_codec_node,
