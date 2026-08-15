@@ -61,6 +61,24 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 | RDK S600 | 版面定位 | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
 | RDK S600 | 点定位 | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
 
+### 检测 Profile 对比
+
+`fast_336` 分支保留 stable_672，并增加独立配置的 336 检测 Profile。快速版仅对目标检测进行对比验收。两者均使用 Hybrid、NMS IoU 0.9 和 4 个 BPU 核。以下结果在同一台 RDK S600 上使用相同的 350 帧 `person_video.avi` 和 `/detect person` 指令。
+
+| Profile | 帧数 | 检测框 | FPS | Vision 均值 (ms) | Prefill 均值 (ms) | Decode 均值 (ms) | 总耗时均值 (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fast_336 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
+| stable_672 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
+
+| 资源均值 | fast_336 | stable_672 |
+| --- | ---: | ---: |
+| Console CPU，单核百分比 | 56.0% | 46.4% |
+| Console RSS | 184.8 MiB | 204.5 MiB |
+| 四核 BPU 利用率 | 64.1% | 67.2% |
+| DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
+
+fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整逐帧 IoU 与资源统计见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/develop/docs/fast_336/06_s600_comparison.md)。
+
 ## 模型与量化
 
 <p align="center">
@@ -71,12 +89,12 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 | 项目 | 配置 |
 | --- | --- |
-| Vision | MoonViT，27 个 Block，`672 x 672`，有符号 W8 权重 |
+| Vision | MoonViT，27 个 Block，有符号 W8 权重；由配置选择 `672 x 672` 或 `336 x 336` |
 | Language | Qwen2.5 Decoder，36 层，Hidden Size 2048，有符号 W8 权重 |
 | 激活 | 动态量化 |
-| Visual Token | 576 |
+| Visual Token | stable_672：576；fast_336：144 |
 | LM Head | W8，词表大小 152681 |
-| Prefill / KV Cache | 1024 / 4096 Token |
+| Prefill / KV Cache | stable_672：1024 / 4096；fast_336：256 / 1024 Token |
 | 解码 | PBD q=6、AR q=1、Host 采样 |
 | 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
@@ -129,6 +147,30 @@ install/lib/hobot_locateanything/models/
     ├── vocab.json
     ├── merges.txt
     └── added_tokens.json
+```
+
+将自行编译的 fast_336 文件放入独立模型目录：
+
+```text
+install/lib/hobot_locateanything/models/fast_336/
+├── LocateAnything-3B_vision.hbm
+├── LocateAnything-3B_language.hbm
+└── LocateAnything-3B_embed_tokens.bin
+```
+
+通过配置显式选择稳定版或快速版：
+
+```bash
+# stable_672 Console
+ros2 run hobot_locateanything console --config config/config_stable_672.yaml
+
+# fast_336 Console
+ros2 run hobot_locateanything console --config config/config_fast_336.yaml
+
+# fast_336 ROS launch
+export CAM_TYPE=fb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config_fast_336.yaml
 ```
 
 ## 基础功能：目标检测

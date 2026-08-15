@@ -61,6 +61,24 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 | RDK S600 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
 | RDK S600 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
 
+### Detection Profile Comparison
+
+The `fast_336` branch keeps the stable 672 profile and adds an independently configured 336 detection profile. The fast-profile comparison is limited to object detection. Both profiles use Hybrid generation, NMS IoU 0.9, and four BPU cores. The following results use the same 350-frame `person_video.avi` and `/detect person` command on one RDK S600.
+
+| Profile | Frames | Boxes | FPS | Vision mean (ms) | Prefill mean (ms) | Decode mean (ms) | Total mean (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fast_336 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
+| stable_672 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
+
+| Resource mean | fast_336 | stable_672 |
+| --- | ---: | ---: |
+| Console CPU, one-core percentage | 56.0% | 46.4% |
+| Console RSS | 184.8 MiB | 204.5 MiB |
+| Four-core BPU utilization | 64.1% | 67.2% |
+| DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
+
+fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/develop/docs/fast_336/06_s600_comparison.md).
+
 ## Model and Quantization
 
 <p align="center">
@@ -71,12 +89,12 @@ The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 dec
 
 | Item | Configuration |
 | --- | --- |
-| Vision | MoonViT, 27 blocks, `672 x 672`, signed W8 weights |
+| Vision | MoonViT, 27 blocks, signed W8 weights; `672 x 672` or `336 x 336` selected by config |
 | Language | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
 | Activations | Dynamic quantization |
-| Visual tokens | 576 |
+| Visual tokens | stable_672: 576; fast_336: 144 |
 | LM Head | W8, vocabulary size 152681 |
-| Prefill / KV Cache | 1024 / 4096 tokens |
+| Prefill / KV Cache | stable_672: 1024 / 4096; fast_336: 256 / 1024 tokens |
 | Decoding | PBD q=6, AR q=1, Host sampling |
 | Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
 
@@ -129,6 +147,30 @@ install/lib/hobot_locateanything/models/
     ├── vocab.json
     ├── merges.txt
     └── added_tokens.json
+```
+
+Place locally compiled fast_336 files in the separate model directory:
+
+```text
+install/lib/hobot_locateanything/models/fast_336/
+├── LocateAnything-3B_vision.hbm
+├── LocateAnything-3B_language.hbm
+└── LocateAnything-3B_embed_tokens.bin
+```
+
+The stable and fast profiles are selected explicitly:
+
+```bash
+# stable_672 Console
+ros2 run hobot_locateanything console --config config/config_stable_672.yaml
+
+# fast_336 Console
+ros2 run hobot_locateanything console --config config/config_fast_336.yaml
+
+# fast_336 ROS launch
+export CAM_TYPE=fb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config_fast_336.yaml
 ```
 
 ## Basic Feature: Object Detection
