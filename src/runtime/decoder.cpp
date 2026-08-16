@@ -463,10 +463,12 @@ class PbdRowExecutor {
   bool stopping_ = false;
 };
 
-/** Return the process-wide row executor used by the shared inference core. */
-PbdRowExecutor &PbdRows() {
-  static PbdRowExecutor executor;
-  return executor;
+/** Return one persistent row executor per active static batch lane. */
+PbdRowExecutor &PbdRows(int32_t executor_lane) {
+  static PbdRowExecutor first;
+  if (executor_lane == 0) return first;
+  static PbdRowExecutor second;
+  return second;
 }
 
 /**
@@ -648,10 +650,12 @@ HybridDecision DecodePbd(const Tensor &logits,
                          const std::vector<int32_t> &generated,
                          const PbdDecodeConfig &config,
                          PbdDiagnostics *diagnostics,
-                         int32_t row_start) {
+                         int32_t row_start,
+                         int32_t executor_lane) {
   if (logits.dtype != 4 || logits.shape.size() != 3 ||
       logits.shape[0] != 1 || logits.shape[2] != kVocab || row_start < 0 ||
-      row_start + 6 > logits.shape[1] ||
+      row_start + 6 > logits.shape[1] || executor_lane < 0 ||
+      executor_lane > 1 ||
       logits.data.size() < static_cast<size_t>(logits.shape[1]) * kVocab * 2) {
     return {"im_end", {kImEnd}, false, true};
   }
@@ -661,8 +665,9 @@ HybridDecision DecodePbd(const Tensor &logits,
   }
   const std::vector<int32_t> &history_tokens = BuildHistoryTokens(generated);
   std::array<PbdRowResult, 6> row_results;
-  PbdRows().Decode(logits, history_tokens, config, diagnostics != nullptr,
-                   row_start, &row_results);
+  PbdRows(executor_lane).Decode(logits, history_tokens, config,
+                               diagnostics != nullptr, row_start,
+                               &row_results);
   std::vector<std::vector<float>> legacy_probabilities;
   if (diagnostics != nullptr) legacy_probabilities.reserve(6);
   std::vector<int32_t> greedy;

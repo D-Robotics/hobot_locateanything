@@ -45,13 +45,15 @@ struct PbdDiagnostics {
  * @param config Temperature, top-p, and repetition penalty.
  * @param diagnostics Optional legacy-versus-current probability diagnostics.
  * @param row_start First of six rows to decode.
+ * @param executor_lane Persistent Host decoder lane, zero for batch-1.
  * @return Accepted tokens and PBD/AR/terminal control decision.
  */
 HybridDecision DecodePbd(const Tensor &logits,
                          const std::vector<int32_t> &generated,
                          const PbdDecodeConfig &config = {},
                          PbdDiagnostics *diagnostics = nullptr,
-                         int32_t row_start = 0);
+                         int32_t row_start = 0,
+                         int32_t executor_lane = 0);
 /**
  * @brief Greedily decode one PBD output without sampling.
  * @param logits FP16 logits shaped [1, rows, vocab].

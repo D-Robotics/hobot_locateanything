@@ -2515,7 +2515,8 @@ bool RunBatchPayloads(
       const auto started = std::chrono::steady_clock::now();
       decisions[lane] = rt::DecodePbd(
           bootstrap_logits[lane], (*lanes)[lane].generated,
-          rt::PbdDecodeConfig{}, nullptr, 1);
+          rt::PbdDecodeConfig{}, nullptr, 1,
+          static_cast<int32_t>(lane));
       host_ms[lane] = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - started).count();
     };
@@ -2724,7 +2725,8 @@ bool RunBatchPayloads(
             ? rt::DecodePbdCompact(decision_outputs[lane])
             : rt::DecodePbd(decision_outputs[lane][0], state.generated,
                             rt::PbdDecodeConfig{}, nullptr,
-                            PbdLogitStart(decision_outputs[lane][0], prefix));
+                            PbdLogitStart(decision_outputs[lane][0], prefix),
+                            static_cast<int32_t>(lane));
         host_ms[lane] = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - started).count();
       };
