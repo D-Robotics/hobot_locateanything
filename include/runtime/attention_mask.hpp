@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -56,6 +57,27 @@ bool BuildAttentionMask(int32_t q_len,
                         uint16_t mask_value_fp16,
                         bool causal_attn,
                         AttentionMask *out);
+
+/**
+ * @brief Build a mask directly into caller-owned reusable fp16 storage.
+ * @param q_len Number of query positions in this step.
+ * @param cache_len Total fixed KV-cache length.
+ * @param past_len Number of cache rows committed before this step.
+ * @param block_size PBD block width, or zero for plain causal behavior.
+ * @param mask_value_fp16 Raw fp16 value used for masked positions.
+ * @param causal_attn Keep strict causal attention when true.
+ * @param data Destination containing at least q_len times cache_len values.
+ * @param element_count Number of fp16 values available at data.
+ * @return True when dimensions and destination storage are valid.
+ */
+bool BuildAttentionMaskData(int32_t q_len,
+                            int32_t cache_len,
+                            int32_t past_len,
+                            int32_t block_size,
+                            uint16_t mask_value_fp16,
+                            bool causal_attn,
+                            uint16_t *data,
+                            size_t element_count);
 
 /**
  * @brief Encode a host float as an IEEE-754 binary16 bit pattern.

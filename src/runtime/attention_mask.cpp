@@ -2,6 +2,7 @@
 
 #include "runtime/attention_mask.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -60,19 +61,21 @@ uint16_t FloatToFp16Bits(float f) {
   return static_cast<uint16_t>(sign);
 }
 
-/** Build the fixed-width causal/PBD attention mask consumed by Language HBM. */
-bool BuildAttentionMask(int32_t q_len,
-                        int32_t cache_len,
-                        int32_t past_len,
-                        int32_t block_size,
-                        uint16_t mask_value_fp16,
-                        bool causal_attn,
-                        AttentionMask *out) {
-  if (q_len <= 0 || cache_len <= 0 || past_len < 0 || past_len + q_len > cache_len) {
+/** Fill the fixed-width causal/PBD mask into caller-owned storage. */
+bool BuildAttentionMaskData(int32_t q_len,
+                            int32_t cache_len,
+                            int32_t past_len,
+                            int32_t block_size,
+                            uint16_t mask_value_fp16,
+                            bool causal_attn,
+                            uint16_t *data,
+                            size_t element_count) {
+  if (q_len <= 0 || cache_len <= 0 || past_len < 0 ||
+      past_len + q_len > cache_len || data == nullptr ||
+      element_count < static_cast<size_t>(q_len) * cache_len) {
     return false;
   }
-  out->shape = {1, q_len, cache_len};
-  out->data.assign(static_cast<size_t>(q_len) * cache_len, mask_value_fp16);
+  std::fill_n(data, static_cast<size_t>(q_len) * cache_len, mask_value_fp16);
 
   const uint16_t kAllow = FloatToFp16Bits(0.0f);  // 0x0000
   const int32_t current_start = cache_len - q_len;
@@ -82,7 +85,7 @@ bool BuildAttentionMask(int32_t q_len,
   // current K/V update. Keep history directly before the right-aligned query
   // window so the graph's internal slice preserves the active sequence.
   for (int32_t i = 0; i < q_len; ++i) {
-    uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+    uint16_t *row = data + static_cast<size_t>(i) * cache_len;
     for (int32_t j = history_start; j < current_start; ++j) {
       row[j] = kAllow;
     }
@@ -92,7 +95,7 @@ bool BuildAttentionMask(int32_t q_len,
   //   standard causal — query at window-index i can see window-indices 0..i.
   for (int32_t wi = 0; wi < q_len; ++wi) {
     int32_t row_idx = wi;  // absolute row = wi (rows are q_len positions)
-    uint16_t *row = out->data.data() + static_cast<size_t>(row_idx) * cache_len;
+    uint16_t *row = data + static_cast<size_t>(row_idx) * cache_len;
     for (int32_t wj = 0; wj <= wi; ++wj) {
       int32_t col_idx = current_start + wj;
       if (col_idx < cache_len) {
@@ -114,7 +117,7 @@ bool BuildAttentionMask(int32_t q_len,
     int32_t blk_col_start = cache_len - block_size;
     // (1) bidirectional block
     for (int32_t i = blk_row_start; i < q_len; ++i) {
-      uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+      uint16_t *row = data + static_cast<size_t>(i) * cache_len;
       for (int32_t j = blk_col_start; j < cache_len; ++j) {
         row[j] = kAllow;
       }
@@ -126,13 +129,29 @@ bool BuildAttentionMask(int32_t q_len,
     int32_t prev_trail_col = cache_len - block_size - 1;
     if (prev_trail_col >= 0) {
       for (int32_t i = blk_row_start; i < q_len; ++i) {
-        uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+        uint16_t *row = data + static_cast<size_t>(i) * cache_len;
         row[prev_trail_col] = mask_value_fp16;
       }
     }
   }
 
   return true;
+}
+
+/** Build the mask object used by standalone callers and tests. */
+bool BuildAttentionMask(int32_t q_len,
+                        int32_t cache_len,
+                        int32_t past_len,
+                        int32_t block_size,
+                        uint16_t mask_value_fp16,
+                        bool causal_attn,
+                        AttentionMask *out) {
+  if (out == nullptr || q_len <= 0 || cache_len <= 0) return false;
+  out->shape = {1, q_len, cache_len};
+  out->data.resize(static_cast<size_t>(q_len) * cache_len);
+  return BuildAttentionMaskData(q_len, cache_len, past_len, block_size,
+                                mask_value_fp16, causal_attn,
+                                out->data.data(), out->data.size());
 }
 
 }  // namespace locateanything_runtime

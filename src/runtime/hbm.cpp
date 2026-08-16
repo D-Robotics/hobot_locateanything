@@ -303,6 +303,7 @@ Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
 
 struct Graph::PersistentBuffers {
   std::vector<hbDNNTensor> inputs;
+  std::vector<hbDNNTensor> bound_inputs;
   std::vector<hbDNNTensor> outputs;
 
   /** Release every graph-private input and output UCP allocation. */
@@ -574,6 +575,7 @@ Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
     // replace this view directly and must not reserve another private copy for
     // every Language graph.
   }
+  buffers->bound_inputs = buffers->inputs;
 
   for (size_t index = 0; index < buffers->outputs.size(); ++index) {
     hbDNNTensor &tensor = buffers->outputs[index];
@@ -640,11 +642,12 @@ Result Graph::Execute(hbDNNHandle_t handle,
   if (!ready.ok()) return ready;
 
   auto &in_tensors = buffers_->inputs;
+  auto &bound_inputs = buffers_->bound_inputs;
   auto &out_tensors = buffers_->outputs;
   // Keep Graph-owned input allocations intact. Device-resident inputs replace
   // only the per-submission hbUCPSysMem view and may be shared across graphs.
-  std::vector<hbDNNTensor> bound_inputs = in_tensors;
   for (size_t i = 0; i < inputs.size(); ++i) {
+    bound_inputs[i] = in_tensors[i];
     if (inputs[i] == nullptr || inputs[i]->shape != input_shapes_[i] ||
         inputs[i]->dtype != input_dtypes_[i]) {
       return Result::Err(-1, "input shape or dtype mismatch idx=" +
