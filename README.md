@@ -79,6 +79,17 @@ The `fast_336` branch keeps the stable 672 profile and adds an independently con
 
 fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md).
 
+### 30 FPS ROS Local Replay
+
+The current fused fast_336 runtime uses a depth-one pipeline: the next frame's preprocessing and Vision stage overlap the current frame's serialized Language stage. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared; only one prepared frame is buffered. The same-frame Prefill, PBD/AR transitions, and KV commits remain ordered.
+
+| Prompt | Samples | Result | Output FPS | Preprocess mean (ms) | Vision mean (ms) | Language mean (ms) | Pipeline latency mean (ms) |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `/detect bus` | 40 | 1 box, 40/40 `im_end` | 8.084 | 8.756 | 55.780 | 123.524 | 247.210 |
+| `/detect person,bus,bicycle` | 40 | 5 boxes, 40/40 `im_end` | 2.200 | 8.791 | 55.781 | 454.417 | 909.094 |
+
+The single-target resource window covered 100 steady-state results after model loading: process CPU 57.0%, RSS 174.1 MiB, four-core BPU utilization 79.4%, DDR Read 78.8 GiB/s, DDR Write 0.86 GiB/s, and Read+Write 79.6 GiB/s. DDR values use the same-table `Bandwidth` columns from `hrut_ddr` and convert MiB/s to GiB/s by dividing by 1024.
+
 ## Model and Quantization
 
 <p align="center">

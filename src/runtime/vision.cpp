@@ -4,7 +4,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <mutex>
 #include <numeric>
@@ -77,14 +76,14 @@ void VisionEngine::Initialize(const std::string& model_path,
   impl_->initialized = true;
 }
 
-VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
+VisionResult VisionEngine::Infer(std::vector<uint8_t> patches_fp16) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (!impl_->initialized) {
     throw std::logic_error("Vision engine is not initialized");
   }
   const size_t expected_elements =
       static_cast<size_t>(ElementCount(impl_->input_shape));
-  if (patches.size() != expected_elements) {
+  if (patches_fp16.size() != expected_elements * sizeof(uint16_t)) {
     throw std::invalid_argument(
         "Vision input must contain exactly " +
         std::to_string(expected_elements) + " FP16 values");
@@ -93,8 +92,7 @@ VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
   rt::Tensor input;
   input.shape = impl_->input_shape;
   input.dtype = kFp16;
-  input.data.resize(patches.size() * sizeof(uint16_t));
-  std::memcpy(input.data.data(), patches.data(), input.data.size());
+  input.data = std::move(patches_fp16);
 
   std::vector<rt::Tensor> outputs;
   const auto started = std::chrono::steady_clock::now();

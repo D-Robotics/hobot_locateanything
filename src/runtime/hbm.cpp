@@ -279,20 +279,6 @@ Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
   return Result::Ok();
 }
 
-/** Zero and cache-clean a complete reusable device buffer. */
-Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer) {
-  if (buffer == nullptr || buffer->impl_ == nullptr || buffer->size() == 0) {
-    return Result::Err(-1, "ZeroDeviceBuffer: invalid buffer");
-  }
-  std::memset(buffer->impl_->memory.virAddr, 0, buffer->size());
-  const int32_t err = hbUCPMemFlush(
-      &buffer->impl_->memory, HB_SYS_MEM_CACHE_CLEAN);
-  if (err != 0) {
-    return Result::Err(err, "hbUCPMemFlush CLEAN device buffer failed");
-  }
-  return Result::Ok();
-}
-
 /** Copy and cache-clean one changed range in a device-backed tensor. */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes) {
@@ -780,17 +766,18 @@ Result Graph::Execute(hbDNNHandle_t handle,
   }
 
   // Pull output data from BPU cache into host vectors.
-  outputs->clear();
-  outputs->reserve(out_tensors.size());
+  outputs->resize(out_tensors.size());
   for (size_t i = 0; i < out_tensors.size(); ++i) {
+    Tensor &t = (*outputs)[i];
+    t.byte_offset = 0;
+    t.device_buffer.reset();
     if (output_slices != nullptr &&
         !(*output_slices)[i].materialize) {
-      Tensor t;
       t.shape.assign(out_tensors[i].properties.validShape.dimensionSize,
                      out_tensors[i].properties.validShape.dimensionSize +
                          out_tensors[i].properties.validShape.numDimensions);
       t.dtype = out_tensors[i].properties.tensorType;
-      outputs->push_back(std::move(t));
+      t.data.clear();
       continue;
     }
     const auto flush_started = Clock::now();
@@ -823,7 +810,6 @@ Result Graph::Execute(hbDNNHandle_t handle,
     const int64_t want_elems = ElementCount(selected_shape);
     const int64_t want_bytes = want_elems * elem_bytes;
 
-    Tensor t;
     t.shape.assign(selected_shape.dimensionSize,
                    selected_shape.dimensionSize + selected_shape.numDimensions);
     t.dtype = out_tensors[i].properties.tensorType;
@@ -844,7 +830,6 @@ Result Graph::Execute(hbDNNHandle_t handle,
       hbUCPReleaseTask(task);
       return Result::Err(-1, "cannot unpack output tensor idx=" + std::to_string(i));
     }
-    outputs->push_back(std::move(t));
     if (metrics != nullptr) {
       metrics->output_unpack_ms += std::chrono::duration<double, std::milli>(
           Clock::now() - unpack_started).count();

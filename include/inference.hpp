@@ -49,6 +49,23 @@ struct InferenceOutput {
   InferenceMetrics metrics;
 };
 
+/** Move-only output of Prompt preparation, image preprocessing, and Vision. */
+class PreparedInference {
+ public:
+  PreparedInference();
+  ~PreparedInference();
+  PreparedInference(PreparedInference&&) noexcept;
+  PreparedInference& operator=(PreparedInference&&) noexcept;
+  PreparedInference(const PreparedInference&) = delete;
+  PreparedInference& operator=(const PreparedInference&) = delete;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+  explicit PreparedInference(std::unique_ptr<Impl> impl);
+  friend class InferenceSession;
+};
+
 class InferenceSession {
  public:
   /**
@@ -97,6 +114,21 @@ class InferenceSession {
   InferenceOutput InferQueries(
       const cv::Mat& bgr, const std::vector<std::string>& commands,
       uint64_t frame_index = 0,
+      InferenceOutputOptions output_options = {});
+
+  /**
+   * Prepare one frame through Prompt/token caching, preprocessing, and Vision.
+   * This stage may overlap the previous frame's serialized Language stage.
+   */
+  PreparedInference Prepare(const cv::Mat& bgr, const std::string& command);
+  /** Prepare multiple compatible queries while sharing one Vision result. */
+  PreparedInference PrepareQueries(
+      const cv::Mat& bgr, const std::vector<std::string>& commands);
+  /**
+   * Complete a prepared frame through serialized Language and postprocessing.
+   */
+  InferenceOutput Complete(
+      PreparedInference prepared, uint64_t frame_index = 0,
       InferenceOutputOptions output_options = {});
 
  private:

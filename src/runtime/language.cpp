@@ -237,6 +237,8 @@ struct EngineState {
   PreparedInputs prepared_inputs;
   CacheState prefill_cache;
   CacheState full_cache;
+  std::vector<rt::Tensor> prefill_outputs;
+  std::vector<rt::Tensor> pbd_outputs;
   uint32_t random_state = 0x9e3779b9u;
   uint64_t dump_invocation = 0;
 };
@@ -732,7 +734,9 @@ bool BuildZeroCaches(const rt::Graph& graph, CacheState* state) {
   }
   if (reusable) {
     for (rt::Tensor& tensor : state->tensors) {
-      if (!rt::ZeroDeviceBuffer(tensor.device_buffer).ok()) return false;
+      // Graph inputs are read-only and use separate output buffers. The
+      // allocation was zeroed and cache-cleaned once, so only its logical view
+      // needs resetting between independent Prefill calls.
       tensor.byte_offset = 0;
     }
     return true;
@@ -1348,7 +1352,8 @@ bool RunHybridGeneration(EngineState* engine,
         tokens.push_back(pending_pbd.back());
         tokens.insert(tokens.end(), 5, kTextMaskToken);
       }
-      std::vector<rt::Tensor> outputs;
+      std::vector<rt::Tensor>& outputs = engine->pbd_outputs;
+      bool executed_pbd_graph = false;
       const rt::Tensor* logits = nullptr;
       int32_t pbd_logit_start = 0;
       if (prefix_len == 0 && bootstrap_logits != nullptr) {
@@ -1356,6 +1361,7 @@ bool RunHybridGeneration(EngineState* engine,
         bootstrap_logits = nullptr;
         pbd_logit_start = 1;
       } else {
+        executed_pbd_graph = true;
         if (!RunGraph(engine, PbdGraphName(prefix_len), 0, *history_len,
                       true, *cache, &outputs, nullptr, nullptr, &tokens,
                       prefix_len, metrics, &generated)) {
@@ -1373,7 +1379,8 @@ bool RunHybridGeneration(EngineState* engine,
       if (metrics != nullptr) ++metrics->pbd_calls;
       const auto pbd_decode_started = std::chrono::steady_clock::now();
       const rt::HybridDecision decision =
-          !outputs.empty() && CacheOutputOffset(outputs) == 7
+          executed_pbd_graph && !outputs.empty() &&
+                  CacheOutputOffset(outputs) == 7
               ? rt::DecodePbdCompact(outputs)
               : rt::DecodePbd(*logits, generated, rt::PbdDecodeConfig{},
                               nullptr, pbd_logit_start);
@@ -1602,7 +1609,7 @@ bool RunPayload(EngineState* engine,
       std::chrono::steady_clock::now() - cache_initialize_started).count();
   if (metrics != nullptr) metrics->cache_initialize_ms += cache_initialize_ms;
 
-  std::vector<rt::Tensor> prefill_outputs;
+  std::vector<rt::Tensor>& prefill_outputs = engine->prefill_outputs;
   int32_t active_len = prefill->GetInputShapes()[0][1];
   const auto prefill_started = std::chrono::steady_clock::now();
   if (!RunGraph(engine, "prefill", 0, 0, false, prefill_cache,

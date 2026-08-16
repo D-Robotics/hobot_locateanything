@@ -60,7 +60,7 @@ struct ImageTransform {
 
 /** Prepared Vision input and its source-to-model transform. */
 struct PreparedImage {
-  std::vector<uint16_t> patches;
+  std::vector<uint8_t> patches_fp16;
   ImageTransform transform;
 };
 

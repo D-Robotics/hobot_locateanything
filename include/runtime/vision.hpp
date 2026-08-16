@@ -37,10 +37,10 @@ class VisionEngine {
                   const VisionProfile& profile);
   /**
    * @brief Execute Vision for one prepared FP16 patch tensor.
-   * @param patches FP16 bits in the configured static Vision input layout.
+   * @param patches_fp16 FP16 bytes in the configured static Vision input layout.
    * @return FP16 visual features and measured execution time.
    */
-  VisionResult Infer(const std::vector<uint16_t>& patches);
+  VisionResult Infer(std::vector<uint8_t> patches_fp16);
 
  private:
   struct Impl;

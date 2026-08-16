@@ -73,7 +73,6 @@ class DeviceBuffer {
   friend class Graph;
   friend Result AllocateDeviceBuffer(size_t, bool,
                                      std::shared_ptr<DeviceBuffer> *);
-  friend Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &);
   friend Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &,
                                   size_t, const void *, size_t);
 };
@@ -121,9 +120,6 @@ struct ExecutionMetrics {
  */
 Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
                             std::shared_ptr<DeviceBuffer> *buffer);
-
-/** Zero and cache-clean a complete UCP allocation for reuse. */
-Result ZeroDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer);
 
 // Copy a changed range into UCP memory and clean only that range for the BPU.
 /**

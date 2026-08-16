@@ -161,6 +161,13 @@ struct PendingFrame {
   std::string prompt;
 };
 
+/** One frame after preprocessing and Vision, ready for serialized Language. */
+struct PreparedFrame {
+  PendingFrame frame;
+  PreparedInference inference;
+  rclcpp::Time inference_started;
+};
+
 class LocateAnythingNode : public rclcpp::Node {
  public:
   /** Declare parameters, load the shared inference core, and wire TROS topics. */
@@ -263,7 +270,8 @@ class LocateAnythingNode : public rclcpp::Node {
             OnImage(message);
           });
     }
-    worker_ = std::thread([this] { Run(); });
+    prepare_worker_ = std::thread([this] { PrepareFrames(); });
+    inference_worker_ = std::thread([this] { Run(); });
     RCLCPP_INFO(get_logger(),
                 "ready: input=%s transport=%s prompt_topic=%s result=%s",
                 input_topic.c_str(),
@@ -294,7 +302,8 @@ class LocateAnythingNode : public rclcpp::Node {
                   static_cast<unsigned long long>(total_drops));
     }
     condition_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    if (prepare_worker_.joinable()) prepare_worker_.join();
+    if (inference_worker_.joinable()) inference_worker_.join();
   }
 
  private:
@@ -440,28 +449,67 @@ class LocateAnythingNode : public rclcpp::Node {
                   static_cast<unsigned long long>(warn_drops),
                   static_cast<unsigned long long>(total_drops));
     }
-    condition_.notify_one();
+    condition_.notify_all();
   }
 
-  /** @brief Consume latest queued frames until ROS shutdown or node teardown. */
-  void Run() {
+  /**
+   * @brief Prepare the latest frame while the previous frame runs Language.
+   *
+   * The single prepared slot bounds memory and prevents speculative Vision
+   * work from competing with Language after the next frame is ready.
+   */
+  void PrepareFrames() {
     while (rclcpp::ok()) {
       PendingFrame frame;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        condition_.wait(lock, [this] { return stopping_ || pending_.has_value(); });
+        condition_.wait(lock, [this] {
+          return stopping_ ||
+                 (pending_.has_value() && !prepared_.has_value());
+        });
         if (stopping_) return;
         frame = std::move(*pending_);
         pending_.reset();
       }
-      const uint32_t frame_index = FrameIndex(frame.header);
       try {
         const rclcpp::Time inference_started = now();
-        InferenceOutput output =
-            session_->Infer(frame.image, frame.prompt, frame_index);
+        PreparedInference inference =
+            session_->Prepare(frame.image, frame.prompt);
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (stopping_) return;
+          prepared_.emplace(PreparedFrame{
+              std::move(frame), std::move(inference), inference_started});
+        }
+        condition_.notify_all();
+      } catch (const std::exception& error) {
+        RCLCPP_ERROR(get_logger(), "frame_id=%s preparation failed: %s",
+                     LogText(frame.header.frame_id).c_str(), error.what());
+      }
+    }
+  }
+
+  /** @brief Complete prepared frames until ROS shutdown or node teardown. */
+  void Run() {
+    while (rclcpp::ok()) {
+      PreparedFrame prepared;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock,
+                        [this] { return stopping_ || prepared_.has_value(); });
+        if (stopping_) return;
+        prepared = std::move(*prepared_);
+        prepared_.reset();
+      }
+      condition_.notify_all();
+      PendingFrame& frame = prepared.frame;
+      const uint32_t frame_index = FrameIndex(frame.header);
+      try {
+        InferenceOutput output = session_->Complete(
+            std::move(prepared.inference), frame_index);
         const int16_t fps = RecordOutputFps(output.metrics.total_ms);
         ai_msgs::msg::PerceptionTargets result =
-            BuildResult(frame, output, fps, inference_started);
+            BuildResult(frame, output, fps, prepared.inference_started);
         result_publisher_->publish(result);
 
         const LanguageMetrics& language = output.metrics.language;
@@ -615,6 +663,7 @@ class LocateAnythingNode : public rclcpp::Node {
   std::mutex mutex_;
   std::condition_variable condition_;
   std::optional<PendingFrame> pending_;
+  std::optional<PreparedFrame> prepared_;
   bool stopping_ = false;
   uint64_t dropped_frames_ = 0;
   uint64_t dropped_since_warning_ = 0;
@@ -623,7 +672,8 @@ class LocateAnythingNode : public rclcpp::Node {
   std::chrono::steady_clock::time_point last_prompt_wait_warning_ =
       std::chrono::steady_clock::now();
   std::deque<std::chrono::steady_clock::time_point> output_timestamps_;
-  std::thread worker_;
+  std::thread prepare_worker_;
+  std::thread inference_worker_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_subscription_;
   rclcpp::Subscription<hbm_img_msgs::msg::HbmMsg1080P>::SharedPtr
       shared_image_subscription_;

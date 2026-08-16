@@ -151,6 +151,12 @@ void AddLanguageMetrics(const LanguageMetrics& source,
 
 }  // namespace
 
+struct PreparedPromptCache {
+  std::string command;
+  Prompt prompt;
+  std::vector<int32_t> tokens;
+};
+
 struct InferenceSession::Impl {
   /**
    * @brief Store runtime options and construct postprocessing state.
@@ -172,9 +178,29 @@ struct InferenceSession::Impl {
   Postprocessor postprocessor;
   VisionEngine vision;
   LanguageEngine language;
-  std::mutex inference_mutex;
+  std::mutex state_mutex;
+  std::mutex prompt_cache_mutex;
+  std::vector<std::shared_ptr<const PreparedPromptCache>> prompt_cache;
   bool initialized = false;
 };
+
+struct PreparedInference::Impl {
+  const void* owner = nullptr;
+  std::chrono::steady_clock::time_point total_started;
+  std::vector<std::shared_ptr<const PreparedPromptCache>> prompts;
+  std::vector<uint8_t> visual_features_fp16;
+  ImageTransform transform;
+  cv::Mat source_image;
+  InferenceMetrics metrics;
+};
+
+PreparedInference::PreparedInference() = default;
+PreparedInference::~PreparedInference() = default;
+PreparedInference::PreparedInference(PreparedInference&&) noexcept = default;
+PreparedInference& PreparedInference::operator=(PreparedInference&&) noexcept =
+    default;
+PreparedInference::PreparedInference(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
 
 InferenceSession::InferenceSession(InferenceOptions options)
     : impl_(std::make_unique<Impl>(std::move(options))) {}
@@ -184,7 +210,7 @@ InferenceSession& InferenceSession::operator=(InferenceSession&&) noexcept = def
 
 void InferenceSession::Initialize(
     const std::function<void(const std::string&)>& progress_callback) {
-  std::lock_guard<std::mutex> lock(impl_->inference_mutex);
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
   if (impl_->initialized) return;
   const InferenceOptions& options = impl_->options;
   if (options.max_new_tokens <= 0 ||
@@ -224,48 +250,106 @@ InferenceOutput InferenceSession::Infer(const cv::Mat& bgr,
 InferenceOutput InferenceSession::InferQueries(
     const cv::Mat& bgr, const std::vector<std::string>& commands,
     uint64_t frame_index, InferenceOutputOptions output_options) {
-  std::lock_guard<std::mutex> lock(impl_->inference_mutex);
-  if (!impl_->initialized) {
-    throw std::logic_error("inference session is not initialized");
+  return Complete(PrepareQueries(bgr, commands), frame_index, output_options);
+}
+
+PreparedInference InferenceSession::Prepare(const cv::Mat& bgr,
+                                            const std::string& command) {
+  return PrepareQueries(bgr, QueryCommands(command));
+}
+
+PreparedInference InferenceSession::PrepareQueries(
+    const cv::Mat& bgr, const std::vector<std::string>& commands) {
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    if (!impl_->initialized) {
+      throw std::logic_error("inference session is not initialized");
+    }
   }
   if (commands.empty()) {
     throw std::invalid_argument("at least one inference query is required");
   }
-  const auto total_started = std::chrono::steady_clock::now();
+  auto prepared = std::make_unique<PreparedInference::Impl>();
+  prepared->owner = impl_.get();
+  prepared->total_started = std::chrono::steady_clock::now();
   const auto preprocess_started = std::chrono::steady_clock::now();
-  std::vector<Prompt> prompts;
-  std::vector<std::vector<int32_t>> prompt_tokens;
-  prompts.reserve(commands.size());
-  prompt_tokens.reserve(commands.size());
+  prepared->prompts.reserve(commands.size());
   for (const std::string& command : commands) {
-    prompts.push_back(impl_->prompt_builder.Build(command));
-    if (prompts.back().task != prompts.front().task) {
+    std::shared_ptr<const PreparedPromptCache> cached;
+    {
+      std::lock_guard<std::mutex> lock(impl_->prompt_cache_mutex);
+      const auto found = std::find_if(
+          impl_->prompt_cache.begin(), impl_->prompt_cache.end(),
+          [&](const std::shared_ptr<const PreparedPromptCache>& item) {
+            return item->command == command;
+          });
+      if (found != impl_->prompt_cache.end()) {
+        cached = *found;
+      } else {
+        auto created = std::make_shared<PreparedPromptCache>();
+        created->command = command;
+        created->prompt = impl_->prompt_builder.Build(command);
+        created->tokens = impl_->tokenizer.Encode(created->prompt.model_input);
+        const int expected_visual_tokens =
+            impl_->vision_profile.visual_token_count();
+        if (std::count(created->tokens.begin(), created->tokens.end(),
+                       impl_->tokenizer.TokenId("<IMG_CONTEXT>")) !=
+            expected_visual_tokens) {
+          throw std::runtime_error(
+              "prompt does not contain " +
+              std::to_string(expected_visual_tokens) + " visual tokens");
+        }
+        if (impl_->prompt_cache.size() == 16) {
+          impl_->prompt_cache.erase(impl_->prompt_cache.begin());
+        }
+        impl_->prompt_cache.push_back(created);
+        cached = std::move(created);
+      }
+    }
+    if (!prepared->prompts.empty() &&
+        cached->prompt.task != prepared->prompts.front()->prompt.task) {
       throw std::invalid_argument("inference queries must use the same task");
     }
-    prompt_tokens.push_back(impl_->tokenizer.Encode(prompts.back().model_input));
-    const int expected_visual_tokens = impl_->vision_profile.visual_token_count();
-    if (std::count(prompt_tokens.back().begin(), prompt_tokens.back().end(),
-                   impl_->tokenizer.TokenId("<IMG_CONTEXT>")) !=
-        expected_visual_tokens) {
-      throw std::runtime_error(
-          "prompt does not contain " + std::to_string(expected_visual_tokens) +
-          " visual tokens");
-    }
+    prepared->prompts.push_back(std::move(cached));
   }
-  const PreparedImage image = impl_->image_preprocessor.Prepare(bgr);
+  PreparedImage image = impl_->image_preprocessor.Prepare(bgr);
+  prepared->transform = image.transform;
+  prepared->source_image = bgr;
   const auto preprocess_ended = std::chrono::steady_clock::now();
 
   const auto vision_started = std::chrono::steady_clock::now();
-  VisionResult vision = impl_->vision.Infer(image.patches);
+  VisionResult vision = impl_->vision.Infer(std::move(image.patches_fp16));
   const auto vision_ended = std::chrono::steady_clock::now();
+  prepared->visual_features_fp16 = std::move(vision.visual_features_fp16);
+  prepared->metrics.preprocess_timing = Stage(
+      prepared->total_started, preprocess_started, preprocess_ended);
+  prepared->metrics.vision_timing =
+      Stage(prepared->total_started, vision_started, vision_ended);
+  prepared->metrics.preprocess_ms =
+      prepared->metrics.preprocess_timing.DurationMs();
+  prepared->metrics.vision_ms =
+      prepared->metrics.vision_timing.DurationMs();
+  return PreparedInference(std::move(prepared));
+}
+
+InferenceOutput InferenceSession::Complete(
+    PreparedInference prepared, uint64_t frame_index,
+    InferenceOutputOptions output_options) {
+  if (prepared.impl_ == nullptr || prepared.impl_->owner != impl_.get()) {
+    throw std::invalid_argument(
+        "prepared inference does not belong to this session");
+  }
+  PreparedInference::Impl& input = *prepared.impl_;
   const auto language_started = std::chrono::steady_clock::now();
   InferenceOutput output;
+  output.metrics = std::move(input.metrics);
   std::vector<LanguageResult> language_results;
-  language_results.reserve(commands.size());
-  for (size_t index = 0; index < commands.size(); ++index) {
-    const LanguageInput language_input{prompt_tokens[index],
-                                       vision.visual_features_fp16};
-    const bool protect_structure = prompts[index].task == "object_detection";
+  language_results.reserve(input.prompts.size());
+  for (const auto& prompt : input.prompts) {
+    const LanguageInput language_input{prompt->tokens,
+                                       input.visual_features_fp16};
+    const bool protect_structure =
+        prompt->prompt.task == "object_detection";
     language_results.push_back(impl_->language.Generate(
         language_input, impl_->options.max_new_tokens,
         impl_->options.generation_mode, protect_structure));
@@ -279,21 +363,15 @@ InferenceOutput InferenceSession::InferQueries(
   }
   const auto language_ended = std::chrono::steady_clock::now();
 
-  output.metrics.preprocess_timing =
-      Stage(total_started, preprocess_started, preprocess_ended);
-  output.metrics.vision_timing =
-      Stage(total_started, vision_started, vision_ended);
   output.metrics.language_timing =
-      Stage(total_started, language_started, language_ended);
-  output.metrics.preprocess_ms = output.metrics.preprocess_timing.DurationMs();
-  output.metrics.vision_ms = output.metrics.vision_timing.DurationMs();
+      Stage(input.total_started, language_started, language_ended);
   output.metrics.language_ms = output.metrics.language_timing.DurationMs();
   const auto postprocess_started = std::chrono::steady_clock::now();
   for (size_t index = 0; index < language_results.size(); ++index) {
     LanguageResult& language = language_results[index];
     Prediction prediction = impl_->postprocessor.Parse(
-        language.token_ids, image.transform, impl_->tokenizer,
-        prompts[index].task);
+        language.token_ids, input.transform, impl_->tokenizer,
+        input.prompts[index]->prompt.task);
     output.prediction.detections.insert(
         output.prediction.detections.end(),
         std::make_move_iterator(prediction.detections.begin()),
@@ -310,17 +388,19 @@ InferenceOutput InferenceSession::InferQueries(
   }
   const auto postprocess_ended = std::chrono::steady_clock::now();
   output.metrics.postprocess_timing =
-      Stage(total_started, postprocess_started, postprocess_ended);
+      Stage(input.total_started, postprocess_started, postprocess_ended);
   output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
   if (output_options.render_annotated) {
-    output.annotated_image = impl_->postprocessor.Draw(bgr, output.prediction);
+    output.annotated_image =
+        impl_->postprocessor.Draw(input.source_image, output.prediction);
   }
   output.metrics.total_ms = MillisecondsBetween(
-      total_started, std::chrono::steady_clock::now());
+      input.total_started, std::chrono::steady_clock::now());
   if (output_options.serialize_json) {
     output.json = impl_->postprocessor.ToJson(
-        output.prediction, prompts.front().task, output.stop_reason, frame_index,
-        output.metrics, output_options.pretty_json);
+        output.prediction, input.prompts.front()->prompt.task,
+        output.stop_reason, frame_index, output.metrics,
+        output_options.pretty_json);
   }
   return output;
 }

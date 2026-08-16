@@ -20,6 +20,12 @@ struct Coefficients {
   std::vector<std::vector<int32_t>> weights;
 };
 
+struct CoefficientCacheEntry {
+  int input_size = 0;
+  int output_size = 0;
+  Coefficients coefficients;
+};
+
 /**
  * @brief Evaluate the Pillow-compatible cubic reconstruction kernel.
  * @param value Distance from the sample center in filter units.
@@ -69,6 +75,22 @@ Coefficients BuildCoefficients(int input_size, int output_size) {
   return coefficients;
 }
 
+/** Reuse resize taps for the small set of source/model dimensions in a stream. */
+const Coefficients& CachedCoefficients(int input_size, int output_size) {
+  constexpr size_t kMaximumEntries = 8;
+  thread_local std::vector<CoefficientCacheEntry> cache;
+  const auto found = std::find_if(
+      cache.begin(), cache.end(), [&](const CoefficientCacheEntry& entry) {
+        return entry.input_size == input_size &&
+               entry.output_size == output_size;
+      });
+  if (found != cache.end()) return found->coefficients;
+  if (cache.size() == kMaximumEntries) cache.erase(cache.begin());
+  cache.push_back(
+      {input_size, output_size, BuildCoefficients(input_size, output_size)});
+  return cache.back().coefficients;
+}
+
 /**
  * @brief Convert a fixed-point accumulated pixel value to an 8-bit channel.
  * @param value Accumulated value with kPrecisionBits fractional bits.
@@ -87,7 +109,7 @@ uint8_t ClipByte(int64_t value) {
  * @return Resized BGR image.
  */
 cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
-  const Coefficients horizontal = BuildCoefficients(source.cols, width);
+  const Coefficients& horizontal = CachedCoefficients(source.cols, width);
   cv::Mat intermediate(source.rows, width, CV_8UC3);
   for (int y = 0; y < source.rows; ++y) {
     const auto* input = source.ptr<cv::Vec3b>(y);
@@ -106,7 +128,7 @@ cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
     }
   }
 
-  const Coefficients vertical = BuildCoefficients(source.rows, height);
+  const Coefficients& vertical = CachedCoefficients(source.rows, height);
   cv::Mat resized(height, width, CV_8UC3);
   for (int y = 0; y < height; ++y) {
     auto* output = resized.ptr<cv::Vec3b>(y);
@@ -261,8 +283,10 @@ PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
   output.transform.pad_top = top;
   output.transform.scale_x = static_cast<float>(resized_width) / bgr.cols;
   output.transform.scale_y = static_cast<float>(resized_height) / bgr.rows;
-  output.patches.reserve(static_cast<size_t>(
-      profile_.patch_count() * profile_.patch_flat_dim()));
+  const size_t patch_elements = static_cast<size_t>(
+      profile_.patch_count() * profile_.patch_flat_dim());
+  output.patches_fp16.resize(patch_elements * sizeof(uint16_t));
+  size_t element_index = 0;
   for (int grid_y = 0; grid_y < profile_.grid_height(); ++grid_y) {
     for (int grid_x = 0; grid_x < profile_.grid_width(); ++grid_x) {
       for (int channel = 2; channel >= 0; --channel) {
@@ -275,11 +299,17 @@ PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
                     row[grid_x * VisionProfile::kPatchSize + patch_x][channel]) /
                     127.5f -
                 1.0f;
-            output.patches.push_back(FloatToHalf(value));
+            const uint16_t fp16 = FloatToHalf(value);
+            std::memcpy(output.patches_fp16.data() +
+                            element_index++ * sizeof(fp16),
+                        &fp16, sizeof(fp16));
           }
         }
       }
     }
+  }
+  if (element_index != patch_elements) {
+    throw std::logic_error("Vision patch preparation size mismatch");
   }
   return output;
 }
