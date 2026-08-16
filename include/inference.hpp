@@ -130,6 +130,13 @@ class InferenceSession {
   InferenceOutput Complete(
       PreparedInference prepared, uint64_t frame_index = 0,
       InferenceOutputOptions output_options = {});
+  /** Complete one or two prepared frames through the static Language batch. */
+  std::vector<InferenceOutput> CompleteBatch(
+      std::vector<PreparedInference> prepared,
+      const std::vector<uint64_t>& frame_indices,
+      InferenceOutputOptions output_options = {});
+  /** Return the static Language batch size declared by the loaded HBM. */
+  int32_t LanguageBatchSize() const;
 
  private:
   struct Impl;

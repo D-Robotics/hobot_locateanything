@@ -118,4 +118,45 @@ bool AppendMirroredDeviceRingRows(Tensor* cache,
   return true;
 }
 
+bool AppendBatchedDeviceLinearRows(Tensor* cache,
+                                   size_t batch_size,
+                                   size_t lane,
+                                   size_t cache_rows,
+                                   size_t row_bytes,
+                                   size_t history_rows,
+                                   const uint8_t* update,
+                                   size_t update_bytes,
+                                   size_t committed_rows,
+                                   uint64_t* copied_bytes) {
+  if (cache == nullptr || cache->device_buffer == nullptr || update == nullptr ||
+      batch_size == 0 || lane >= batch_size || cache_rows == 0 || row_bytes == 0 ||
+      history_rows == 0 || committed_rows == 0 ||
+      history_rows + committed_rows > cache_rows ||
+      committed_rows > std::numeric_limits<size_t>::max() / row_bytes ||
+      history_rows > std::numeric_limits<size_t>::max() / row_bytes) {
+    return false;
+  }
+  const size_t cache_bytes = cache_rows * row_bytes;
+  const size_t total_bytes = cache_bytes * batch_size;
+  const size_t update_required = committed_rows * row_bytes;
+  if (cache->device_buffer->size() != total_bytes ||
+      update_bytes < update_required) {
+    return false;
+  }
+  const size_t lane_offset = lane * cache_bytes;
+  const size_t old_start = cache_rows - history_rows;
+  const size_t new_start = cache_rows - history_rows - committed_rows;
+  const size_t history_bytes = history_rows * row_bytes;
+  if (!ShiftAppendDeviceBuffer(cache->device_buffer,
+                               lane_offset + new_start * row_bytes,
+                               lane_offset + old_start * row_bytes,
+                               history_bytes, update, update_required).ok()) {
+    return false;
+  }
+  if (copied_bytes != nullptr) {
+    *copied_bytes += static_cast<uint64_t>(history_bytes + update_required);
+  }
+  return true;
+}
+
 }  // namespace locateanything_runtime

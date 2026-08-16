@@ -405,4 +405,105 @@ InferenceOutput InferenceSession::Complete(
   return output;
 }
 
+int32_t InferenceSession::LanguageBatchSize() const {
+  return impl_ == nullptr ? 1 : impl_->language.BatchSize();
+}
+
+std::vector<InferenceOutput> InferenceSession::CompleteBatch(
+    std::vector<PreparedInference> prepared,
+    const std::vector<uint64_t>& frame_indices,
+    InferenceOutputOptions output_options) {
+  if (prepared.empty() || prepared.size() > 2 ||
+      prepared.size() != frame_indices.size()) {
+    throw std::invalid_argument("CompleteBatch requires one or two frames");
+  }
+  if (prepared.size() == 1 || LanguageBatchSize() != 2) {
+    std::vector<InferenceOutput> outputs;
+    outputs.reserve(prepared.size());
+    for (size_t index = 0; index < prepared.size(); ++index) {
+      outputs.push_back(Complete(std::move(prepared[index]),
+                                 frame_indices[index], output_options));
+    }
+    return outputs;
+  }
+  for (const PreparedInference& item : prepared) {
+    if (item.impl_ == nullptr || item.impl_->owner != impl_.get()) {
+      throw std::invalid_argument("prepared inference does not belong to this session");
+    }
+    if (item.impl_->prompts.size() != 1) {
+      std::vector<InferenceOutput> outputs;
+      outputs.reserve(prepared.size());
+      for (size_t index = 0; index < prepared.size(); ++index) {
+        outputs.push_back(Complete(std::move(prepared[index]),
+                                   frame_indices[index], output_options));
+      }
+      return outputs;
+    }
+  }
+  const auto task = prepared[0].impl_->prompts.front()->prompt.task;
+  if (prepared[1].impl_->prompts.front()->prompt.task != task) {
+    std::vector<InferenceOutput> outputs;
+    outputs.reserve(prepared.size());
+    for (size_t index = 0; index < prepared.size(); ++index) {
+      outputs.push_back(Complete(std::move(prepared[index]),
+                                 frame_indices[index], output_options));
+    }
+    return outputs;
+  }
+
+  const auto language_started = std::chrono::steady_clock::now();
+  std::vector<LanguageInput> language_inputs;
+  language_inputs.reserve(2);
+  for (const PreparedInference& item : prepared) {
+    const PreparedInference::Impl& input = *item.impl_;
+    language_inputs.push_back(LanguageInput{
+        input.prompts.front()->tokens, input.visual_features_fp16});
+  }
+  const bool protect_structure = task == "object_detection";
+  std::vector<LanguageResult> language_results = impl_->language.GenerateBatch(
+      language_inputs, impl_->options.max_new_tokens,
+      impl_->options.generation_mode, protect_structure);
+  if (language_results.size() != prepared.size()) {
+    throw std::runtime_error("Language batch returned an invalid result count");
+  }
+  const auto language_ended = std::chrono::steady_clock::now();
+
+  std::vector<InferenceOutput> outputs;
+  outputs.resize(prepared.size());
+  for (size_t index = 0; index < prepared.size(); ++index) {
+    PreparedInference::Impl& input = *prepared[index].impl_;
+    InferenceOutput& output = outputs[index];
+    LanguageResult& language = language_results[index];
+    output.metrics = std::move(input.metrics);
+    AddLanguageMetrics(language.metrics, &output.metrics.language);
+    output.stop_reason = language.stop_reason;
+    output.metrics.language_timing =
+        Stage(input.total_started, language_started, language_ended);
+    output.metrics.language_ms = output.metrics.language_timing.DurationMs();
+
+    const auto postprocess_started = std::chrono::steady_clock::now();
+    Prediction prediction = impl_->postprocessor.Parse(
+        language.token_ids, input.transform, impl_->tokenizer, task);
+    output.prediction = std::move(prediction);
+    output.generated_text = impl_->tokenizer.Decode(language.token_ids);
+    output.generated_token_ids = std::move(language.token_ids);
+    const auto postprocess_ended = std::chrono::steady_clock::now();
+    output.metrics.postprocess_timing =
+        Stage(input.total_started, postprocess_started, postprocess_ended);
+    output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
+    if (output_options.render_annotated) {
+      output.annotated_image =
+          impl_->postprocessor.Draw(input.source_image, output.prediction);
+    }
+    output.metrics.total_ms = MillisecondsBetween(
+        input.total_started, std::chrono::steady_clock::now());
+    if (output_options.serialize_json) {
+      output.json = impl_->postprocessor.ToJson(
+          output.prediction, task, output.stop_reason, frame_indices[index],
+          output.metrics, output_options.pretty_json);
+    }
+  }
+  return outputs;
+}
+
 }  // namespace locateanything

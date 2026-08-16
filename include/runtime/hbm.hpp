@@ -75,6 +75,9 @@ class DeviceBuffer {
                                      std::shared_ptr<DeviceBuffer> *);
   friend Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &,
                                   size_t, const void *, size_t);
+  friend Result ShiftAppendDeviceBuffer(const std::shared_ptr<DeviceBuffer> &,
+                                        size_t, size_t, size_t, const void *,
+                                        size_t);
 };
 
 // Status returned by every wrapper method. 0 == success, non-zero carries
@@ -132,6 +135,12 @@ Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
  */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes);
+
+/** Shift history, append new bytes, then clean the combined range once. */
+Result ShiftAppendDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
+                               size_t destination_offset,
+                               size_t source_offset, size_t history_bytes,
+                               const void *update, size_t update_bytes);
 
 // Optional row selection for graph outputs whose sequence dimension is axis 1.
 // A negative row_count keeps the complete tensor. The BPU still produces the

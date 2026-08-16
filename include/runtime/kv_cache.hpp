@@ -53,4 +53,20 @@ bool AppendMirroredDeviceRingRows(Tensor* cache,
                                   size_t committed_rows,
                                   uint64_t* copied_bytes = nullptr);
 
+/**
+ * Append one lane of a fixed batch cache while keeping its history right
+ * aligned. The cache buffer is laid out as contiguous batch lanes, so no
+ * graph input offset is required and lanes may advance independently.
+ */
+bool AppendBatchedDeviceLinearRows(Tensor* cache,
+                                   size_t batch_size,
+                                   size_t lane,
+                                   size_t cache_rows,
+                                   size_t row_bytes,
+                                   size_t history_rows,
+                                   const uint8_t* update,
+                                   size_t update_bytes,
+                                   size_t committed_rows,
+                                   uint64_t* copied_bytes = nullptr);
+
 }  // namespace locateanything_runtime

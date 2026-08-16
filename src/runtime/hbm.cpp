@@ -301,6 +301,33 @@ Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
   return Result::Ok();
 }
 
+/** Shift history and append an update with one cache clean. */
+Result ShiftAppendDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
+                               size_t destination_offset,
+                               size_t source_offset, size_t history_bytes,
+                               const void *update, size_t update_bytes) {
+  if (buffer == nullptr || buffer->impl_ == nullptr || history_bytes == 0 ||
+      update == nullptr || update_bytes == 0 ||
+      destination_offset > buffer->size() || source_offset > buffer->size() ||
+      history_bytes > buffer->size() - destination_offset ||
+      history_bytes > buffer->size() - source_offset ||
+      update_bytes > buffer->size() - destination_offset - history_bytes) {
+    return Result::Err(-1, "ShiftAppendDeviceBuffer: invalid range");
+  }
+  auto *base = static_cast<uint8_t *>(buffer->impl_->memory.virAddr);
+  std::memmove(base + destination_offset, base + source_offset, history_bytes);
+  std::memcpy(base + destination_offset + history_bytes, update, update_bytes);
+  hbUCPSysMem view{};
+  view.phyAddr = buffer->impl_->memory.phyAddr + destination_offset;
+  view.virAddr = base + destination_offset;
+  view.memSize = history_bytes + update_bytes;
+  const int32_t err = hbUCPMemFlush(&view, HB_SYS_MEM_CACHE_CLEAN);
+  if (err != 0) {
+    return Result::Err(err, "ShiftAppendDeviceBuffer: cache clean failed");
+  }
+  return Result::Ok();
+}
+
 struct Graph::PersistentBuffers {
   std::vector<hbDNNTensor> inputs;
   std::vector<hbDNNTensor> bound_inputs;

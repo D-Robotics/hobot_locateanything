@@ -5,6 +5,7 @@
 // It supports both Hybrid PBD and full autoregressive generation.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstddef>
@@ -21,6 +22,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -74,6 +76,7 @@ bool SameShape(const std::vector<int32_t>& left,
 struct LanguageAbiProfile {
   bool fused_prefill = false;
   bool compact_logits = false;
+  int32_t batch_size = 1;
   int32_t prefill_len = 0;
   int32_t cache_len = 0;
 };
@@ -117,13 +120,17 @@ LanguageAbiProfile ValidateLanguageAbi(rt::HbmSession* session) {
   }
   const auto& prefill_inputs = prefill->GetInputShapes();
   const auto& prefill_outputs = prefill->GetOutputShapes();
-  if (prefill_inputs[0].size() != 3 || prefill_inputs[0][0] != 1 ||
+  if (prefill_inputs[0].size() != 3 ||
+      (prefill_inputs[0][0] != 1 && prefill_inputs[0][0] != 2) ||
       prefill_inputs[0][2] != kHidden || prefill_inputs[2].size() != 3 ||
-      prefill_inputs[2][0] != 1 || prefill_outputs[0].size() != 3 ||
-      prefill_outputs[0][0] != 1 || prefill_outputs[0][2] != kVocab) {
+      prefill_inputs[2][0] != prefill_inputs[0][0] ||
+      prefill_outputs[0].size() != 3 ||
+      prefill_outputs[0][0] != prefill_inputs[0][0] ||
+      prefill_outputs[0][2] != kVocab) {
     throw std::runtime_error("Language HBM Prefill has an invalid base ABI");
   }
   LanguageAbiProfile profile;
+  profile.batch_size = prefill_inputs[0][0];
   profile.prefill_len = prefill_inputs[0][1];
   profile.cache_len = prefill_inputs[2][2];
   const int32_t prefill_logits_rows = prefill_outputs[0][1];
@@ -173,10 +180,11 @@ LanguageAbiProfile ValidateLanguageAbi(rt::HbmSession* session) {
         name == "prefill"
             ? (profile.fused_prefill ? 7 : 1)
             : (profile.compact_logits ? (IsPbdGraph(name) ? 6 : 1) : query);
-    if (!SameShape(inputs[0], {1, query, kHidden}) ||
-        !SameShape(inputs[1], {1, 1, query}) ||
-        !SameShape(inputs[2], {1, query, profile.cache_len}) ||
-        !SameShape(outputs[0], {1, expected_logits_rows, kVocab}) ||
+    if (!SameShape(inputs[0], {profile.batch_size, query, kHidden}) ||
+        !SameShape(inputs[1], {profile.batch_size, 1, query}) ||
+        !SameShape(inputs[2], {profile.batch_size, query, profile.cache_len}) ||
+        !SameShape(outputs[0],
+                   {profile.batch_size, expected_logits_rows, kVocab}) ||
         input_dtypes[0] != kF16 || input_dtypes[1] != kS32 ||
         input_dtypes[2] != kF16 || output_dtypes[0] != kF16) {
       throw std::runtime_error("Language HBM primary tensor ABI mismatch: " +
@@ -186,8 +194,9 @@ LanguageAbiProfile ValidateLanguageAbi(rt::HbmSession* session) {
       const size_t input_index = 3 + static_cast<size_t>(index);
       const size_t output_index = 1 + static_cast<size_t>(index);
       if (!SameShape(inputs[input_index],
-                     {1, profile.cache_len, 2, 128}) ||
-          !SameShape(outputs[output_index], {1, query, 2, 128}) ||
+                     {profile.batch_size, profile.cache_len, 2, 128}) ||
+          !SameShape(outputs[output_index],
+                     {profile.batch_size, query, 2, 128}) ||
           input_dtypes[input_index] != output_dtypes[output_index]) {
         throw std::runtime_error("Language HBM KV ABI mismatch: " + name);
       }
@@ -250,6 +259,11 @@ struct EngineState {
   rt::Tensor pending_ar_logits;
   uint32_t random_state = 0x9e3779b9u;
   uint64_t dump_invocation = 0;
+  std::array<uint32_t, 2> batch_random_state{{0x9e3779b9u, 0x243f6a88u}};
+  std::vector<rt::Tensor> batch_prefill_outputs;
+  std::vector<rt::Tensor> batch_graph_outputs;
+  std::array<std::vector<rt::Tensor>, 2> batch_decision_outputs;
+  CacheState batch_cache;
 };
 
 /**
@@ -361,6 +375,38 @@ struct InputPayload {
   const std::vector<uint8_t>& visual_features;
 };
 
+struct GenerationMetrics;
+
+enum class BatchPhase {
+  kPbd,
+  kArStep,
+  kArBridge,
+  kFinished,
+};
+
+/** Per-lane state used by the static batch-2 Language scheduler. */
+struct BatchLaneState {
+  const InputPayload* payload = nullptr;
+  std::vector<int32_t> generated;
+  std::vector<int32_t> response;
+  std::vector<int32_t> pending_pbd;
+  std::vector<int32_t> graph_tokens;
+  rt::Tensor pending_ar_logits;
+  int32_t history_len = 0;
+  int32_t prefill_tokens = 0;
+  int32_t max_new_tokens = 0;
+  bool protect_detection_structure = false;
+  bool use_pbd = true;
+  bool slow_mode = false;
+  bool finished = false;
+  bool failed = false;
+  BatchPhase phase = BatchPhase::kPbd;
+  std::string stop_reason;
+  std::string executed_mode;
+  std::string fallback_reason;
+  GenerationMetrics* metrics = nullptr;
+};
+
 struct GenerationMetrics {
   int32_t prefill_tokens = 0;
   double prefill_ms = 0.0;
@@ -394,6 +440,36 @@ struct GenerationMetrics {
 };
 
 using TokenCallback = std::function<void(int32_t)>;
+
+/** Copy one compact batch lane into a batch-1 tensor view for Host decoding. */
+bool ExtractBatchLane(const rt::Tensor& source, int32_t lane,
+                      rt::Tensor* destination) {
+  if (destination == nullptr || source.shape.empty() || source.shape[0] <= 0 ||
+      lane < 0 || lane >= source.shape[0]) {
+    return false;
+  }
+  const int64_t total_elements = ElementCount(source.shape);
+  if (total_elements <= 0 || total_elements % source.shape[0] != 0) return false;
+  const int32_t element_bytes = rt::DtypeElementBytes(source.dtype);
+  if (element_bytes <= 0) return false;
+  const size_t lane_bytes = static_cast<size_t>(total_elements / source.shape[0]) *
+                            static_cast<size_t>(element_bytes);
+  destination->shape = source.shape;
+  destination->shape[0] = 1;
+  destination->dtype = source.dtype;
+  destination->byte_offset = 0;
+  destination->device_buffer.reset();
+  if (source.data.empty()) {
+    destination->data.clear();
+    return true;
+  }
+  if (source.data.size() != lane_bytes * static_cast<size_t>(source.shape[0])) {
+    return false;
+  }
+  const auto begin = source.data.begin() + static_cast<size_t>(lane) * lane_bytes;
+  destination->data.assign(begin, begin + lane_bytes);
+  return true;
+}
 
 /**
  * @brief Emit up to count accepted tokens through an optional callback.
@@ -731,6 +807,288 @@ bool BuildMask(const rt::Graph& graph, int32_t past_len, int32_t block_size,
   return true;
 }
 
+/** Build one batch-shaped Prefill embedding tensor from independent lanes. */
+bool BuildBatchPrefillEmbeddings(
+    const rt::Graph& graph, const rt::EmbedLookup& embed,
+    const std::array<const InputPayload*, 2>& payloads,
+    bool fused_initial_pbd, rt::Tensor* output, int32_t* active_len) {
+  const auto& shape = graph.GetInputShapes()[0];
+  const int32_t batch = shape.size() > 0 ? shape[0] : 0;
+  if (batch != 2 || graph.GetInputDtypes()[0] != kF16 || shape.size() != 3 ||
+      shape[1] < 128 || shape[2] != kHidden || output == nullptr ||
+      active_len == nullptr || payloads[0] == nullptr || payloads[1] == nullptr) {
+    return false;
+  }
+  const int32_t query = shape[1];
+  const int32_t length0 = static_cast<int32_t>(payloads[0]->prompt_ids.size());
+  const int32_t length1 = static_cast<int32_t>(payloads[1]->prompt_ids.size());
+  const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+  if (length0 <= 0 || length0 != length1 || length0 + pbd_rows > query) {
+    return false;
+  }
+  output->shape = shape;
+  output->dtype = kF16;
+  const size_t row_bytes = static_cast<size_t>(kHidden) * sizeof(uint16_t);
+  const size_t lane_bytes = static_cast<size_t>(query) * row_bytes;
+  output->data.resize(lane_bytes * 2);
+  for (size_t lane = 0; lane < payloads.size(); ++lane) {
+    const InputPayload& payload = *payloads[lane];
+    uint8_t* lane_data = output->data.data() + lane * lane_bytes;
+    const int32_t row_offset = query - length0;
+    std::memset(lane_data, 0, static_cast<size_t>(row_offset) * row_bytes);
+    int32_t run_start = 0;
+    auto gather_text_run = [&](int32_t run_end) {
+      if (run_end <= run_start) return;
+      embed.Gather(payload.prompt_ids.data() + run_start, run_end - run_start,
+                   lane_data + static_cast<size_t>(row_offset + run_start) *
+                                   row_bytes);
+    };
+    for (int32_t index = 0; index < length0; ++index) {
+      if (payload.prompt_ids[static_cast<size_t>(index)] != kImageToken) continue;
+      gather_text_run(index);
+      run_start = index + 1;
+    }
+    gather_text_run(length0);
+    if (fused_initial_pbd) {
+      const int32_t pbd_ids[6] = {payload.prompt_ids.back(), kTextMaskToken,
+                                  kTextMaskToken, kTextMaskToken,
+                                  kTextMaskToken, kTextMaskToken};
+      embed.Gather(pbd_ids, 6, lane_data);
+    }
+    size_t visual_index = 0;
+    auto* destination = reinterpret_cast<uint16_t*>(lane_data);
+    const auto* visual = payload.visual_features.data();
+    for (int32_t index = 0; index < length0; ++index) {
+      if (payload.prompt_ids[static_cast<size_t>(index)] != kImageToken) continue;
+      std::memcpy(destination + static_cast<size_t>(row_offset + index) * kHidden,
+                  visual + visual_index * static_cast<size_t>(kHidden) *
+                               sizeof(uint16_t),
+                  static_cast<size_t>(kHidden) * sizeof(uint16_t));
+      ++visual_index;
+    }
+  }
+  *active_len = length0;
+  return true;
+}
+
+/** Build a batch-shaped explicit decode embedding tensor. */
+bool BuildBatchDecodeEmbeddings(
+    const rt::Graph& graph, const rt::EmbedLookup& embed,
+    const std::array<const std::vector<int32_t>*, 2>& token_ids,
+    rt::Tensor* output) {
+  const auto& shape = graph.GetInputShapes()[0];
+  if (shape.size() != 3 || shape[0] != 2 || graph.GetInputDtypes()[0] != kF16 ||
+      shape[2] != kHidden || token_ids[0] == nullptr || token_ids[1] == nullptr ||
+      token_ids[0]->size() != static_cast<size_t>(shape[1]) ||
+      token_ids[1]->size() != static_cast<size_t>(shape[1])) {
+    return false;
+  }
+  output->shape = shape;
+  output->dtype = kF16;
+  const size_t lane_bytes = static_cast<size_t>(shape[1]) * kHidden * 2;
+  output->data.resize(lane_bytes * 2);
+  embed.Gather(token_ids[0]->data(), shape[1], output->data.data());
+  embed.Gather(token_ids[1]->data(), shape[1],
+               output->data.data() + lane_bytes);
+  return true;
+}
+
+/** Build batch position IDs for one graph and two independent histories. */
+bool BuildBatchPositions(const rt::Graph& graph,
+                         const std::array<int32_t, 2>& past_lens,
+                         bool pbd, const std::array<int32_t, 2>& active_lens,
+                         const std::array<int32_t, 2>& pbd_prefix_lens,
+                         bool fused_initial_pbd, rt::Tensor* output) {
+  const auto& shape = graph.GetInputShapes()[1];
+  if (shape.size() != 3 || shape[0] != 2 || shape[1] != 1 ||
+      graph.GetInputDtypes()[1] != kS32 || output == nullptr) return false;
+  output->shape = shape;
+  output->dtype = kS32;
+  output->data.resize(static_cast<size_t>(2) * shape[2] * sizeof(int32_t));
+  auto* values = reinterpret_cast<int32_t*>(output->data.data());
+  const int32_t query = shape[2];
+  for (size_t lane = 0; lane < 2; ++lane) {
+    int32_t* lane_values = values + lane * static_cast<size_t>(query);
+    if (query >= 128 && active_lens[lane] > 0) {
+      const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+      if (active_lens[lane] + pbd_rows > query || past_lens[lane] != 0 ||
+          (pbd && !fused_initial_pbd)) return false;
+      const int32_t row_offset = query - active_lens[lane];
+      for (int32_t index = 0; index < query; ++index) {
+        if (fused_initial_pbd && index < pbd_rows) {
+          lane_values[index] = active_lens[lane] - 1 + index;
+        } else if (index < row_offset) {
+          lane_values[index] = 0;
+        } else {
+          lane_values[index] = index - row_offset;
+        }
+      }
+      continue;
+    }
+    if (pbd_prefix_lens[lane] < 0 || pbd_prefix_lens[lane] > query ||
+        (pbd_prefix_lens[lane] != 0 && !pbd)) return false;
+    for (int32_t index = 0; index < query; ++index) {
+      lane_values[index] = past_lens[lane] + index -
+                           (pbd && index >= pbd_prefix_lens[lane] ? 1 : 0);
+    }
+  }
+  return true;
+}
+
+/** Build batch attention masks without allocating per-lane temporary masks. */
+bool BuildBatchMask(const rt::Graph& graph,
+                    const std::array<int32_t, 2>& past_lens,
+                    bool pbd, const std::array<int32_t, 2>& active_lens,
+                    bool fused_initial_pbd, rt::Tensor* output) {
+  const auto& shape = graph.GetInputShapes()[2];
+  if (shape.size() != 3 || shape[0] != 2 || graph.GetInputDtypes()[2] != kF16 ||
+      output == nullptr) return false;
+  const int32_t query = shape[1];
+  const int32_t cache_len = shape[2];
+  const size_t lane_elements = static_cast<size_t>(query) * cache_len;
+  output->shape = shape;
+  output->dtype = kF16;
+  output->data.resize(lane_elements * 2 * sizeof(uint16_t));
+  auto* values = reinterpret_cast<uint16_t*>(output->data.data());
+  for (size_t lane = 0; lane < 2; ++lane) {
+    uint16_t* mask = values + lane * lane_elements;
+    if (query >= 128 && active_lens[lane] >= 0) {
+      const int32_t pbd_rows = fused_initial_pbd ? 6 : 0;
+      if (active_lens[lane] + pbd_rows > query || past_lens[lane] != 0) {
+        return false;
+      }
+      std::fill(mask, mask + lane_elements, kMaskValue);
+      const int32_t current_start = cache_len - query;
+      const int32_t row_offset = query - active_lens[lane];
+      for (int32_t row_index = 0; row_index < query; ++row_index) {
+        uint16_t* row = mask + static_cast<size_t>(row_index) * cache_len;
+        if (fused_initial_pbd && row_index < pbd_rows) {
+          for (int32_t index = 0; index < pbd_rows; ++index) {
+            row[current_start + index] = 0;
+          }
+          for (int32_t index = row_offset; index < query - 1; ++index) {
+            row[current_start + index] = 0;
+          }
+          continue;
+        }
+        if (row_index < row_offset) {
+          row[current_start + row_index] = 0;
+          continue;
+        }
+        for (int32_t index = row_offset; index <= row_index; ++index) {
+          row[current_start + index] = 0;
+        }
+      }
+    } else if (!rt::BuildAttentionMaskData(
+                   query, cache_len, past_lens[lane], pbd ? 6 : 0,
+                   kMaskValue, false, mask, lane_elements)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Assemble all two-lane graph inputs while reusing the EngineState buffers. */
+bool BuildBatchInputs(
+    const rt::Graph& graph, const rt::EmbedLookup& embed,
+    const std::array<const InputPayload*, 2>& payloads,
+    const std::array<const std::vector<int32_t>*, 2>& explicit_tokens,
+    const std::array<const std::vector<int32_t>*, 2>& generated_tokens,
+    const std::array<int32_t, 2>& past_lens,
+    const std::array<int32_t, 2>& active_lens,
+    const std::array<int32_t, 2>& pbd_prefix_lens,
+    bool pbd, bool prefill, bool fused_initial_pbd,
+    const CacheState& cache, std::array<uint32_t, 2>* random_states,
+    PreparedInputs* inputs) {
+  if (inputs == nullptr || random_states == nullptr || cache.tensors.size() !=
+      kCacheCount || graph.GetInputShapes().size() < 3 + kCacheCount ||
+      graph.GetInputShapes()[0].empty() || graph.GetInputShapes()[0][0] != 2) {
+    return false;
+  }
+  int32_t active = active_lens[0];
+  if (prefill) {
+    if (!BuildBatchPrefillEmbeddings(graph, embed, payloads,
+                                     fused_initial_pbd, &inputs->embeddings,
+                                     &active)) {
+      return false;
+    }
+  } else {
+    if (!BuildBatchDecodeEmbeddings(graph, embed, explicit_tokens,
+                                    &inputs->embeddings)) {
+      return false;
+    }
+  }
+  if (!BuildBatchPositions(graph, past_lens, pbd, prefill ?
+                           std::array<int32_t, 2>{active, active} :
+                           std::array<int32_t, 2>{-1, -1},
+                           pbd_prefix_lens, fused_initial_pbd,
+                           &inputs->positions) ||
+      !BuildBatchMask(graph, past_lens, pbd, prefill ?
+                      std::array<int32_t, 2>{active, active} :
+                      std::array<int32_t, 2>{-1, -1}, fused_initial_pbd,
+                      &inputs->mask)) {
+    return false;
+  }
+  inputs->views.clear();
+  inputs->views.reserve(3 + cache.tensors.size() + 2);
+  inputs->views.push_back(&inputs->embeddings);
+  inputs->views.push_back(&inputs->positions);
+  inputs->views.push_back(&inputs->mask);
+  for (const auto& tensor : cache.tensors) inputs->views.push_back(&tensor);
+  if (graph.GetInputShapes().size() == 3 + kCacheCount + 2) {
+    if (generated_tokens[0] == nullptr || generated_tokens[1] == nullptr) {
+      return false;
+    }
+    const size_t history_index = 3 + kCacheCount;
+    const size_t random_index = history_index + 1;
+    inputs->history_mask.shape = graph.GetInputShapes()[history_index];
+    inputs->history_mask.dtype = graph.GetInputDtypes()[history_index];
+    inputs->history_mask.data.resize(
+        static_cast<size_t>(ElementCount(inputs->history_mask.shape)));
+    std::memset(inputs->history_mask.data.data(), 0,
+                inputs->history_mask.data.size());
+    const int32_t history_rows = inputs->history_mask.shape.size() > 1
+        ? inputs->history_mask.shape[1] : 0;
+    const int32_t vocab = inputs->history_mask.shape.size() > 2
+        ? inputs->history_mask.shape[2] : 0;
+    if (history_rows <= 0 || vocab != kVocab) return false;
+    for (size_t lane = 0; lane < 2; ++lane) {
+      uint8_t* lane_mask = inputs->history_mask.data.data() +
+                           lane * static_cast<size_t>(history_rows) * vocab;
+      for (int32_t token : *generated_tokens[lane]) {
+        if (token < 0 || token >= vocab) continue;
+        for (int32_t row = 0; row < history_rows; ++row) {
+          lane_mask[static_cast<size_t>(row) * vocab + token] = 1;
+        }
+      }
+    }
+    inputs->random_values.shape = graph.GetInputShapes()[random_index];
+    inputs->random_values.dtype = graph.GetInputDtypes()[random_index];
+    inputs->random_values.data.resize(
+        static_cast<size_t>(ElementCount(inputs->random_values.shape)) * 2);
+    std::memset(inputs->random_values.data.data(), 0,
+                inputs->random_values.data.size());
+    auto* values = reinterpret_cast<uint16_t*>(inputs->random_values.data.data());
+    const int32_t random_rows = inputs->random_values.shape.size() > 1
+        ? inputs->random_values.shape[1] : 0;
+    if (random_rows <= 0) return false;
+    for (size_t lane = 0; lane < 2; ++lane) {
+      for (int32_t row = 0; row < random_rows; ++row) {
+        uint32_t& state = random_states->at(lane);
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        const float uniform = static_cast<float>(state & 0x3ffu) / 1024.0f;
+        values[lane * static_cast<size_t>(random_rows) + row] =
+            FloatToFp16(uniform);
+      }
+    }
+    inputs->views.push_back(&inputs->history_mask);
+    inputs->views.push_back(&inputs->random_values);
+  }
+  return true;
+}
+
 /**
  * @brief Allocate zeroed device-resident KV inputs for prefill.
  * @param graph Prefill graph defining all 72 cache tensors.
@@ -885,6 +1243,57 @@ bool BuildFullCaches(const rt::Graph& graph,
   return true;
 }
 
+/** Seed a contiguous batch cache from the two Prefill KV output lanes. */
+bool BuildBatchFullCaches(const rt::Graph& graph,
+                          const std::vector<rt::Tensor>& updates,
+                          const std::array<int32_t, 2>& active_lens,
+                          CacheState* state) {
+  if (state == nullptr || !BuildZeroCaches(graph, state) ||
+      updates.size() != 1 + kCacheCount || state->tensors.size() != kCacheCount) {
+    return false;
+  }
+  const auto& input_shapes = graph.GetInputShapes();
+  const auto& input_dtypes = graph.GetInputDtypes();
+  if (input_shapes.size() != 3 + kCacheCount || input_shapes[0].empty() ||
+      input_shapes[0][0] != 2) return false;
+  for (int32_t index = 0; index < kCacheCount; ++index) {
+    const size_t input_index = static_cast<size_t>(index + 3);
+    const size_t output_index = static_cast<size_t>(index + 1);
+    const rt::Tensor& update = updates[output_index];
+    rt::Tensor& cache = state->tensors[static_cast<size_t>(index)];
+    const int32_t bytes = rt::DtypeElementBytes(input_dtypes[input_index]);
+    if (bytes <= 0 || update.dtype != input_dtypes[input_index] ||
+        update.shape.size() != 4 || update.shape[0] != 2 ||
+        cache.shape != input_shapes[input_index]) return false;
+    const int32_t query = update.shape[1];
+    const int32_t cache_len = input_shapes[input_index][1];
+    const size_t row_bytes = static_cast<size_t>(ElementCount(update.shape)) /
+                             static_cast<size_t>(2 * query) *
+                             static_cast<size_t>(bytes);
+    const size_t lane_cache_bytes = static_cast<size_t>(ElementCount(cache.shape)) /
+                                    static_cast<size_t>(2) *
+                                    static_cast<size_t>(bytes);
+    if (query <= 0 || row_bytes == 0 || lane_cache_bytes !=
+        static_cast<size_t>(cache_len) * row_bytes) return false;
+    const size_t lane_update_bytes = static_cast<size_t>(query) * row_bytes;
+    for (size_t lane = 0; lane < 2; ++lane) {
+      const int32_t valid_len = active_lens[lane];
+      if (valid_len <= 0 || valid_len > query || valid_len > cache_len) {
+        return false;
+      }
+      const size_t source_offset = lane * lane_update_bytes;
+      const size_t destination = lane * lane_cache_bytes +
+          static_cast<size_t>(cache_len - valid_len) * row_bytes;
+      if (!WriteDeviceBuffer(cache.device_buffer, destination,
+                             update.data.data() + source_offset,
+                             static_cast<size_t>(valid_len) * row_bytes).ok()) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /**
  * @brief Assemble ordered embedding, position, mask, cache, and sampling inputs.
  * @param graph Target Language graph.
@@ -1016,6 +1425,142 @@ void RecordGraphTiming(const std::string& name,
 
 void RecordDecodeEvent(const std::string& event, GenerationMetrics* metrics) {
   if (metrics != nullptr) ++metrics->decode_events[event];
+}
+
+/** Return the first KV output for either Host or compact BPU sampling ABI. */
+size_t BatchCacheOutputOffset(const std::vector<rt::Tensor>& outputs) {
+  return !outputs.empty() && outputs[0].dtype == kS32 &&
+                 outputs[0].shape.size() == 3 &&
+                 outputs[0].shape[0] == 2 && outputs[0].shape[1] == 6 &&
+                 outputs[0].shape[2] == 1
+             ? 7
+             : 1;
+}
+
+/** Extract only the decision outputs consumed by the Host decoder. */
+bool ExtractBatchDecisionOutputs(const std::vector<rt::Tensor>& source,
+                                 int32_t lane,
+                                 std::vector<rt::Tensor>* destination) {
+  if (destination == nullptr) return false;
+  const size_t count = BatchCacheOutputOffset(source);
+  if (source.size() < count) return false;
+  destination->resize(count);
+  for (size_t index = 0; index < count; ++index) {
+    if (!ExtractBatchLane(source[index], lane, &destination->at(index))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Execute one static batch-2 Language graph and charge active lanes. */
+bool RunBatchGraph(
+    EngineState* engine, const std::string& name,
+    const std::array<int32_t, 2>& past_lens, bool pbd,
+    const CacheState& cache, std::vector<rt::Tensor>* outputs,
+    const std::array<const InputPayload*, 2>& payloads,
+    const std::array<const std::vector<int32_t>*, 2>& explicit_tokens,
+    const std::array<const std::vector<int32_t>*, 2>& generated_tokens,
+    const std::array<int32_t, 2>& active_lens,
+    const std::array<int32_t, 2>& pbd_prefix_lens,
+    const std::array<bool, 2>& active_lanes,
+    const std::array<GenerationMetrics*, 2>& lane_metrics) {
+  if (engine == nullptr || outputs == nullptr) return false;
+  rt::Graph* graph = engine->session.GetGraph(name);
+  if (graph == nullptr || graph->GetInputShapes().empty() ||
+      graph->GetInputShapes()[0].empty() ||
+      graph->GetInputShapes()[0][0] != 2) {
+    std::fprintf(stderr, "[FAIL] batch graph not found or invalid: %s\n",
+                 name.c_str());
+    return false;
+  }
+  const bool prefill = name == "prefill";
+  const bool fused_initial_pbd =
+      prefill && !graph->GetOutputShapes().empty() &&
+      graph->GetOutputShapes()[0].size() == 3 &&
+      graph->GetOutputShapes()[0][1] == 7 && payloads[0] != nullptr &&
+      payloads[0]->prompt_ids.size() + 6 <=
+          static_cast<size_t>(graph->GetInputShapes()[0][1]);
+  const auto input_build_started = std::chrono::steady_clock::now();
+  if (!BuildBatchInputs(*graph, engine->embed, payloads, explicit_tokens,
+                        generated_tokens, past_lens, active_lens,
+                        pbd_prefix_lens, pbd, prefill, fused_initial_pbd,
+                        cache, &engine->batch_random_state,
+                        &engine->prepared_inputs)) {
+    std::fprintf(stderr, "[FAIL] cannot build %s batch inputs\n",
+                 name.c_str());
+    return false;
+  }
+  const double input_build_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - input_build_started).count();
+
+  std::vector<rt::OutputSlice>& slices = engine->output_slices;
+  slices.assign(graph->GetOutputShapes().size(), rt::OutputSlice{});
+  bool use_slices = false;
+  const auto& output_shapes = graph->GetOutputShapes();
+  const auto& output_dtypes = graph->GetOutputDtypes();
+  size_t cache_offset = 1;
+  if (!output_shapes.empty() && !output_dtypes.empty() &&
+      output_dtypes[0] == kS32 && output_shapes[0].size() == 3 &&
+      output_shapes[0][1] == 6 && output_shapes[0][2] == 1) {
+    cache_offset = 7;
+  }
+  if (prefill) {
+    const int32_t active_len = active_lens[0];
+    if (active_len <= 0 || active_lens[1] != active_len) return false;
+    for (size_t index = cache_offset; index < output_shapes.size(); ++index) {
+      if (output_shapes[index].size() < 2 ||
+          active_len > output_shapes[index][1]) return false;
+      slices[index] = rt::OutputSlice{
+          output_shapes[index][1] - active_len, active_len};
+    }
+    use_slices = true;
+  } else if (pbd && pbd_prefix_lens[0] == 0 &&
+             pbd_prefix_lens[1] == 0) {
+    for (size_t index = cache_offset; index < output_shapes.size(); ++index) {
+      slices[index] = rt::OutputSlice{0, -1, false};
+    }
+    use_slices = true;
+  } else if (pbd) {
+    const int32_t rows = std::max(pbd_prefix_lens[0], pbd_prefix_lens[1]);
+    if (rows <= 0) return false;
+    for (size_t index = cache_offset; index < output_shapes.size(); ++index) {
+      if (output_shapes[index].size() < 2 || rows > output_shapes[index][1]) {
+        return false;
+      }
+      slices[index] = rt::OutputSlice{0, rows};
+    }
+    use_slices = true;
+  }
+
+  rt::ExecutionMetrics execution_metrics;
+  const rt::Result result = engine->session.ExecuteGraphByName(
+      name, engine->prepared_inputs.views, outputs, &execution_metrics,
+      use_slices ? &slices : nullptr);
+  if (!result.ok()) {
+    std::fprintf(stderr, "[FAIL] %s batch execute code=%d: %s\n",
+                 name.c_str(), result.code, result.message.c_str());
+    return false;
+  }
+  for (size_t lane = 0; lane < 2; ++lane) {
+    if (active_lanes[lane]) {
+      RecordGraphTiming(name, execution_metrics, input_build_ms,
+                        lane_metrics[lane]);
+    }
+  }
+  if (std::getenv("LA_PROFILE_EXECUTION") != nullptr) {
+    std::printf(
+        "[profile] batch_graph=%s total=%.3f input_build=%.3f "
+        "bpu_wait=%.3f input_mib=%.2f resident_input_mib=%.2f "
+        "output_mib=%.2f active=%d%d\n",
+        name.c_str(), execution_metrics.total_ms, input_build_ms,
+        execution_metrics.bpu_wait_ms,
+        execution_metrics.input_bytes / (1024.0 * 1024.0),
+        execution_metrics.resident_input_bytes / (1024.0 * 1024.0),
+        execution_metrics.output_bytes / (1024.0 * 1024.0),
+        active_lanes[0] ? 1 : 0, active_lanes[1] ? 1 : 0);
+  }
+  return true;
 }
 
 /**
@@ -1255,6 +1800,57 @@ bool AppendCacheUpdate(const std::vector<rt::Tensor>& outputs,
     std::printf("[profile] cache_commit total=%.3f copied_mib=%.3f\n",
                 elapsed_ms, copied_bytes / (1024.0 * 1024.0));
   }
+  return true;
+}
+
+/** Commit one lane's KV rows from a batch output into its independent history. */
+bool AppendBatchCacheUpdate(const std::vector<rt::Tensor>& outputs,
+                            size_t lane, int32_t history_len,
+                            CacheState* state, int32_t valid_query,
+                            GenerationMetrics* metrics) {
+  if (lane >= 2 || state == nullptr || state->tensors.size() != kCacheCount) {
+    return false;
+  }
+  const auto started = std::chrono::steady_clock::now();
+  const size_t output_offset = BatchCacheOutputOffset(outputs);
+  if (outputs.size() != output_offset + kCacheCount) return false;
+  uint64_t copied_bytes = 0;
+  for (int32_t index = 0; index < kCacheCount; ++index) {
+    const rt::Tensor& update =
+        outputs[output_offset + static_cast<size_t>(index)];
+    rt::Tensor& cache = state->tensors[static_cast<size_t>(index)];
+    if (update.dtype != cache.dtype || update.shape.size() != 4 ||
+        update.shape[0] != 2 || cache.shape.size() != 4 ||
+        cache.shape[0] != 2 || cache.device_buffer == nullptr) {
+      return false;
+    }
+    const int32_t query = update.shape[1];
+    const int32_t committed = valid_query < 0 ? query : valid_query;
+    const int32_t cache_len = cache.shape[1];
+    const int32_t bytes = rt::DtypeElementBytes(cache.dtype);
+    if (query <= 0 || committed <= 0 || committed > query || bytes <= 0 ||
+        history_len <= 0 || history_len + committed > cache_len ||
+        update.data.empty()) {
+      return false;
+    }
+    const size_t update_lane_bytes =
+        static_cast<size_t>(ElementCount(update.shape) / 2) * bytes;
+    const size_t row_bytes = update_lane_bytes / static_cast<size_t>(query);
+    if (row_bytes == 0 || update.data.size() != update_lane_bytes * 2) {
+      return false;
+    }
+    const uint8_t* source =
+        update.data.data() + lane * update_lane_bytes;
+    if (!rt::AppendBatchedDeviceLinearRows(
+            &cache, 2, lane, static_cast<size_t>(cache_len), row_bytes,
+            static_cast<size_t>(history_len), source, update_lane_bytes,
+            static_cast<size_t>(committed), &copied_bytes)) {
+      return false;
+    }
+  }
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - started).count();
+  if (metrics != nullptr) metrics->cache_update_ms += elapsed_ms;
   return true;
 }
 
@@ -1741,6 +2337,515 @@ bool RunPayload(EngineState* engine,
   return true;
 }
 
+struct BatchGraphPlan {
+  bool valid = false;
+  bool pbd = false;
+  int32_t pbd_prefix_len = 0;
+  std::string graph;
+};
+
+/** Run two independent generation states through one static batch-2 HBM. */
+bool RunBatchPayloads(
+    EngineState* engine, const std::array<const InputPayload*, 2>& payloads,
+    int32_t max_new_tokens, const std::string& generation_mode,
+    bool protect_detection_structure,
+    const std::array<GenerationMetrics*, 2>& metrics,
+    std::array<BatchLaneState, 2>* lanes) {
+  if (engine == nullptr || lanes == nullptr || payloads[0] == nullptr ||
+      payloads[1] == nullptr || max_new_tokens <= 0 ||
+      payloads[0]->prompt_ids.size() != payloads[1]->prompt_ids.size()) {
+    return false;
+  }
+  rt::Graph* prefill = engine->session.GetGraph("prefill");
+  if (prefill == nullptr || prefill->GetInputShapes().empty() ||
+      prefill->GetInputShapes()[0].empty() ||
+      prefill->GetInputShapes()[0][0] != 2) return false;
+  const int32_t prompt_len =
+      static_cast<int32_t>(payloads[0]->prompt_ids.size());
+  const int32_t cache_len = prefill->GetInputShapes()[2][2];
+  const bool fused_initial_pbd =
+      !prefill->GetOutputShapes().empty() &&
+      prefill->GetOutputShapes()[0].size() == 3 &&
+      prefill->GetOutputShapes()[0][1] == 7 &&
+      prompt_len + 6 <= prefill->GetInputShapes()[0][1];
+  if (prompt_len <= 0 || prompt_len > prefill->GetInputShapes()[0][1] ||
+      cache_len <= prompt_len) return false;
+
+  for (size_t lane = 0; lane < 2; ++lane) {
+    BatchLaneState& state = lanes->at(lane);
+    state = {};
+    state.payload = payloads[lane];
+    state.generated.assign(payloads[lane]->prompt_ids.begin(),
+                           payloads[lane]->prompt_ids.end());
+    state.generated.reserve(state.generated.size() +
+                            static_cast<size_t>(max_new_tokens));
+    state.response.reserve(static_cast<size_t>(max_new_tokens));
+    state.pending_pbd.reserve(6);
+    state.graph_tokens.reserve(12);
+    state.history_len = prompt_len;
+    state.prefill_tokens = prompt_len;
+    state.max_new_tokens = max_new_tokens;
+    state.protect_detection_structure = protect_detection_structure;
+    state.slow_mode = generation_mode == "slow";
+    state.phase = state.slow_mode ? BatchPhase::kArStep : BatchPhase::kPbd;
+    state.executed_mode = generation_mode;
+    state.metrics = metrics[lane];
+  }
+
+  const auto cache_initialize_started = std::chrono::steady_clock::now();
+  if (!BuildZeroCaches(*prefill, &engine->batch_cache)) return false;
+  const double cache_initialize_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cache_initialize_started).count();
+  for (GenerationMetrics* metric : metrics) {
+    if (metric != nullptr) metric->cache_initialize_ms += cache_initialize_ms;
+  }
+
+  const std::array<int32_t, 2> zero_lens{{0, 0}};
+  const std::array<int32_t, 2> active_lens{{prompt_len, prompt_len}};
+  const std::array<const std::vector<int32_t>*, 2> no_tokens{{nullptr, nullptr}};
+  const std::array<bool, 2> both_active{{true, true}};
+  const auto prefill_started = std::chrono::steady_clock::now();
+  if (!RunBatchGraph(engine, "prefill", zero_lens, false,
+                     engine->batch_cache, &engine->batch_prefill_outputs,
+                     payloads, no_tokens, no_tokens, active_lens, zero_lens,
+                     both_active, metrics)) {
+    return false;
+  }
+  const double prefill_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - prefill_started).count();
+  const auto cache_seed_started = std::chrono::steady_clock::now();
+  if (!BuildBatchFullCaches(*prefill, engine->batch_prefill_outputs,
+                            active_lens, &engine->batch_cache)) {
+    return false;
+  }
+  const double cache_seed_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cache_seed_started).count();
+  for (GenerationMetrics* metric : metrics) {
+    if (metric == nullptr) continue;
+    metric->prefill_tokens = prompt_len;
+    metric->prefill_ms = prefill_ms;
+    metric->cache_seed_ms += cache_seed_ms;
+  }
+
+  std::array<rt::Tensor, 2> bootstrap_logits;
+  std::array<bool, 2> bootstrap_pending{{false, false}};
+  for (size_t lane = 0; lane < 2; ++lane) {
+    if (!ExtractBatchLane(engine->batch_prefill_outputs[0],
+                          static_cast<int32_t>(lane),
+                          &bootstrap_logits[lane])) {
+      return false;
+    }
+    if ((*lanes)[lane].slow_mode) {
+      const int32_t row = bootstrap_logits[lane].shape.size() == 3 &&
+                                  bootstrap_logits[lane].shape[1] == 7
+                              ? 0
+                              : bootstrap_logits[lane].shape[1] - 1;
+      if (!SelectLogitsRow(bootstrap_logits[lane], row,
+                           &(*lanes)[lane].pending_ar_logits)) {
+        return false;
+      }
+    } else {
+      bootstrap_pending[lane] = fused_initial_pbd;
+    }
+  }
+
+  const auto decode_started = std::chrono::steady_clock::now();
+  std::array<std::chrono::steady_clock::time_point, 2> decode_ended{};
+  auto finish = [&](size_t lane, const std::string& reason) {
+    BatchLaneState& state = lanes->at(lane);
+    state.stop_reason = reason;
+    state.finished = true;
+    state.phase = BatchPhase::kFinished;
+    decode_ended[lane] = std::chrono::steady_clock::now();
+  };
+  auto apply_pbd_decision = [&](size_t lane,
+                                const rt::HybridDecision& decision) -> bool {
+    BatchLaneState& state = lanes->at(lane);
+    GenerationMetrics* metric = state.metrics;
+    RecordDecodeEvent("pbd_" + decision.type, metric);
+    state.pending_pbd.clear();
+    if (decision.terminal) {
+      if (metric != nullptr) {
+        metric->pbd_accepted_tokens +=
+            static_cast<int32_t>(decision.tokens.size());
+      }
+      state.response.insert(state.response.end(), decision.tokens.begin(),
+                            decision.tokens.end());
+      state.generated.insert(state.generated.end(), decision.tokens.begin(),
+                             decision.tokens.end());
+      finish(lane, "im_end");
+      return true;
+    }
+    if (state.protect_detection_structure &&
+        HasRepeatedDetectionBox(state.response, decision.tokens)) {
+      finish(lane, "repeated_box");
+      return true;
+    }
+    const int32_t accepted = static_cast<int32_t>(decision.tokens.size());
+    const int32_t remaining =
+        state.max_new_tokens - static_cast<int32_t>(state.response.size());
+    if (accepted <= 0 || accepted > 6 || remaining <= 0) return false;
+    if (accepted > remaining) {
+      if (metric != nullptr) metric->pbd_accepted_tokens += remaining;
+      state.response.insert(state.response.end(), decision.tokens.begin(),
+                            decision.tokens.begin() + remaining);
+      finish(lane, "max_new_tokens");
+      return true;
+    }
+    if (decision.switch_to_ar) {
+      RecordDecodeEvent("pbd_to_ar", metric);
+      state.graph_tokens = decision.tokens;
+      state.phase = BatchPhase::kArBridge;
+    } else {
+      state.pending_pbd = decision.tokens;
+      state.phase = BatchPhase::kPbd;
+    }
+    state.response.insert(state.response.end(), decision.tokens.begin(),
+                          decision.tokens.end());
+    state.generated.insert(state.generated.end(), decision.tokens.begin(),
+                           decision.tokens.end());
+    if (metric != nullptr) metric->pbd_accepted_tokens += accepted;
+    return true;
+  };
+
+  if (bootstrap_pending[0] && bootstrap_pending[1]) {
+    std::array<rt::HybridDecision, 2> decisions;
+    std::array<double, 2> host_ms{{0.0, 0.0}};
+    auto decode_bootstrap = [&](size_t lane) {
+      const auto started = std::chrono::steady_clock::now();
+      decisions[lane] = rt::DecodePbd(
+          bootstrap_logits[lane], (*lanes)[lane].generated,
+          rt::PbdDecodeConfig{}, nullptr, 1);
+      host_ms[lane] = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - started).count();
+    };
+    std::thread peer([&] { decode_bootstrap(1); });
+    decode_bootstrap(0);
+    peer.join();
+    for (size_t lane = 0; lane < 2; ++lane) {
+      bootstrap_pending[lane] = false;
+      if ((*lanes)[lane].metrics != nullptr) {
+        ++(*lanes)[lane].metrics->pbd_calls;
+        (*lanes)[lane].metrics->host_decode_ms += host_ms[lane];
+      }
+      if (!apply_pbd_decision(lane, decisions[lane])) return false;
+    }
+  }
+
+  while (!(*lanes)[0].finished || !(*lanes)[1].finished) {
+    std::array<BatchGraphPlan, 2> plans;
+    for (size_t lane = 0; lane < 2; ++lane) {
+      BatchLaneState& state = (*lanes)[lane];
+      if (state.finished) continue;
+      if (static_cast<int32_t>(state.response.size()) >= state.max_new_tokens) {
+        finish(lane, "max_new_tokens");
+        continue;
+      }
+      if (state.phase == BatchPhase::kPbd) {
+        const int32_t prefix = static_cast<int32_t>(state.pending_pbd.size());
+        if (prefix == 0 && bootstrap_pending[lane]) {
+          bootstrap_pending[lane] = false;
+          if (state.metrics != nullptr) ++state.metrics->pbd_calls;
+          const auto host_started = std::chrono::steady_clock::now();
+          const rt::HybridDecision decision = rt::DecodePbd(
+              bootstrap_logits[lane], state.generated, rt::PbdDecodeConfig{},
+              nullptr, 1);
+          if (state.metrics != nullptr) {
+            state.metrics->host_decode_ms +=
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - host_started).count();
+          }
+          if (!apply_pbd_decision(lane, decision)) return false;
+          continue;
+        }
+        if (prefix < 0 || prefix > 6 ||
+            state.history_len + prefix + 6 > cache_len) {
+          finish(lane, "cache_limit_before_pbd");
+          continue;
+        }
+        state.graph_tokens.clear();
+        if (prefix == 0) {
+          state.graph_tokens = {state.generated.back(), kTextMaskToken,
+                                kTextMaskToken, kTextMaskToken,
+                                kTextMaskToken, kTextMaskToken};
+        } else {
+          state.graph_tokens.insert(state.graph_tokens.end(),
+                                    state.pending_pbd.begin(),
+                                    state.pending_pbd.end());
+          state.graph_tokens.push_back(state.pending_pbd.back());
+          state.graph_tokens.insert(state.graph_tokens.end(), 5,
+                                    kTextMaskToken);
+        }
+        plans[lane] = BatchGraphPlan{
+            true, true, prefix, PbdGraphName(prefix)};
+        continue;
+      }
+      if (state.phase == BatchPhase::kArBridge) {
+        if (state.graph_tokens.empty() || state.graph_tokens.size() > 5 ||
+            state.history_len + static_cast<int32_t>(state.graph_tokens.size()) >
+                cache_len) {
+          return false;
+        }
+        plans[lane] = BatchGraphPlan{
+            true, false, 0,
+            ArGraphName(static_cast<int32_t>(state.graph_tokens.size()))};
+        continue;
+      }
+      if (state.phase != BatchPhase::kArStep ||
+          state.pending_ar_logits.data.empty()) {
+        return false;
+      }
+      const auto host_started = std::chrono::steady_clock::now();
+      const int32_t token =
+          rt::DecodeArGreedy(state.pending_ar_logits, state.generated);
+      if (state.metrics != nullptr) {
+        state.metrics->host_decode_ms +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - host_started).count();
+        ++state.metrics->ar_tokens;
+      }
+      state.pending_ar_logits = {};
+      state.response.push_back(token);
+      state.generated.push_back(token);
+      if (state.slow_mode) {
+        if (token == kImEndToken) {
+          finish(lane, "im_end");
+          continue;
+        }
+      } else {
+        if (token == kBoxEndToken) {
+          RecordDecodeEvent("ar_box_end", state.metrics);
+        } else if (rt::IsCoordinateToken(token)) {
+          RecordDecodeEvent("ar_coordinate", state.metrics);
+        } else if (token == kNoneToken) {
+          RecordDecodeEvent("ar_none", state.metrics);
+        } else {
+          RecordDecodeEvent("ar_other", state.metrics);
+        }
+        if (state.protect_detection_structure && token == kBoxEndToken &&
+            HasRepeatedTrailingDetectionBox(state.response)) {
+          finish(lane, "repeated_box");
+          continue;
+        }
+        if (token != kBoxEndToken && !rt::IsCoordinateToken(token) &&
+            token != kNoneToken) {
+          finish(lane, "ar_non_coordinate");
+          continue;
+        }
+        if (token == kBoxEndToken) {
+          state.pending_pbd = {token};
+          RecordDecodeEvent("ar_to_pbd", state.metrics);
+          state.phase = BatchPhase::kPbd;
+          continue;
+        }
+      }
+      if (state.history_len >= cache_len) {
+        finish(lane, "cache_limit");
+        continue;
+      }
+      state.graph_tokens = {token};
+      plans[lane] = BatchGraphPlan{true, false, 0, "decode_ar"};
+    }
+
+    int selected_lane = -1;
+    for (int lane = 0; lane < 2; ++lane) {
+      if (plans[static_cast<size_t>(lane)].valid) {
+        selected_lane = lane;
+        break;
+      }
+    }
+    if (selected_lane < 0) continue;
+    const BatchGraphPlan& selected = plans[static_cast<size_t>(selected_lane)];
+    std::array<bool, 2> active{{false, false}};
+    std::array<std::vector<int32_t>, 2> dummy_tokens;
+    std::array<const std::vector<int32_t>*, 2> explicit_tokens;
+    std::array<const std::vector<int32_t>*, 2> generated_tokens;
+    std::array<int32_t, 2> past_lens;
+    std::array<int32_t, 2> prefixes;
+    const int32_t query = LanguageGraphQueryLength(selected.graph,
+                                                    prefill->GetInputShapes()[0][1]);
+    if (query <= 0) return false;
+    for (size_t lane = 0; lane < 2; ++lane) {
+      BatchLaneState& state = (*lanes)[lane];
+      active[lane] = plans[lane].valid && plans[lane].graph == selected.graph;
+      past_lens[lane] = active[lane]
+          ? state.history_len
+          : std::min(state.history_len, cache_len - query);
+      prefixes[lane] = selected.pbd ? selected.pbd_prefix_len : 0;
+      generated_tokens[lane] = &state.generated;
+      if (active[lane]) {
+        explicit_tokens[lane] = &state.graph_tokens;
+      } else {
+        dummy_tokens[lane].assign(static_cast<size_t>(query), kTextMaskToken);
+        if (!dummy_tokens[lane].empty()) {
+          dummy_tokens[lane][0] = state.generated.empty()
+              ? kTextMaskToken : state.generated.back();
+        }
+        explicit_tokens[lane] = &dummy_tokens[lane];
+      }
+    }
+    const std::array<const InputPayload*, 2> no_payloads{{nullptr, nullptr}};
+    if (!RunBatchGraph(engine, selected.graph, past_lens, selected.pbd,
+                       engine->batch_cache, &engine->batch_graph_outputs,
+                       no_payloads, explicit_tokens, generated_tokens,
+                       std::array<int32_t, 2>{{-1, -1}}, prefixes, active,
+                       metrics)) {
+      return false;
+    }
+
+    if (selected.pbd) {
+      auto& decision_outputs = engine->batch_decision_outputs;
+      std::array<rt::HybridDecision, 2> decisions;
+      std::array<double, 2> host_ms{{0.0, 0.0}};
+      for (size_t lane = 0; lane < 2; ++lane) {
+        if (!active[lane]) continue;
+        BatchLaneState& state = (*lanes)[lane];
+        const int32_t prefix = plans[lane].pbd_prefix_len;
+        if (prefix > 0) {
+          if (!AppendBatchCacheUpdate(engine->batch_graph_outputs, lane,
+                                      state.history_len,
+                                      &engine->batch_cache, prefix,
+                                      state.metrics)) {
+            return false;
+          }
+          state.history_len += prefix;
+        }
+        if (!ExtractBatchDecisionOutputs(engine->batch_graph_outputs,
+                                         static_cast<int32_t>(lane),
+                                         &decision_outputs[lane])) {
+          return false;
+        }
+      }
+      auto decode_lane = [&](size_t lane) {
+        BatchLaneState& state = (*lanes)[lane];
+        const int32_t prefix = plans[lane].pbd_prefix_len;
+        const auto started = std::chrono::steady_clock::now();
+        decisions[lane] = decision_outputs[lane].size() == 7
+            ? rt::DecodePbdCompact(decision_outputs[lane])
+            : rt::DecodePbd(decision_outputs[lane][0], state.generated,
+                            rt::PbdDecodeConfig{}, nullptr,
+                            PbdLogitStart(decision_outputs[lane][0], prefix));
+        host_ms[lane] = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+      };
+      if (active[0] && active[1]) {
+        std::thread peer([&] { decode_lane(1); });
+        decode_lane(0);
+        peer.join();
+      } else {
+        decode_lane(active[0] ? 0 : 1);
+      }
+      for (size_t lane = 0; lane < 2; ++lane) {
+        if (!active[lane]) continue;
+        BatchLaneState& state = (*lanes)[lane];
+        if (state.metrics != nullptr) {
+          ++state.metrics->pbd_calls;
+          state.metrics->host_decode_ms += host_ms[lane];
+        }
+        if (!apply_pbd_decision(lane, decisions[lane])) return false;
+      }
+      continue;
+    }
+
+    for (size_t lane = 0; lane < 2; ++lane) {
+      if (!active[lane]) continue;
+      BatchLaneState& state = (*lanes)[lane];
+
+      const int32_t committed =
+          static_cast<int32_t>(state.graph_tokens.size());
+      if (committed <= 0 ||
+          !AppendBatchCacheUpdate(engine->batch_graph_outputs, lane,
+                                  state.history_len, &engine->batch_cache,
+                                  committed, state.metrics)) {
+        return false;
+      }
+      state.history_len += committed;
+      rt::Tensor lane_logits;
+      if (!ExtractBatchLane(engine->batch_graph_outputs[0],
+                            static_cast<int32_t>(lane), &lane_logits)) {
+        return false;
+      }
+      if (lane_logits.shape == std::vector<int32_t>{1, 1, kVocab}) {
+        state.pending_ar_logits = std::move(lane_logits);
+      } else if (!SelectLogitsRow(lane_logits,
+                                  ArLogitRow(lane_logits, committed),
+                                  &state.pending_ar_logits)) {
+        return false;
+      }
+      if (state.metrics != nullptr) ++state.metrics->ar_calls;
+      state.graph_tokens.clear();
+      state.phase = BatchPhase::kArStep;
+    }
+  }
+
+  for (size_t lane = 0; lane < 2; ++lane) {
+    BatchLaneState& state = (*lanes)[lane];
+    if (state.stop_reason.empty()) state.stop_reason = "max_new_tokens";
+    if (decode_ended[lane].time_since_epoch().count() == 0) {
+      decode_ended[lane] = std::chrono::steady_clock::now();
+    }
+    if (state.metrics != nullptr) {
+      state.metrics->decode_tokens =
+          static_cast<int32_t>(state.response.size());
+      state.metrics->decode_ms = std::chrono::duration<double, std::milli>(
+          decode_ended[lane] - decode_started).count();
+    }
+  }
+  return true;
+}
+
+/** Convert private runtime counters into the public Language result. */
+locateanything::LanguageResult MakeLanguageResult(
+    std::vector<int32_t> tokens, std::string stop_reason,
+    int32_t prompt_tokens, const GenerationMetrics& runtime_metrics,
+    std::string executed_mode, std::string fallback_reason) {
+  locateanything::LanguageResult result;
+  result.token_ids = std::move(tokens);
+  result.stop_reason = std::move(stop_reason);
+  result.metrics.prompt_tokens = prompt_tokens;
+  result.metrics.generated_tokens =
+      static_cast<int32_t>(result.token_ids.size());
+  result.metrics.pbd_calls = runtime_metrics.pbd_calls;
+  result.metrics.pbd_accepted_tokens = runtime_metrics.pbd_accepted_tokens;
+  result.metrics.ar_calls = runtime_metrics.ar_calls;
+  result.metrics.ar_tokens = runtime_metrics.ar_tokens;
+  result.metrics.prefill_ms = runtime_metrics.prefill_ms;
+  result.metrics.decode_ms = runtime_metrics.decode_ms;
+  result.metrics.cache_initialize_ms = runtime_metrics.cache_initialize_ms;
+  result.metrics.cache_seed_ms = runtime_metrics.cache_seed_ms;
+  result.metrics.cache_update_ms = runtime_metrics.cache_update_ms;
+  result.metrics.host_decode_ms = runtime_metrics.host_decode_ms;
+  result.metrics.executed_mode = std::move(executed_mode);
+  result.metrics.fallback_reason = std::move(fallback_reason);
+  result.metrics.graph_timings.reserve(runtime_metrics.graph_timings.size());
+  for (const auto& entry : runtime_metrics.graph_timings) {
+    locateanything::GraphTiming timing;
+    timing.graph = entry.first;
+    timing.calls = entry.second.calls;
+    timing.total_ms = entry.second.total_ms;
+    timing.input_build_ms = entry.second.input_build_ms;
+    timing.buffer_prepare_ms = entry.second.buffer_prepare_ms;
+    timing.input_pack_ms = entry.second.input_pack_ms;
+    timing.input_flush_ms = entry.second.input_flush_ms;
+    timing.bpu_wait_ms = entry.second.bpu_wait_ms;
+    timing.submit_ms = entry.second.submit_ms;
+    timing.output_flush_ms = entry.second.output_flush_ms;
+    timing.output_unpack_ms = entry.second.output_unpack_ms;
+    timing.input_bytes = entry.second.input_bytes;
+    timing.resident_input_bytes = entry.second.resident_input_bytes;
+    timing.output_bytes = entry.second.output_bytes;
+    result.metrics.graph_timings.push_back(std::move(timing));
+  }
+  result.metrics.decode_events.reserve(runtime_metrics.decode_events.size());
+  for (const auto& entry : runtime_metrics.decode_events) {
+    locateanything::DecodeEventCount event;
+    event.event = entry.first;
+    event.count = entry.second;
+    result.metrics.decode_events.push_back(std::move(event));
+  }
+  return result;
+}
+
 }  // namespace
 
 
@@ -1749,6 +2854,7 @@ namespace locateanything {
 struct LanguageEngine::Impl {
   EngineState engine;
   std::mutex mutex;
+  int32_t batch_size = 1;
   bool initialized = false;
 };
 
@@ -1756,6 +2862,10 @@ LanguageEngine::LanguageEngine() : impl_(std::make_unique<Impl>()) {}
 LanguageEngine::~LanguageEngine() = default;
 LanguageEngine::LanguageEngine(LanguageEngine&&) noexcept = default;
 LanguageEngine& LanguageEngine::operator=(LanguageEngine&&) noexcept = default;
+
+int32_t LanguageEngine::BatchSize() const {
+  return impl_ == nullptr ? 1 : impl_->batch_size;
+}
 
 void LanguageEngine::Initialize(const std::string& model_path,
                                 const std::string& embeddings_path,
@@ -1777,9 +2887,10 @@ void LanguageEngine::Initialize(const std::string& model_path,
     throw std::runtime_error("Language HBM graph contract mismatch");
   }
   const LanguageAbiProfile abi = ValidateLanguageAbi(&impl_->engine.session);
-  std::printf("[Language] ABI graphs=13 prefill=%d cache=%d "
+  impl_->batch_size = abi.batch_size;
+  std::printf("[Language] ABI graphs=13 batch=%d prefill=%d cache=%d "
               "fused_prefill=%s compact_logits=%s logits=%d/%s/%s\n",
-              abi.prefill_len, abi.cache_len,
+              abi.batch_size, abi.prefill_len, abi.cache_len,
               abi.fused_prefill ? "true" : "false",
               abi.compact_logits ? "true" : "false",
               abi.fused_prefill ? 7 : 1,
@@ -1802,6 +2913,15 @@ LanguageResult LanguageEngine::Generate(
     const LanguageInput& input, int32_t max_new_tokens,
     const std::string& generation_mode,
     bool protect_detection_structure) {
+  if (BatchSize() == 2) {
+    std::vector<LanguageResult> results = GenerateBatch(
+        {input}, max_new_tokens, generation_mode,
+        protect_detection_structure);
+    if (results.empty()) {
+      throw std::runtime_error("batch Language generation returned no result");
+    }
+    return std::move(results.front());
+  }
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (!impl_->initialized) {
     throw std::logic_error("Language engine is not initialized");
@@ -1899,6 +3019,172 @@ LanguageResult LanguageEngine::Generate(
     result.metrics.decode_events.push_back(std::move(event));
   }
   return result;
+}
+
+std::vector<LanguageResult> LanguageEngine::GenerateBatch(
+    const std::vector<LanguageInput>& inputs, int32_t max_new_tokens,
+    const std::string& generation_mode,
+    bool protect_detection_structure) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (!impl_->initialized) {
+    throw std::logic_error("Language engine is not initialized");
+  }
+  if (inputs.empty() || inputs.size() > 2 || max_new_tokens <= 0 ||
+      (generation_mode != "hybrid" && generation_mode != "slow")) {
+    throw std::invalid_argument("invalid batch Language generation configuration");
+  }
+  rt::Graph* prefill = impl_->engine.session.GetGraph("prefill");
+  if (prefill == nullptr || prefill->GetInputShapes().empty() ||
+      prefill->GetInputShapes()[0].size() != 3) {
+    throw std::runtime_error("Language HBM has no valid Prefill graph");
+  }
+  const int32_t prefill_capacity = prefill->GetInputShapes()[0][1];
+  auto validate_input = [&](const LanguageInput& input) {
+    if (input.prompt_ids.empty() ||
+        input.prompt_ids.size() > static_cast<size_t>(prefill_capacity) ||
+        input.visual_features_fp16.size() %
+                (static_cast<size_t>(kHidden) * sizeof(uint16_t)) !=
+            0) {
+      throw std::invalid_argument("invalid batch Language input payload");
+    }
+    size_t image_count = 0;
+    for (int32_t token : input.prompt_ids) {
+      if (token < 0 || token >= kVocab) {
+        throw std::invalid_argument("Language prompt contains an invalid token");
+      }
+      image_count += token == kImageToken;
+    }
+    const size_t expected_visual_bytes =
+        image_count * static_cast<size_t>(kHidden) * sizeof(uint16_t);
+    if (image_count == 0 ||
+        input.visual_features_fp16.size() != expected_visual_bytes) {
+      throw std::invalid_argument(
+          "Language visual features do not match image tokens");
+    }
+  };
+  for (const LanguageInput& input : inputs) validate_input(input);
+
+  std::vector<LanguageResult> results;
+  results.reserve(inputs.size());
+  if (impl_->batch_size == 1) {
+    for (const LanguageInput& input : inputs) {
+      InputPayload payload{input.prompt_ids, input.visual_features_fp16};
+      GenerationMetrics runtime_metrics;
+      std::vector<int32_t> tokens;
+      std::string stop_reason;
+      std::string executed_mode;
+      std::string fallback_reason;
+      if (!RunPayload(&impl_->engine, payload, max_new_tokens,
+                      generation_mode, &tokens, &stop_reason, &runtime_metrics,
+                      protect_detection_structure, &executed_mode,
+                      &fallback_reason)) {
+        throw std::runtime_error("Language generation failed");
+      }
+      results.push_back(MakeLanguageResult(
+          std::move(tokens), std::move(stop_reason),
+          static_cast<int32_t>(input.prompt_ids.size()), runtime_metrics,
+          std::move(executed_mode), std::move(fallback_reason)));
+    }
+    return results;
+  }
+  if (impl_->batch_size != 2) {
+    throw std::runtime_error("unsupported Language HBM batch size");
+  }
+
+  std::array<InputPayload, 2> payload_storage = {
+      InputPayload{inputs[0].prompt_ids, inputs[0].visual_features_fp16},
+      InputPayload{inputs.size() == 2 ? inputs[1].prompt_ids : inputs[0].prompt_ids,
+                   inputs.size() == 2 ? inputs[1].visual_features_fp16
+                                      : inputs[0].visual_features_fp16}};
+  std::array<const InputPayload*, 2> payloads{{&payload_storage[0],
+                                                &payload_storage[1]}};
+  std::array<GenerationMetrics, 2> runtime_metrics;
+  std::array<GenerationMetrics*, 2> metric_ptrs{{&runtime_metrics[0],
+                                                  &runtime_metrics[1]}};
+  std::array<BatchLaneState, 2> lanes;
+  if (inputs.size() == 2 &&
+      inputs[0].prompt_ids.size() != inputs[1].prompt_ids.size()) {
+    // A static Prefill graph has one sequence length. Preserve correctness by
+    // running each unequal-length input in its own duplicated batch.
+    for (size_t index = 0; index < 2; ++index) {
+      InputPayload single_payload{inputs[index].prompt_ids,
+                                  inputs[index].visual_features_fp16};
+      std::array<const InputPayload*, 2> single_payloads{{
+          &single_payload, &single_payload}};
+      runtime_metrics = {};
+      lanes = {};
+      if (!RunBatchPayloads(&impl_->engine, single_payloads, max_new_tokens,
+                            generation_mode, protect_detection_structure,
+                            metric_ptrs, &lanes)) {
+        throw std::runtime_error("batch Language generation failed");
+      }
+      BatchLaneState& state = lanes[0];
+      if (protect_detection_structure && generation_mode == "hybrid" &&
+          state.stop_reason != "im_end") {
+        const std::string fallback_reason = state.stop_reason.empty()
+            ? "hybrid_failed" : state.stop_reason;
+        GenerationMetrics fallback_metrics;
+        std::array<GenerationMetrics*, 2> fallback_ptrs{{&fallback_metrics,
+                                                           &runtime_metrics[1]}};
+        state = {};
+        if (!RunBatchPayloads(&impl_->engine, single_payloads, max_new_tokens, "slow",
+                              false, fallback_ptrs, &lanes)) {
+          throw std::runtime_error("batch Language fallback failed");
+        }
+        results.push_back(MakeLanguageResult(
+            std::move(lanes[0].response), std::move(lanes[0].stop_reason),
+            static_cast<int32_t>(inputs[index].prompt_ids.size()),
+            fallback_metrics, "slow", fallback_reason));
+      } else {
+        results.push_back(MakeLanguageResult(
+            std::move(state.response), std::move(state.stop_reason),
+            static_cast<int32_t>(inputs[index].prompt_ids.size()),
+            runtime_metrics[0], state.executed_mode, state.fallback_reason));
+      }
+    }
+    return results;
+  }
+
+  if (!RunBatchPayloads(&impl_->engine, payloads, max_new_tokens,
+                        generation_mode, protect_detection_structure,
+                        metric_ptrs, &lanes)) {
+    throw std::runtime_error("batch Language generation failed");
+  }
+  for (size_t lane = 0; lane < inputs.size(); ++lane) {
+    BatchLaneState& state = lanes[lane];
+    if (protect_detection_structure && generation_mode == "hybrid" &&
+        state.stop_reason != "im_end") {
+      // Restart only the failed lane with the same batch HBM and a duplicated
+      // peer. This retains the stable detection fallback semantics.
+      InputPayload fallback_payload{inputs[lane].prompt_ids,
+                                    inputs[lane].visual_features_fp16};
+      const std::string fallback_reason = state.stop_reason.empty()
+          ? "hybrid_failed" : state.stop_reason;
+      std::array<const InputPayload*, 2> fallback_payloads{{
+          &fallback_payload, &fallback_payload}};
+      GenerationMetrics fallback_metrics[2];
+      std::array<GenerationMetrics*, 2> fallback_ptrs{{&fallback_metrics[0],
+                                                        &fallback_metrics[1]}};
+      std::array<BatchLaneState, 2> fallback_lanes;
+      if (!RunBatchPayloads(&impl_->engine, fallback_payloads, max_new_tokens,
+                            "slow", false, fallback_ptrs,
+                            &fallback_lanes)) {
+        throw std::runtime_error("batch Language fallback failed");
+      }
+      results.push_back(MakeLanguageResult(
+          std::move(fallback_lanes[0].response),
+          std::move(fallback_lanes[0].stop_reason),
+          static_cast<int32_t>(inputs[lane].prompt_ids.size()),
+          fallback_metrics[0], "slow", fallback_reason));
+    } else {
+      results.push_back(MakeLanguageResult(
+          std::move(state.response), std::move(state.stop_reason),
+          static_cast<int32_t>(inputs[lane].prompt_ids.size()),
+          runtime_metrics[lane], state.executed_mode,
+          state.fallback_reason));
+    }
+  }
+  return results;
 }
 
 }  // namespace locateanything

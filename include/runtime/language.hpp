@@ -56,6 +56,21 @@ class LanguageEngine {
                           const std::string& generation_mode,
                           bool protect_detection_structure);
 
+  /**
+   * @brief Generate up to two independent responses with one Language graph call.
+   *
+   * A batch-1 HBM accepts exactly one input. A batch-2 HBM accepts one or two
+   * inputs; a single input is duplicated into the inactive lane and only the
+   * first result is returned.
+   */
+  std::vector<LanguageResult> GenerateBatch(
+      const std::vector<LanguageInput>& inputs, int32_t max_new_tokens,
+      const std::string& generation_mode,
+      bool protect_detection_structure);
+
+  /** Return the static batch dimension declared by the loaded Language HBM. */
+  int32_t BatchSize() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

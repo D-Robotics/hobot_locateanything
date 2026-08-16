@@ -249,6 +249,9 @@ class LocateAnythingNode : public rclcpp::Node {
         std::chrono::steady_clock::now() - initialization_started).count();
     RCLCPP_INFO(get_logger(), "inference core ready in %.1f s",
                 initialization_seconds);
+    language_batch_size_ = static_cast<size_t>(std::clamp(
+        session_->LanguageBatchSize(), 1, 2));
+    prepared_capacity_ = language_batch_size_;
     result_publisher_ =
         create_publisher<ai_msgs::msg::PerceptionTargets>(result_topic, 10);
     prompt_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -455,8 +458,8 @@ class LocateAnythingNode : public rclcpp::Node {
   /**
    * @brief Prepare the latest frame while the previous frame runs Language.
    *
-   * The single prepared slot bounds memory and prevents speculative Vision
-   * work from competing with Language after the next frame is ready.
+   * The bounded prepared queue overlaps Vision with Language while keeping
+   * at most one static Language batch in flight.
    */
   void PrepareFrames() {
     while (rclcpp::ok()) {
@@ -465,7 +468,8 @@ class LocateAnythingNode : public rclcpp::Node {
         std::unique_lock<std::mutex> lock(mutex_);
         condition_.wait(lock, [this] {
           return stopping_ ||
-                 (pending_.has_value() && !prepared_.has_value());
+                 (pending_.has_value() &&
+                  prepared_.size() < prepared_capacity_);
         });
         if (stopping_) return;
         frame = std::move(*pending_);
@@ -478,7 +482,7 @@ class LocateAnythingNode : public rclcpp::Node {
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (stopping_) return;
-          prepared_.emplace(PreparedFrame{
+          prepared_.push_back(PreparedFrame{
               std::move(frame), std::move(inference), inference_started});
         }
         condition_.notify_all();
@@ -492,57 +496,85 @@ class LocateAnythingNode : public rclcpp::Node {
   /** @brief Complete prepared frames until ROS shutdown or node teardown. */
   void Run() {
     while (rclcpp::ok()) {
-      PreparedFrame prepared;
+      std::vector<PreparedFrame> batch;
       {
         std::unique_lock<std::mutex> lock(mutex_);
         condition_.wait(lock,
-                        [this] { return stopping_ || prepared_.has_value(); });
+                        [this] { return stopping_ || !prepared_.empty(); });
         if (stopping_) return;
-        prepared = std::move(*prepared_);
-        prepared_.reset();
+        if (prepared_capacity_ > 1 && prepared_.size() < prepared_capacity_) {
+          condition_.wait_for(lock, std::chrono::milliseconds(25), [this] {
+            return stopping_ || prepared_.size() >= prepared_capacity_;
+          });
+          if (stopping_) return;
+        }
+        const size_t count = std::min(prepared_capacity_, prepared_.size());
+        batch.reserve(count);
+        for (size_t index = 0; index < count; ++index) {
+          batch.push_back(std::move(prepared_.front()));
+          prepared_.pop_front();
+        }
       }
       condition_.notify_all();
-      PendingFrame& frame = prepared.frame;
-      const uint32_t frame_index = FrameIndex(frame.header);
+      std::vector<PreparedInference> inferences;
+      std::vector<uint64_t> frame_indices;
+      inferences.reserve(batch.size());
+      frame_indices.reserve(batch.size());
+      for (PreparedFrame& item : batch) {
+        frame_indices.push_back(FrameIndex(item.frame.header));
+        inferences.push_back(std::move(item.inference));
+      }
       try {
-        InferenceOutput output = session_->Complete(
-            std::move(prepared.inference), frame_index);
-        const int16_t fps = RecordOutputFps(output.metrics.total_ms);
-        ai_msgs::msg::PerceptionTargets result =
-            BuildResult(frame, output, fps, prepared.inference_started);
-        result_publisher_->publish(result);
+        std::vector<InferenceOutput> outputs = session_->CompleteBatch(
+            std::move(inferences), frame_indices);
+        if (outputs.size() != batch.size()) {
+          throw std::runtime_error("inference batch returned invalid result count");
+        }
+        for (size_t index = 0; index < batch.size(); ++index) {
+          PendingFrame& frame = batch[index].frame;
+          InferenceOutput& output = outputs[index];
+          const int16_t fps = RecordOutputFps(output.metrics.total_ms);
+          ai_msgs::msg::PerceptionTargets result =
+              BuildResult(frame, output, fps, batch[index].inference_started);
+          result_publisher_->publish(result);
 
-        const LanguageMetrics& language = output.metrics.language;
-        const std::string labels = ResultLabels(output.prediction);
-        RCLCPP_INFO(
-            get_logger(),
-            "frame_id=%s prompt=\"%s\" output=\"%s\" labels=\"%s\" "
-            "boxes=%zu points=%zu "
-            "fps=%d stop_reason=%s prompt_tokens=%d generated_tokens=%d "
-            "pbd_calls=%d pbd_accepted_tokens=%d mode=%s "
-            "preprocess_ms=%.3f vision_ms=%.3f language_ms=%.3f "
-            "postprocess_ms=%.3f total_ms=%.3f",
-            LogText(frame.header.frame_id).c_str(), LogText(frame.prompt).c_str(),
-            LogText(output.generated_text).c_str(), labels.c_str(),
-            output.prediction.detections.size(),
-            output.prediction.points.size(), static_cast<int>(fps),
-            output.stop_reason.c_str(), language.prompt_tokens,
-            language.generated_tokens, language.pbd_calls,
-            language.pbd_accepted_tokens, language.executed_mode.c_str(),
-            output.metrics.preprocess_ms, output.metrics.vision_ms,
-            output.metrics.language_ms, output.metrics.postprocess_ms,
-            output.metrics.total_ms);
-        RCLCPP_DEBUG(get_logger(), "frame_id=%s generated_token_ids=[%s]",
-                     LogText(frame.header.frame_id).c_str(),
-                     TokenIdsText(output.generated_token_ids).c_str());
-        if (!language.fallback_reason.empty()) {
-          RCLCPP_DEBUG(get_logger(), "frame_id=%s language fallback: %s",
-                       LogText(frame.header.frame_id).c_str(),
-                       LogText(language.fallback_reason).c_str());
+          const LanguageMetrics& language = output.metrics.language;
+          const std::string labels = ResultLabels(output.prediction);
+          RCLCPP_INFO(
+              get_logger(),
+              "frame_id=%s prompt=\"%s\" output=\"%s\" labels=\"%s\" "
+              "boxes=%zu points=%zu "
+              "fps=%d stop_reason=%s prompt_tokens=%d generated_tokens=%d "
+              "pbd_calls=%d pbd_accepted_tokens=%d mode=%s "
+              "preprocess_ms=%.3f vision_ms=%.3f language_ms=%.3f "
+              "postprocess_ms=%.3f total_ms=%.3f",
+              LogText(frame.header.frame_id).c_str(),
+              LogText(frame.prompt).c_str(),
+              LogText(output.generated_text).c_str(), labels.c_str(),
+              output.prediction.detections.size(),
+              output.prediction.points.size(), static_cast<int>(fps),
+              output.stop_reason.c_str(), language.prompt_tokens,
+              language.generated_tokens, language.pbd_calls,
+              language.pbd_accepted_tokens, language.executed_mode.c_str(),
+              output.metrics.preprocess_ms, output.metrics.vision_ms,
+              output.metrics.language_ms, output.metrics.postprocess_ms,
+              output.metrics.total_ms);
+          RCLCPP_DEBUG(
+              get_logger(), "frame_id=%s generated_token_ids=[%s]",
+              LogText(frame.header.frame_id).c_str(),
+              TokenIdsText(output.generated_token_ids).c_str());
+          if (!language.fallback_reason.empty()) {
+            RCLCPP_DEBUG(get_logger(), "frame_id=%s language fallback: %s",
+                         LogText(frame.header.frame_id).c_str(),
+                         LogText(language.fallback_reason).c_str());
+          }
         }
       } catch (const std::exception& error) {
-        RCLCPP_ERROR(get_logger(), "frame_id=%s inference failed: %s",
-                     LogText(frame.header.frame_id).c_str(), error.what());
+        for (const PreparedFrame& item : batch) {
+          RCLCPP_ERROR(get_logger(), "frame_id=%s inference failed: %s",
+                       LogText(item.frame.header.frame_id).c_str(),
+                       error.what());
+        }
       }
     }
   }
@@ -663,7 +695,9 @@ class LocateAnythingNode : public rclcpp::Node {
   std::mutex mutex_;
   std::condition_variable condition_;
   std::optional<PendingFrame> pending_;
-  std::optional<PreparedFrame> prepared_;
+  std::deque<PreparedFrame> prepared_;
+  size_t language_batch_size_ = 1;
+  size_t prepared_capacity_ = 1;
   bool stopping_ = false;
   uint64_t dropped_frames_ = 0;
   uint64_t dropped_since_warning_ = 0;
