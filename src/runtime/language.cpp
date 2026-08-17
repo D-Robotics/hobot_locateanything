@@ -263,7 +263,10 @@ struct EngineState {
   std::vector<rt::Tensor> batch_prefill_outputs;
   std::vector<rt::Tensor> batch_graph_outputs;
   std::array<std::vector<rt::Tensor>, 2> batch_decision_outputs;
-  CacheState batch_cache;
+  // Batch Prefill always starts from an empty sequence. Keep its immutable
+  // zero-KV inputs separate from the mutable per-lane Decode cache.
+  CacheState batch_prefill_cache;
+  CacheState batch_full_cache;
 };
 
 /**
@@ -2393,7 +2396,7 @@ bool RunBatchPayloads(
   }
 
   const auto cache_initialize_started = std::chrono::steady_clock::now();
-  if (!BuildZeroCaches(*prefill, &engine->batch_cache)) return false;
+  if (!BuildZeroCaches(*prefill, &engine->batch_prefill_cache)) return false;
   const double cache_initialize_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cache_initialize_started).count();
   for (GenerationMetrics* metric : metrics) {
@@ -2406,7 +2409,7 @@ bool RunBatchPayloads(
   const std::array<bool, 2> both_active{{true, true}};
   const auto prefill_started = std::chrono::steady_clock::now();
   if (!RunBatchGraph(engine, "prefill", zero_lens, false,
-                     engine->batch_cache, &engine->batch_prefill_outputs,
+                     engine->batch_prefill_cache, &engine->batch_prefill_outputs,
                      payloads, no_tokens, no_tokens, active_lens, zero_lens,
                      both_active, metrics)) {
     return false;
@@ -2415,7 +2418,7 @@ bool RunBatchPayloads(
       std::chrono::steady_clock::now() - prefill_started).count();
   const auto cache_seed_started = std::chrono::steady_clock::now();
   if (!BuildBatchFullCaches(*prefill, engine->batch_prefill_outputs,
-                            active_lens, &engine->batch_cache)) {
+                            active_lens, &engine->batch_full_cache)) {
     return false;
   }
   const double cache_seed_ms = std::chrono::duration<double, std::milli>(
@@ -2687,7 +2690,7 @@ bool RunBatchPayloads(
     }
     const std::array<const InputPayload*, 2> no_payloads{{nullptr, nullptr}};
     if (!RunBatchGraph(engine, selected.graph, past_lens, selected.pbd,
-                       engine->batch_cache, &engine->batch_graph_outputs,
+                       engine->batch_full_cache, &engine->batch_graph_outputs,
                        no_payloads, explicit_tokens, generated_tokens,
                        std::array<int32_t, 2>{{-1, -1}}, prefixes, active,
                        metrics)) {
@@ -2705,7 +2708,7 @@ bool RunBatchPayloads(
         if (prefix > 0) {
           if (!AppendBatchCacheUpdate(engine->batch_graph_outputs, lane,
                                       state.history_len,
-                                      &engine->batch_cache, prefix,
+                                      &engine->batch_full_cache, prefix,
                                       state.metrics)) {
             return false;
           }
@@ -2757,7 +2760,7 @@ bool RunBatchPayloads(
           static_cast<int32_t>(state.graph_tokens.size());
       if (committed <= 0 ||
           !AppendBatchCacheUpdate(engine->batch_graph_outputs, lane,
-                                  state.history_len, &engine->batch_cache,
+                                  state.history_len, &engine->batch_full_cache,
                                   committed, state.metrics)) {
         return false;
       }
