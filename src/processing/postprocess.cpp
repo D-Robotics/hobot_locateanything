@@ -83,22 +83,17 @@ cv::Rect DrawCaption(cv::Mat* image, const std::string& caption,
  * @brief Map one normalized model coordinate back to a source pixel.
  * @param value Model coordinate in the 0..1000 range.
  * @param vertical Select the vertical transform when true.
- * @param transform Resize and padding metadata.
+ * @param transform Source image dimensions.
  * @return Clamped source-image coordinate.
  */
 float RestoreCoordinate(int32_t value, bool vertical,
                         const ImageTransform& transform) {
-  const float padding = vertical ? transform.pad_top : transform.pad_left;
-  const float scale = vertical ? transform.scale_y : transform.scale_x;
-  const float canvas = static_cast<float>(
-      vertical ? transform.canvas_height : transform.canvas_width);
   const float limit = static_cast<float>(vertical ? transform.source_height
                                                    : transform.source_width);
-  if (canvas <= 0.0f || scale <= 0.0f) {
+  if (limit <= 0.0f) {
     throw std::invalid_argument("invalid image transform");
   }
-  const float pixel = (static_cast<float>(value) / 1000.0f * canvas - padding) /
-                      scale;
+  const float pixel = static_cast<float>(value) / 1000.0f * limit;
   return std::clamp(pixel, 0.0f, limit);
 }
 

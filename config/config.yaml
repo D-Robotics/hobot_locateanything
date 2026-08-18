@@ -9,8 +9,6 @@ hobot_locateanything:
 
     image_width: 336
     image_height: 336
-    resize_mode: letterbox
-    letterbox_fill: 128
 
     generation_mode: hybrid
     max_new_tokens: 768

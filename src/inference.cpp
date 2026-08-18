@@ -157,6 +157,75 @@ struct PreparedPromptCache {
   std::vector<int32_t> tokens;
 };
 
+namespace {
+
+/** Assemble one caller-facing result after Language has completed. */
+InferenceOutput FinalizeOutput(
+    const std::vector<std::shared_ptr<const PreparedPromptCache>>& prompts,
+    std::vector<LanguageResult> language_results,
+    const ImageTransform& transform, const cv::Mat& source_image,
+    InferenceMetrics metrics,
+    std::chrono::steady_clock::time_point total_started,
+    std::chrono::steady_clock::time_point language_started,
+    std::chrono::steady_clock::time_point language_ended,
+    uint64_t frame_index, InferenceOutputOptions output_options,
+    const Tokenizer& tokenizer, const Postprocessor& postprocessor) {
+  if (prompts.empty() || language_results.size() != prompts.size()) {
+    throw std::runtime_error("invalid Language result count");
+  }
+
+  InferenceOutput output;
+  output.metrics = std::move(metrics);
+  output.metrics.language_timing =
+      Stage(total_started, language_started, language_ended);
+  output.metrics.language_ms = output.metrics.language_timing.DurationMs();
+
+  const auto postprocess_started = std::chrono::steady_clock::now();
+  for (size_t index = 0; index < language_results.size(); ++index) {
+    LanguageResult& language = language_results[index];
+    AddLanguageMetrics(language.metrics, &output.metrics.language);
+    if (output.stop_reason.empty()) {
+      output.stop_reason = language.stop_reason;
+    } else if (output.stop_reason != language.stop_reason) {
+      output.stop_reason = "mixed";
+    }
+
+    Prediction prediction = postprocessor.Parse(
+        language.token_ids, transform, tokenizer, prompts[index]->prompt.task);
+    output.prediction.detections.insert(
+        output.prediction.detections.end(),
+        std::make_move_iterator(prediction.detections.begin()),
+        std::make_move_iterator(prediction.detections.end()));
+    output.prediction.points.insert(
+        output.prediction.points.end(),
+        std::make_move_iterator(prediction.points.begin()),
+        std::make_move_iterator(prediction.points.end()));
+    if (!output.generated_text.empty()) output.generated_text += '\n';
+    output.generated_text += tokenizer.Decode(language.token_ids);
+    output.generated_token_ids.insert(
+        output.generated_token_ids.end(),
+        std::make_move_iterator(language.token_ids.begin()),
+        std::make_move_iterator(language.token_ids.end()));
+  }
+  const auto postprocess_ended = std::chrono::steady_clock::now();
+  output.metrics.postprocess_timing =
+      Stage(total_started, postprocess_started, postprocess_ended);
+  output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
+  if (output_options.render_annotated) {
+    output.annotated_image = postprocessor.Draw(source_image, output.prediction);
+  }
+  output.metrics.total_ms =
+      MillisecondsBetween(total_started, std::chrono::steady_clock::now());
+  if (output_options.serialize_json) {
+    output.json = postprocessor.ToJson(
+        output.prediction, prompts.front()->prompt.task, output.stop_reason,
+        frame_index, output.metrics, output_options.pretty_json);
+  }
+  return output;
+}
+
+}  // namespace
+
 struct InferenceSession::Impl {
   /**
    * @brief Store runtime options and construct postprocessing state.
@@ -164,8 +233,7 @@ struct InferenceSession::Impl {
    */
   explicit Impl(InferenceOptions value)
       : options(std::move(value)),
-        vision_profile(options.image_width, options.image_height,
-                       options.resize_mode, options.letterbox_fill),
+        vision_profile(options.image_width, options.image_height),
         image_preprocessor(vision_profile),
         prompt_builder(vision_profile),
         postprocessor(options.nms_iou) {}
@@ -341,8 +409,6 @@ InferenceOutput InferenceSession::Complete(
   }
   PreparedInference::Impl& input = *prepared.impl_;
   const auto language_started = std::chrono::steady_clock::now();
-  InferenceOutput output;
-  output.metrics = std::move(input.metrics);
   std::vector<LanguageResult> language_results;
   language_results.reserve(input.prompts.size());
   for (const auto& prompt : input.prompts) {
@@ -353,56 +419,13 @@ InferenceOutput InferenceSession::Complete(
     language_results.push_back(impl_->language.Generate(
         language_input, impl_->options.max_new_tokens,
         impl_->options.generation_mode, protect_structure));
-    AddLanguageMetrics(language_results.back().metrics,
-                       &output.metrics.language);
-    if (output.stop_reason.empty()) {
-      output.stop_reason = language_results.back().stop_reason;
-    } else if (output.stop_reason != language_results.back().stop_reason) {
-      output.stop_reason = "mixed";
-    }
   }
   const auto language_ended = std::chrono::steady_clock::now();
-
-  output.metrics.language_timing =
-      Stage(input.total_started, language_started, language_ended);
-  output.metrics.language_ms = output.metrics.language_timing.DurationMs();
-  const auto postprocess_started = std::chrono::steady_clock::now();
-  for (size_t index = 0; index < language_results.size(); ++index) {
-    LanguageResult& language = language_results[index];
-    Prediction prediction = impl_->postprocessor.Parse(
-        language.token_ids, input.transform, impl_->tokenizer,
-        input.prompts[index]->prompt.task);
-    output.prediction.detections.insert(
-        output.prediction.detections.end(),
-        std::make_move_iterator(prediction.detections.begin()),
-        std::make_move_iterator(prediction.detections.end()));
-    output.prediction.points.insert(
-        output.prediction.points.end(),
-        std::make_move_iterator(prediction.points.begin()),
-        std::make_move_iterator(prediction.points.end()));
-    if (!output.generated_text.empty()) output.generated_text += '\n';
-    output.generated_text += impl_->tokenizer.Decode(language.token_ids);
-    output.generated_token_ids.insert(
-        output.generated_token_ids.end(), language.token_ids.begin(),
-        language.token_ids.end());
-  }
-  const auto postprocess_ended = std::chrono::steady_clock::now();
-  output.metrics.postprocess_timing =
-      Stage(input.total_started, postprocess_started, postprocess_ended);
-  output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
-  if (output_options.render_annotated) {
-    output.annotated_image =
-        impl_->postprocessor.Draw(input.source_image, output.prediction);
-  }
-  output.metrics.total_ms = MillisecondsBetween(
-      input.total_started, std::chrono::steady_clock::now());
-  if (output_options.serialize_json) {
-    output.json = impl_->postprocessor.ToJson(
-        output.prediction, input.prompts.front()->prompt.task,
-        output.stop_reason, frame_index, output.metrics,
-        output_options.pretty_json);
-  }
-  return output;
+  return FinalizeOutput(
+      input.prompts, std::move(language_results), input.transform,
+      input.source_image, std::move(input.metrics), input.total_started,
+      language_started, language_ended, frame_index, output_options,
+      impl_->tokenizer, impl_->postprocessor);
 }
 
 int32_t InferenceSession::LanguageBatchSize() const {
@@ -417,7 +440,7 @@ std::vector<InferenceOutput> InferenceSession::CompleteBatch(
       prepared.size() != frame_indices.size()) {
     throw std::invalid_argument("CompleteBatch requires one or two frames");
   }
-  if (prepared.size() == 1 || LanguageBatchSize() != 2) {
+  auto complete_individually = [&]() {
     std::vector<InferenceOutput> outputs;
     outputs.reserve(prepared.size());
     for (size_t index = 0; index < prepared.size(); ++index) {
@@ -425,30 +448,22 @@ std::vector<InferenceOutput> InferenceSession::CompleteBatch(
                                  frame_indices[index], output_options));
     }
     return outputs;
+  };
+  if (prepared.size() == 1 || LanguageBatchSize() != 2) {
+    return complete_individually();
   }
   for (const PreparedInference& item : prepared) {
     if (item.impl_ == nullptr || item.impl_->owner != impl_.get()) {
-      throw std::invalid_argument("prepared inference does not belong to this session");
+      throw std::invalid_argument(
+          "prepared inference does not belong to this session");
     }
     if (item.impl_->prompts.size() != 1) {
-      std::vector<InferenceOutput> outputs;
-      outputs.reserve(prepared.size());
-      for (size_t index = 0; index < prepared.size(); ++index) {
-        outputs.push_back(Complete(std::move(prepared[index]),
-                                   frame_indices[index], output_options));
-      }
-      return outputs;
+      return complete_individually();
     }
   }
   const auto task = prepared[0].impl_->prompts.front()->prompt.task;
   if (prepared[1].impl_->prompts.front()->prompt.task != task) {
-    std::vector<InferenceOutput> outputs;
-    outputs.reserve(prepared.size());
-    for (size_t index = 0; index < prepared.size(); ++index) {
-      outputs.push_back(Complete(std::move(prepared[index]),
-                                 frame_indices[index], output_options));
-    }
-    return outputs;
+    return complete_individually();
   }
 
   const auto language_started = std::chrono::steady_clock::now();
@@ -469,39 +484,16 @@ std::vector<InferenceOutput> InferenceSession::CompleteBatch(
   const auto language_ended = std::chrono::steady_clock::now();
 
   std::vector<InferenceOutput> outputs;
-  outputs.resize(prepared.size());
+  outputs.reserve(prepared.size());
   for (size_t index = 0; index < prepared.size(); ++index) {
     PreparedInference::Impl& input = *prepared[index].impl_;
-    InferenceOutput& output = outputs[index];
-    LanguageResult& language = language_results[index];
-    output.metrics = std::move(input.metrics);
-    AddLanguageMetrics(language.metrics, &output.metrics.language);
-    output.stop_reason = language.stop_reason;
-    output.metrics.language_timing =
-        Stage(input.total_started, language_started, language_ended);
-    output.metrics.language_ms = output.metrics.language_timing.DurationMs();
-
-    const auto postprocess_started = std::chrono::steady_clock::now();
-    Prediction prediction = impl_->postprocessor.Parse(
-        language.token_ids, input.transform, impl_->tokenizer, task);
-    output.prediction = std::move(prediction);
-    output.generated_text = impl_->tokenizer.Decode(language.token_ids);
-    output.generated_token_ids = std::move(language.token_ids);
-    const auto postprocess_ended = std::chrono::steady_clock::now();
-    output.metrics.postprocess_timing =
-        Stage(input.total_started, postprocess_started, postprocess_ended);
-    output.metrics.postprocess_ms = output.metrics.postprocess_timing.DurationMs();
-    if (output_options.render_annotated) {
-      output.annotated_image =
-          impl_->postprocessor.Draw(input.source_image, output.prediction);
-    }
-    output.metrics.total_ms = MillisecondsBetween(
-        input.total_started, std::chrono::steady_clock::now());
-    if (output_options.serialize_json) {
-      output.json = impl_->postprocessor.ToJson(
-          output.prediction, task, output.stop_reason, frame_indices[index],
-          output.metrics, output_options.pretty_json);
-    }
+    std::vector<LanguageResult> frame_results;
+    frame_results.push_back(std::move(language_results[index]));
+    outputs.push_back(FinalizeOutput(
+        input.prompts, std::move(frame_results), input.transform,
+        input.source_image, std::move(input.metrics), input.total_started,
+        language_started, language_ended, frame_indices[index], output_options,
+        impl_->tokenizer, impl_->postprocessor));
   }
   return outputs;
 }

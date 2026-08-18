@@ -223,9 +223,6 @@ class LocateAnythingNode : public rclcpp::Node {
     options.tokenizer_directory = tokenizer_directory.string();
     options.image_width = declare_parameter<int>("image_width", 336);
     options.image_height = declare_parameter<int>("image_height", 336);
-    options.resize_mode =
-        declare_parameter<std::string>("resize_mode", "letterbox");
-    options.letterbox_fill = declare_parameter<int>("letterbox_fill", 128);
     options.generation_mode =
         declare_parameter<std::string>("generation_mode", "hybrid");
     options.max_new_tokens = declare_parameter<int>("max_new_tokens", 768);
@@ -251,9 +248,8 @@ class LocateAnythingNode : public rclcpp::Node {
         std::chrono::steady_clock::now() - initialization_started).count();
     RCLCPP_INFO(get_logger(), "inference core ready in %.1f s",
                 initialization_seconds);
-    language_batch_size_ = static_cast<size_t>(std::clamp(
+    prepared_capacity_ = static_cast<size_t>(std::clamp(
         session_->LanguageBatchSize(), 1, 2));
-    prepared_capacity_ = language_batch_size_;
     result_publisher_ =
         create_publisher<ai_msgs::msg::PerceptionTargets>(result_topic, 10);
     prompt_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -719,7 +715,6 @@ class LocateAnythingNode : public rclcpp::Node {
   std::condition_variable condition_;
   std::optional<PendingFrame> pending_;
   std::deque<PreparedFrame> prepared_;
-  size_t language_batch_size_ = 1;
   size_t prepared_capacity_ = 1;
   bool stopping_ = false;
   uint64_t dropped_frames_ = 0;

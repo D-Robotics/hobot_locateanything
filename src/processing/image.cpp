@@ -250,39 +250,12 @@ PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
 
   const int target_width = profile_.image_width();
   const int target_height = profile_.image_height();
-  int resized_width = target_width;
-  int resized_height = target_height;
-  int left = 0;
-  int top = 0;
-  if (profile_.resize_mode() == "letterbox") {
-    const float scale = std::min(static_cast<float>(target_width) / bgr.cols,
-                                 static_cast<float>(target_height) / bgr.rows);
-    resized_width = std::clamp(
-        static_cast<int>(std::lround(bgr.cols * scale)), 1, target_width);
-    resized_height = std::clamp(
-        static_cast<int>(std::lround(bgr.rows * scale)), 1, target_height);
-    left = (target_width - resized_width) / 2;
-    top = (target_height - resized_height) / 2;
-  }
-
-  const cv::Mat resized = PillowBicubicResize(bgr, resized_width, resized_height);
-  cv::Mat canvas(target_height, target_width, CV_8UC3,
-                 cv::Scalar(profile_.letterbox_fill(),
-                            profile_.letterbox_fill(),
-                            profile_.letterbox_fill()));
-  resized.copyTo(canvas(cv::Rect(left, top, resized_width, resized_height)));
+  const cv::Mat resized =
+      PillowBicubicResize(bgr, target_width, target_height);
 
   PreparedImage output;
   output.transform.source_width = bgr.cols;
   output.transform.source_height = bgr.rows;
-  output.transform.canvas_width = target_width;
-  output.transform.canvas_height = target_height;
-  output.transform.resized_width = resized_width;
-  output.transform.resized_height = resized_height;
-  output.transform.pad_left = left;
-  output.transform.pad_top = top;
-  output.transform.scale_x = static_cast<float>(resized_width) / bgr.cols;
-  output.transform.scale_y = static_cast<float>(resized_height) / bgr.rows;
   const size_t patch_elements = static_cast<size_t>(
       profile_.patch_count() * profile_.patch_flat_dim());
   output.patches_fp16.resize(patch_elements * sizeof(uint16_t));
@@ -291,7 +264,7 @@ PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
     for (int grid_x = 0; grid_x < profile_.grid_width(); ++grid_x) {
       for (int channel = 2; channel >= 0; --channel) {
         for (int patch_y = 0; patch_y < VisionProfile::kPatchSize; ++patch_y) {
-          const auto* row = canvas.ptr<cv::Vec3b>(
+          const auto* row = resized.ptr<cv::Vec3b>(
               grid_y * VisionProfile::kPatchSize + patch_y);
           for (int patch_x = 0; patch_x < VisionProfile::kPatchSize; ++patch_x) {
             const float value =

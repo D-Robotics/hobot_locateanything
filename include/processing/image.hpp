@@ -3,8 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-#include <string>
-#include <utility>
 #include <vector>
 
 #include <opencv2/core/mat.hpp>
@@ -19,20 +17,13 @@ class VisionProfile {
   static constexpr int32_t kChannels = 3;
   static constexpr int32_t kHiddenSize = 2048;
 
-  VisionProfile(int32_t image_width = 336, int32_t image_height = 336,
-                std::string resize_mode = "letterbox",
-                int32_t letterbox_fill = 128)
-      : image_width_(image_width),
-        image_height_(image_height),
-        resize_mode_(std::move(resize_mode)),
-        letterbox_fill_(letterbox_fill) {
+  VisionProfile(int32_t image_width = 336, int32_t image_height = 336)
+      : image_width_(image_width), image_height_(image_height) {
     Validate();
   }
 
   int32_t image_width() const { return image_width_; }
   int32_t image_height() const { return image_height_; }
-  const std::string& resize_mode() const { return resize_mode_; }
-  int32_t letterbox_fill() const { return letterbox_fill_; }
   int32_t grid_width() const { return image_width_ / kPatchSize; }
   int32_t grid_height() const { return image_height_ / kPatchSize; }
   int32_t patch_count() const { return grid_width() * grid_height(); }
@@ -52,19 +43,10 @@ class VisionProfile {
       throw std::invalid_argument(
           "Vision image dimensions must be positive multiples of 28");
     }
-    if (resize_mode_ != "letterbox" && resize_mode_ != "stretch") {
-      throw std::invalid_argument(
-          "Vision resize_mode must be letterbox or stretch");
-    }
-    if (letterbox_fill_ < 0 || letterbox_fill_ > 255) {
-      throw std::invalid_argument("Vision letterbox_fill must be in [0, 255]");
-    }
   }
 
   int32_t image_width_;
   int32_t image_height_;
-  std::string resize_mode_;
-  int32_t letterbox_fill_;
 };
 
 /**
@@ -105,14 +87,6 @@ cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
 struct ImageTransform {
   int source_width = 0;
   int source_height = 0;
-  int canvas_width = 0;
-  int canvas_height = 0;
-  int resized_width = 0;
-  int resized_height = 0;
-  int pad_left = 0;
-  int pad_top = 0;
-  float scale_x = 1.0f;
-  float scale_y = 1.0f;
 };
 
 /** Prepared Vision input and its source-to-model transform. */
