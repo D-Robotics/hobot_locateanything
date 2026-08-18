@@ -276,7 +276,17 @@ class LocateAnythingNode : public rclcpp::Node {
           });
     }
     prepare_worker_ = std::thread([this] { PrepareFrames(); });
-    inference_worker_ = std::thread([this] { Run(); });
+    try {
+      inference_worker_ = std::thread([this] { Run(); });
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+      }
+      condition_.notify_all();
+      if (prepare_worker_.joinable()) prepare_worker_.join();
+      throw;
+    }
     RCLCPP_INFO(get_logger(),
                 "ready: input=%s transport=%s prompt_topic=%s result=%s",
                 input_topic.c_str(),
@@ -532,10 +542,14 @@ class LocateAnythingNode : public rclcpp::Node {
         if (outputs.size() != batch.size()) {
           throw std::runtime_error("inference batch returned invalid result count");
         }
+        double batch_total_ms = 0.0;
+        for (const InferenceOutput& output : outputs) {
+          batch_total_ms = std::max(batch_total_ms, output.metrics.total_ms);
+        }
+        const int16_t fps = RecordOutputFps(outputs.size(), batch_total_ms);
         for (size_t index = 0; index < batch.size(); ++index) {
           PendingFrame& frame = batch[index].frame;
           InferenceOutput& output = outputs[index];
-          const int16_t fps = RecordOutputFps(output.metrics.total_ms);
           ai_msgs::msg::PerceptionTargets result =
               BuildResult(frame, output, fps, batch[index].inference_started);
           result_publisher_->publish(result);
@@ -650,28 +664,35 @@ class LocateAnythingNode : public rclcpp::Node {
   }
 
   /**
-   * @brief Compute output throughput from the rolling completion window.
-   * @param total_ms Current frame latency used before the window has two samples.
+   * @brief Compute output throughput from the rolling batch-completion window.
+   * @param output_count Number of results completed by the current batch.
+   * @param total_ms Current batch latency used before the window has two samples.
    * @return Rounded result FPS clamped to the message field range.
    */
-  int16_t RecordOutputFps(double total_ms) {
+  int16_t RecordOutputFps(size_t output_count, double total_ms) {
+    if (output_count == 0) return 0;
     const auto timestamp = std::chrono::steady_clock::now();
-    output_timestamps_.push_back(timestamp);
-    while (output_timestamps_.size() > kFpsWindowSize) {
-      output_timestamps_.pop_front();
+    completed_outputs_ += output_count;
+    output_completions_.emplace_back(timestamp, completed_outputs_);
+    while (output_completions_.size() > kFpsWindowSize) {
+      output_completions_.pop_front();
     }
-    if (output_timestamps_.size() < 2) {
-      const double single_frame_fps = total_ms > 0.0 ? 1000.0 / total_ms : 0.0;
+    if (output_completions_.size() < 2) {
+      const double single_batch_fps = total_ms > 0.0
+          ? static_cast<double>(output_count) * 1000.0 / total_ms
+          : 0.0;
       return static_cast<int16_t>(std::clamp<long>(
-          std::lround(single_frame_fps), 0, std::numeric_limits<int16_t>::max()));
+          std::lround(single_batch_fps), 0,
+          std::numeric_limits<int16_t>::max()));
     }
     const double seconds = std::chrono::duration<double>(
-                               output_timestamps_.back() -
-                               output_timestamps_.front())
+                               output_completions_.back().first -
+                               output_completions_.front().first)
                                .count();
     if (seconds <= 0.0) return -1;
-    const long fps = std::lround(
-        static_cast<double>(output_timestamps_.size() - 1) / seconds);
+    const uint64_t completed = output_completions_.back().second -
+                               output_completions_.front().second;
+    const long fps = std::lround(static_cast<double>(completed) / seconds);
     return static_cast<int16_t>(std::clamp<long>(
         fps, 0, std::numeric_limits<int16_t>::max()));
   }
@@ -707,7 +728,9 @@ class LocateAnythingNode : public rclcpp::Node {
       std::chrono::steady_clock::now();
   std::chrono::steady_clock::time_point last_prompt_wait_warning_ =
       std::chrono::steady_clock::now();
-  std::deque<std::chrono::steady_clock::time_point> output_timestamps_;
+  uint64_t completed_outputs_ = 0;
+  std::deque<std::pair<std::chrono::steady_clock::time_point, uint64_t>>
+      output_completions_;
   std::thread prepare_worker_;
   std::thread inference_worker_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_subscription_;
