@@ -4,16 +4,16 @@ hobot_locateanything:
     model_directory: models
     tokenizer_directory: models/tokenizer
     vision_model: LocateAnything-3B_vision.hbm
-    language_model: LocateAnything-3B_language.hbm
+    language_model: LocateAnything-3B_language_batch2.hbm
     embeddings: LocateAnything-3B_embed_tokens.bin
 
-    image_width: 672
-    image_height: 672
+    image_width: 336
+    image_height: 336
     resize_mode: letterbox
     letterbox_fill: 128
 
     generation_mode: hybrid
-    max_new_tokens: 4096
+    max_new_tokens: 768
     nms_iou: 0.9
 
     vision_backend_mask: 15

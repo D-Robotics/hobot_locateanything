@@ -3,8 +3,8 @@
 // Attention mask builder for the LocateAnything language hbm.
 //
 // Produces the `input_2` mask tensor language.hbm expects:
-//   prefill: (1, chunk_size, cache_len) fp16   e.g. (1, 1024, 4096)
-//   decode:  (1, q_len,      cache_len) fp16   e.g. (1, 6,    4096)
+//   prefill: (batch, chunk_size, cache_len) fp16  e.g. (2, 256, 1024)
+//   decode:  (batch, q_len,      cache_len) fp16  e.g. (2, 6,   1024)
 //
 // Layout semantics (verified against hbm IO + upstream mask_sdpa_utils.py):
 //   - mask[b, i, j] = 0.0           → token i MAY attend to cache slot j

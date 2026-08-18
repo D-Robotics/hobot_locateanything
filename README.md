@@ -51,6 +51,8 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ## Inference Performance
 
+The task-level table below is an external stable 672 reference from the `develop` release. It is retained only as a comparison baseline; this branch ships only the fast_336 runtime and configuration.
+
 | Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | RDK S600 | Object detection | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
@@ -63,7 +65,7 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ### Detection Profile Comparison
 
-The `fast_336` branch keeps the stable 672 profile and adds an independently configured 336 detection profile. The fast-profile comparison is limited to object detection. Both profiles use Hybrid generation, NMS IoU 0.9, and four BPU cores. The following Batch 1 comparison uses the same 350-frame `person_video.avi` and `/detect person` command on one RDK S600 to isolate the profile change.
+This branch contains only the fast_336 detection profile. The stable_672 values below were measured from the `develop` release and serve only as an external baseline. Both measurements use Hybrid generation, NMS IoU 0.9, four BPU cores, the same 350-frame `person_video.avi`, and `/detect person`.
 
 | Profile | Frames | Boxes | FPS | Vision mean (ms) | Prefill mean (ms) | Decode mean (ms) | Total mean (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -81,7 +83,7 @@ Under this Batch 1 comparison, fast_336 increases the measured end-to-end proces
 
 ### 30 FPS ROS Local Replay
 
-The current fast_336 runtime uses a two-stage pipeline: the next frame's preprocessing and Vision stage overlap the current batch's Language stage. With the static Batch 2 Language HBM, the prepared queue holds up to two frames; loading a Batch 1 HBM keeps the queue capacity at one. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared.
+The fast_336 runtime uses a two-stage pipeline: the next frame's preprocessing and Vision stage overlap the current batch's Language stage. The static Batch 2 Language HBM processes up to two prepared frames together. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared.
 
 | Prompt | Samples | Result | Output FPS | Preprocess mean (ms) | Vision mean (ms) | Language mean (ms) | End-to-end record mean (ms) |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
@@ -107,12 +109,12 @@ The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 dec
 
 | Item | Configuration |
 | --- | --- |
-| Vision | MoonViT, 27 blocks, signed W8 weights; `672 x 672` or `336 x 336` selected by config |
+| Vision | MoonViT, 27 blocks, `336 x 336`, signed W8 weights |
 | Language | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
 | Activations | Dynamic quantization |
-| Visual tokens | stable_672: 576; fast_336: 144 |
+| Visual tokens | 144 |
 | LM Head | W8, vocabulary size 152681 |
-| Prefill / KV Cache | stable_672: 1024 / 4096; fast_336: 256 / 1024 tokens |
+| Prefill / KV Cache | 256 / 1024 tokens |
 | Decoding | PBD q=6, AR q=1, Host sampling |
 | Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
 
@@ -143,16 +145,17 @@ colcon build --merge-install --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-### Download the Model
+### Prepare the Model
+
+The fast_336 HBM is not currently published as a download. Build it from the [PTQ `fast_336` branch](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336) with `compiler/config/fast_336_batch2.yaml`, then copy the three generated files into the package's single model directory:
 
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/vision/LocateAnything-3B_vision.hbm \
+  install/lib/hobot_locateanything/models/
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_language_batch2.hbm \
+  ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
+  install/lib/hobot_locateanything/models/
 ```
 
 Runtime files:
@@ -160,7 +163,7 @@ Runtime files:
 ```text
 install/lib/hobot_locateanything/models/
 ├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
+├── LocateAnything-3B_language_batch2.hbm
 ├── LocateAnything-3B_embed_tokens.bin
 └── tokenizer/
     ├── vocab.json
@@ -168,28 +171,10 @@ install/lib/hobot_locateanything/models/
     └── added_tokens.json
 ```
 
-This repository does not currently publish a fast_336 HBM download. Compile the fast profile by following the [PTQ fast_336 guide](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336), then place the generated runtime files in the separate model directory:
-
-```text
-install/lib/hobot_locateanything/models/fast_336/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
-└── LocateAnything-3B_embed_tokens.bin
-```
-
-The stable and fast profiles are selected explicitly:
+The branch has one runtime entry configuration:
 
 ```bash
-# stable_672 Console
-ros2 run hobot_locateanything console --config config/config_stable_672.yaml
-
-# fast_336 Console
-ros2 run hobot_locateanything console --config config/config_fast_336.yaml
-
-# fast_336 ROS launch
-export CAM_TYPE=fb
-ros2 launch hobot_locateanything hobot_locateanything.launch.py \
-  config_file:=config/config_fast_336.yaml
+ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
 ## Basic Feature: Object Detection
@@ -210,7 +195,7 @@ Console output:
 Loading Vision HBM...
 Loading Language HBM...
 HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+Ready  S600/Nash-P  |  hybrid  |  max tokens 768
 Tasks
   /detect cat,dog               目标检测
   /ground <query>[,<query>...]  指代表达，多查询
@@ -524,7 +509,7 @@ Console output:
 Loading Vision HBM...
 Loading Language HBM...
 HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+Ready  S600/Nash-P  |  hybrid  |  max tokens 768
 Tasks
   /detect cat,dog               目标检测
   /ground <query>[,<query>...]  指代表达，多查询

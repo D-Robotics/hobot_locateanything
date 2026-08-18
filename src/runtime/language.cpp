@@ -288,7 +288,7 @@ size_t CacheOutputOffset(const std::vector<rt::Tensor>& outputs) {
  */
 uint64_t FingerprintCache(const CacheState& cache) {
   // A small identity marker for a graph input state.  Full cache dumps are
-  // deliberately avoided because a 4096-token cache is large on the board.
+  // deliberately avoided because even a 1024-token cache is large on the board.
   uint64_t value = 1469598103934665603ULL;
   for (const rt::Tensor& tensor : cache.tensors) {
     for (uint8_t byte : tensor.data) {

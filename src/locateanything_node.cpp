@@ -212,21 +212,21 @@ class LocateAnythingNode : public rclcpp::Node {
             .string();
     options.language_model =
         (fs::path(model_directory) /
-         declare_parameter<std::string>("language_model", "LocateAnything-3B_language.hbm"))
+         declare_parameter<std::string>("language_model", "LocateAnything-3B_language_batch2.hbm"))
             .string();
     options.embeddings =
         (fs::path(model_directory) /
          declare_parameter<std::string>("embeddings", "LocateAnything-3B_embed_tokens.bin"))
             .string();
     options.tokenizer_directory = tokenizer_directory.string();
-    options.image_width = declare_parameter<int>("image_width", 672);
-    options.image_height = declare_parameter<int>("image_height", 672);
+    options.image_width = declare_parameter<int>("image_width", 336);
+    options.image_height = declare_parameter<int>("image_height", 336);
     options.resize_mode =
         declare_parameter<std::string>("resize_mode", "letterbox");
     options.letterbox_fill = declare_parameter<int>("letterbox_fill", 128);
     options.generation_mode =
         declare_parameter<std::string>("generation_mode", "hybrid");
-    options.max_new_tokens = declare_parameter<int>("max_new_tokens", 4096);
+    options.max_new_tokens = declare_parameter<int>("max_new_tokens", 768);
     options.nms_iou =
         static_cast<float>(declare_parameter<double>("nms_iou", 0.9));
     const int vision_backend_mask =

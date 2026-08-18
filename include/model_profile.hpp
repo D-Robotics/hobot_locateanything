@@ -15,7 +15,7 @@ class VisionProfile {
   static constexpr int32_t kChannels = 3;
   static constexpr int32_t kHiddenSize = 2048;
 
-  VisionProfile(int32_t image_width = 672, int32_t image_height = 672,
+  VisionProfile(int32_t image_width = 336, int32_t image_height = 336,
                 std::string resize_mode = "letterbox",
                 int32_t letterbox_fill = 128)
       : image_width_(image_width),

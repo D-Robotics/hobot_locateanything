@@ -19,12 +19,12 @@ struct InferenceOptions {
   std::string language_model;
   std::string embeddings;
   std::string tokenizer_directory;
-  int32_t image_width = 672;
-  int32_t image_height = 672;
+  int32_t image_width = 336;
+  int32_t image_height = 336;
   std::string resize_mode = "letterbox";
   int32_t letterbox_fill = 128;
   std::string generation_mode = "hybrid";
-  int32_t max_new_tokens = 4096;
+  int32_t max_new_tokens = 768;
   uint32_t vision_backend_mask = 15;
   uint32_t language_backend_mask = 15;
   float nms_iou = 0.9f;

@@ -51,6 +51,8 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ## 推理性能
 
+下表中的各类任务数据来自 `develop` 发布版的 stable 672，仅作为外部对照基线保留；本分支只发布 fast_336 Runtime 和配置。
+
 | Platform | 任务 | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | RDK S600 | 目标检测 | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
@@ -63,7 +65,7 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ### 检测 Profile 对比
 
-`fast_336` 分支保留 stable_672，并增加独立配置的 336 检测 Profile。快速版仅对目标检测进行对比验收。两者均使用 Hybrid、NMS IoU 0.9 和 4 个 BPU 核。以下 Batch 1 对比在同一台 RDK S600 上使用相同的 350 帧 `person_video.avi` 和 `/detect person` 指令，用于单独比较 Profile 变化。
+本分支只包含 fast_336 检测 Profile。下表中的 stable_672 数据来自 `develop` 发布版，仅作为外部对照基线。两组数据均使用 Hybrid、NMS IoU 0.9、4 个 BPU 核、相同的 350 帧 `person_video.avi` 和 `/detect person` 指令。
 
 | Profile | 帧数 | 检测框 | FPS | Vision 均值 (ms) | Prefill 均值 (ms) | Decode 均值 (ms) | 总耗时均值 (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -81,7 +83,7 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ### 30 FPS ROS 本地回灌
 
-当前 fast_336 Runtime 使用两阶段流水线：下一帧的预处理和 Vision 与当前 Batch 的 Language 阶段重叠。使用静态 Batch 2 Language HBM 时，Prepared 队列最多保存两帧；加载 Batch 1 HBM 时，队列容量保持为一帧。模型权重、图元数据、Tokenizer 状态、图 IO 和 Language KV 工作区保持共享。
+fast_336 Runtime 使用两阶段流水线：下一帧的预处理和 Vision 与当前 Batch 的 Language 阶段重叠。静态 Batch 2 Language HBM 每次共同处理最多两帧 Prepared 输入。模型权重、图元数据、Tokenizer 状态、图 IO 和 Language KV 工作区保持共享。
 
 | Prompt | 有效结果 | 结果 | 输出 FPS | 预处理均值 (ms) | Vision 均值 (ms) | Language 均值 (ms) | 单帧端到端记录均值 (ms) |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
@@ -107,12 +109,12 @@ Batch 2 的 Language 时间由两个独立帧共享，因此输出 FPS 表示吞
 
 | 项目 | 配置 |
 | --- | --- |
-| Vision | MoonViT，27 个 Block，有符号 W8 权重；由配置选择 `672 x 672` 或 `336 x 336` |
+| Vision | MoonViT，27 个 Block，`336 x 336`，有符号 W8 权重 |
 | Language | Qwen2.5 Decoder，36 层，Hidden Size 2048，有符号 W8 权重 |
 | 激活 | 动态量化 |
-| Visual Token | stable_672：576；fast_336：144 |
+| Visual Token | 144 |
 | LM Head | W8，词表大小 152681 |
-| Prefill / KV Cache | stable_672：1024 / 4096；fast_336：256 / 1024 Token |
+| Prefill / KV Cache | 256 / 1024 Token |
 | 解码 | PBD q=6、AR q=1、Host 采样 |
 | 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
@@ -143,16 +145,17 @@ colcon build --merge-install --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-### 下载模型
+### 准备模型
+
+fast_336 HBM 当前暂未提供公开下载。请使用 [PTQ `fast_336` 分支](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336)中的 `compiler/config/fast_336_batch2.yaml` 完成编译，然后将三个产物复制到功能包唯一的模型目录：
 
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_vision.hbm
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_language.hbm
-wget -c -P install/lib/hobot_locateanything/models \
-  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/vision/LocateAnything-3B_vision.hbm \
+  install/lib/hobot_locateanything/models/
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_language_batch2.hbm \
+  ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
+  install/lib/hobot_locateanything/models/
 ```
 
 运行时文件：
@@ -160,7 +163,7 @@ wget -c -P install/lib/hobot_locateanything/models \
 ```text
 install/lib/hobot_locateanything/models/
 ├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
+├── LocateAnything-3B_language_batch2.hbm
 ├── LocateAnything-3B_embed_tokens.bin
 └── tokenizer/
     ├── vocab.json
@@ -168,28 +171,10 @@ install/lib/hobot_locateanything/models/
     └── added_tokens.json
 ```
 
-当前仓库暂未提供 fast_336 HBM 的公开下载地址。请按照 [PTQ fast_336 指南](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336) 编译快速版，并将生成的运行文件放入独立模型目录：
-
-```text
-install/lib/hobot_locateanything/models/fast_336/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
-└── LocateAnything-3B_embed_tokens.bin
-```
-
-通过配置显式选择稳定版或快速版：
+本分支只有一个运行配置入口：
 
 ```bash
-# stable_672 Console
-ros2 run hobot_locateanything console --config config/config_stable_672.yaml
-
-# fast_336 Console
-ros2 run hobot_locateanything console --config config/config_fast_336.yaml
-
-# fast_336 ROS launch
-export CAM_TYPE=fb
-ros2 launch hobot_locateanything hobot_locateanything.launch.py \
-  config_file:=config/config_fast_336.yaml
+ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
 ## 基础功能：目标检测
@@ -210,7 +195,7 @@ ros2 run hobot_locateanything console --config config/config.yaml
 Loading Vision HBM...
 Loading Language HBM...
 HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+Ready  S600/Nash-P  |  hybrid  |  max tokens 768
 Tasks
   /detect cat,dog               目标检测
   /ground <query>[,<query>...]  指代表达，多查询
@@ -524,7 +509,7 @@ ros2 run hobot_locateanything console --config config/config.yaml
 Loading Vision HBM...
 Loading Language HBM...
 HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+Ready  S600/Nash-P  |  hybrid  |  max tokens 768
 Tasks
   /detect cat,dog               目标检测
   /ground <query>[,<query>...]  指代表达，多查询

@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Added the independently configured fast_336 detection profile while retaining stable_672.
-- Added dynamic image profile preprocessing, Vision HBM shape validation, coordinate restoration, and explicit profile model/output directories.
-- Added the two-stage ROS pipeline and static Batch 2 Language runtime while retaining Batch 1 HBM compatibility.
+- Added the fast_336 detection runtime with a single 336 x 336 configuration.
+- Added 336 image preprocessing, Vision HBM shape validation, and coordinate restoration.
+- Added the two-stage ROS pipeline and static Batch 2 Language runtime.
 - Validated Console image/video detection and 30 FPS ROS 2 shared-memory replay on RDK S600.
 - Recorded the 350-frame Batch 1 profile comparison and the final Batch 2 latency, throughput, CPU, BPU, RSS, ION, and DDR results.
 - Verified 300/300 single-target results at 11.616 FPS and 240/240 five-box results at 3.637 FPS.
