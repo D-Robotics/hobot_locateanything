@@ -71,22 +71,32 @@ std::string LogText(const std::string& value) {
 }
 
 /**
- * @brief Join prediction labels into the compact INFO-log representation.
+ * @brief Summarize prediction labels for the compact INFO-log representation.
  * @param prediction Structured inference prediction.
- * @return Pipe-separated detection and point labels.
+ * @return Comma-separated labels with per-label counts.
  */
 std::string ResultLabels(const Prediction& prediction) {
-  std::ostringstream stream;
-  bool first = true;
-  const auto append = [&stream, &first](const std::string& label) {
-    if (!first) stream << " | ";
-    stream << LogText(label);
-    first = false;
+  std::vector<std::pair<std::string, size_t>> counts;
+  const auto count = [&counts](const std::string& label) {
+    const auto found = std::find_if(
+        counts.begin(), counts.end(),
+        [&label](const auto& item) { return item.first == label; });
+    if (found == counts.end()) {
+      counts.emplace_back(label, 1);
+    } else {
+      ++found->second;
+    }
   };
   for (const Detection& detection : prediction.detections) {
-    append(detection.label);
+    count(detection.label);
   }
-  for (const Point& point : prediction.points) append(point.label);
+  for (const Point& point : prediction.points) count(point.label);
+
+  std::ostringstream stream;
+  for (size_t index = 0; index < counts.size(); ++index) {
+    if (index != 0) stream << ", ";
+    stream << LogText(counts[index].first) << ':' << counts[index].second;
+  }
   return stream.str();
 }
 
@@ -542,44 +552,69 @@ class LocateAnythingNode : public rclcpp::Node {
         for (const InferenceOutput& output : outputs) {
           batch_total_ms = std::max(batch_total_ms, output.metrics.total_ms);
         }
-        const int16_t fps = RecordOutputFps(outputs.size(), batch_total_ms);
+        double batch_time_ms = 0.0;
+        double output_fps = 0.0;
+        const int16_t message_fps = RecordOutputFps(
+            outputs.size(), batch_total_ms, &batch_time_ms, &output_fps);
         for (size_t index = 0; index < batch.size(); ++index) {
           PendingFrame& frame = batch[index].frame;
           InferenceOutput& output = outputs[index];
           ai_msgs::msg::PerceptionTargets result =
-              BuildResult(frame, output, fps, batch[index].inference_started);
+              BuildResult(frame, output, message_fps,
+                          batch[index].inference_started);
           result_publisher_->publish(result);
 
           const LanguageMetrics& language = output.metrics.language;
           const std::string labels = ResultLabels(output.prediction);
           RCLCPP_INFO(
               get_logger(),
-              "frame_id=%s prompt=\"%s\" output=\"%s\" labels=\"%s\" "
-              "boxes=%zu points=%zu "
-              "fps=%d stop_reason=%s prompt_tokens=%d generated_tokens=%d "
-              "pbd_calls=%d pbd_accepted_tokens=%d mode=%s "
-              "preprocess_ms=%.3f vision_ms=%.3f language_ms=%.3f "
-              "postprocess_ms=%.3f total_ms=%.3f",
+              "Inference\n"
+              "  Input       frame_id=%s prompt=\"%s\"\n"
+              "  Prediction  labels=\"%s\" boxes=%zu points=%zu\n"
+              "  Language    mode=%s prompt_tokens=%d generated_tokens=%d\n"
+              "  PBD         calls=%d accepted_tokens=%d\n"
+              "  Throughput  batch_size=%zu batch_time_ms=%.3f fps=%.3f\n"
+              "  Timing      preprocess_ms=%.3f vision_ms=%.3f "
+              "language_ms=%.3f postprocess_ms=%.3f total_ms=%.3f",
               LogText(frame.header.frame_id).c_str(),
-              LogText(frame.prompt).c_str(),
-              LogText(output.generated_text).c_str(), labels.c_str(),
+              LogText(frame.prompt).c_str(), labels.c_str(),
               output.prediction.detections.size(),
-              output.prediction.points.size(), static_cast<int>(fps),
-              output.stop_reason.c_str(), language.prompt_tokens,
-              language.generated_tokens, language.pbd_calls,
-              language.pbd_accepted_tokens, language.executed_mode.c_str(),
+              output.prediction.points.size(), language.executed_mode.c_str(),
+              language.prompt_tokens, language.generated_tokens,
+              language.pbd_calls, language.pbd_accepted_tokens, outputs.size(),
+              batch_time_ms, output_fps,
               output.metrics.preprocess_ms, output.metrics.vision_ms,
               output.metrics.language_ms, output.metrics.postprocess_ms,
               output.metrics.total_ms);
-          RCLCPP_DEBUG(
-              get_logger(), "frame_id=%s generated_token_ids=[%s]",
-              LogText(frame.header.frame_id).c_str(),
-              TokenIdsText(output.generated_token_ids).c_str());
-          if (!language.fallback_reason.empty()) {
-            RCLCPP_DEBUG(get_logger(), "frame_id=%s language fallback: %s",
-                         LogText(frame.header.frame_id).c_str(),
-                         LogText(language.fallback_reason).c_str());
+
+          if (output.stop_reason != "im_end") {
+            RCLCPP_WARN(
+                get_logger(),
+                "Inference termination\n"
+                "  Input       frame_id=%s\n"
+                "  Termination reason=%s",
+                LogText(frame.header.frame_id).c_str(),
+                LogText(output.stop_reason).c_str());
           }
+          if (!language.fallback_reason.empty()) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Language fallback\n"
+                "  Input       frame_id=%s\n"
+                "  Reason      %s",
+                LogText(frame.header.frame_id).c_str(),
+                LogText(language.fallback_reason).c_str());
+          }
+          RCLCPP_DEBUG(
+              get_logger(),
+              "frame_id=%s output=\"%s\" prompt_tokens=%d "
+              "generated_tokens=%d pbd_calls=%d pbd_accepted_tokens=%d "
+              "mode=%s generated_token_ids=[%s]",
+              LogText(frame.header.frame_id).c_str(),
+              LogText(output.generated_text).c_str(), language.prompt_tokens,
+              language.generated_tokens, language.pbd_calls,
+              language.pbd_accepted_tokens, language.executed_mode.c_str(),
+              TokenIdsText(output.generated_token_ids).c_str());
         }
       } catch (const std::exception& error) {
         for (const PreparedFrame& item : batch) {
@@ -663,11 +698,16 @@ class LocateAnythingNode : public rclcpp::Node {
    * @brief Compute output throughput from the rolling batch-completion window.
    * @param output_count Number of results completed by the current batch.
    * @param total_ms Current batch latency used before the window has two samples.
+   * @param batch_time_ms Receives the rolling mean batch-completion interval.
+   * @param output_fps Receives the unrounded rolling output throughput.
    * @return Rounded result FPS clamped to the message field range.
    */
-  int16_t RecordOutputFps(size_t output_count, double total_ms) {
+  int16_t RecordOutputFps(size_t output_count, double total_ms,
+                          double* batch_time_ms, double* output_fps) {
     if (output_count == 0) return 0;
     const auto timestamp = std::chrono::steady_clock::now();
+    if (batch_time_ms != nullptr) *batch_time_ms = 0.0;
+    if (output_fps != nullptr) *output_fps = 0.0;
     completed_outputs_ += output_count;
     output_completions_.emplace_back(timestamp, completed_outputs_);
     while (output_completions_.size() > kFpsWindowSize) {
@@ -686,9 +726,16 @@ class LocateAnythingNode : public rclcpp::Node {
                                output_completions_.front().first)
                                .count();
     if (seconds <= 0.0) return -1;
+    const size_t batch_intervals = output_completions_.size() - 1;
+    if (batch_time_ms != nullptr) {
+      *batch_time_ms = seconds * 1000.0 /
+                       static_cast<double>(batch_intervals);
+    }
     const uint64_t completed = output_completions_.back().second -
                                output_completions_.front().second;
-    const long fps = std::lround(static_cast<double>(completed) / seconds);
+    const double measured_fps = static_cast<double>(completed) / seconds;
+    if (output_fps != nullptr) *output_fps = measured_fps;
+    const long fps = std::lround(measured_fps);
     return static_cast<int16_t>(std::clamp<long>(
         fps, 0, std::numeric_limits<int16_t>::max()));
   }
