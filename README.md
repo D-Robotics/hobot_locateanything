@@ -51,36 +51,6 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ## Inference Performance
 
-The task-level table below is an external stable 672 reference from the `develop` release. It is retained only as a comparison baseline; this branch ships only the fast_336 runtime and configuration.
-
-| Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | Object detection | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
-| RDK S600 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| RDK S600 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
-| RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| RDK S600 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| RDK S600 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| RDK S600 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
-
-### Detection Profile Comparison
-
-This branch contains only the fast_336 detection profile. The stable_672 values below were measured from the `develop` release and serve only as an external baseline. Both measurements use Hybrid generation, NMS IoU 0.9, four BPU cores, the same 350-frame `person_video.avi`, and `/detect person`.
-
-| Profile | Frames | Boxes | FPS | Vision mean (ms) | Prefill mean (ms) | Decode mean (ms) | Total mean (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fast_336, Batch 1 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
-| stable_672, Batch 1 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
-
-| Resource mean | fast_336 | stable_672 |
-| --- | ---: | ---: |
-| Console CPU, one-core percentage | 56.0% | 46.4% |
-| Console RSS | 184.8 MiB | 204.5 MiB |
-| Four-core BPU utilization | 64.1% | 67.2% |
-| DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
-
-Under this Batch 1 comparison, fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full profile comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md).
-
 ### 30 FPS ROS Local Replay
 
 The fast_336 runtime uses a two-stage pipeline: the next frame's preprocessing and Vision stage overlap the current batch's Language stage. The static Batch 2 Language HBM processes up to two prepared frames together. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared.
@@ -152,18 +122,19 @@ The fast_336 HBM is not currently published as a download. Build it from the [PT
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
 cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/vision/LocateAnything-3B_vision.hbm \
-  install/lib/hobot_locateanything/models/
+  install/lib/hobot_locateanything/models/LocateAnything-3B_vision_336x336.hbm
 cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_language_batch2.hbm \
-  ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
-  install/lib/hobot_locateanything/models/
+  install/lib/hobot_locateanything/models/LocateAnything-3B_language_336x336.hbm
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
+  install/lib/hobot_locateanything/models/LocateAnything-3B_embed_tokens.bin
 ```
 
 Runtime files:
 
 ```text
 install/lib/hobot_locateanything/models/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language_batch2.hbm
+├── LocateAnything-3B_vision_336x336.hbm
+├── LocateAnything-3B_language_336x336.hbm
 ├── LocateAnything-3B_embed_tokens.bin
 └── tokenizer/
     ├── vocab.json

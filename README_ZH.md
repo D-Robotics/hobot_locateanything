@@ -51,36 +51,6 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ## 推理性能
 
-下表中的各类任务数据来自 `develop` 发布版的 stable 672，仅作为外部对照基线保留；本分支只发布 fast_336 Runtime 和配置。
-
-| Platform | 任务 | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | 目标检测 | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
-| RDK S600 | GUI 定位 | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| RDK S600 | 指代定位 | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
-| RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| RDK S600 | 指定文本定位 | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| RDK S600 | 版面定位 | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| RDK S600 | 点定位 | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
-
-### 检测 Profile 对比
-
-本分支只包含 fast_336 检测 Profile。下表中的 stable_672 数据来自 `develop` 发布版，仅作为外部对照基线。两组数据均使用 Hybrid、NMS IoU 0.9、4 个 BPU 核、相同的 350 帧 `person_video.avi` 和 `/detect person` 指令。
-
-| Profile | 帧数 | 检测框 | FPS | Vision 均值 (ms) | Prefill 均值 (ms) | Decode 均值 (ms) | 总耗时均值 (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fast_336，Batch 1 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
-| stable_672，Batch 1 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
-
-| 资源均值 | fast_336 | stable_672 |
-| --- | ---: | ---: |
-| Console CPU，单核百分比 | 56.0% | 46.4% |
-| Console RSS | 184.8 MiB | 204.5 MiB |
-| 四核 BPU 利用率 | 64.1% | 67.2% |
-| DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
-
-在该 Batch 1 对比中，fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整 Profile 对比和逐帧 IoU 结果见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md)。
-
 ### 30 FPS ROS 本地回灌
 
 fast_336 Runtime 使用两阶段流水线：下一帧的预处理和 Vision 与当前 Batch 的 Language 阶段重叠。静态 Batch 2 Language HBM 每次共同处理最多两帧 Prepared 输入。模型权重、图元数据、Tokenizer 状态、图 IO 和 Language KV 工作区保持共享。
@@ -152,18 +122,19 @@ fast_336 HBM 当前暂未提供公开下载。请使用 [PTQ `fast_336` 分支](
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
 cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/vision/LocateAnything-3B_vision.hbm \
-  install/lib/hobot_locateanything/models/
+  install/lib/hobot_locateanything/models/LocateAnything-3B_vision_336x336.hbm
 cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_language_batch2.hbm \
-  ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
-  install/lib/hobot_locateanything/models/
+  install/lib/hobot_locateanything/models/LocateAnything-3B_language_336x336.hbm
+cp ../Locateanything_PTQ/compiler/outputs/fast_336_prefill256_cache1024_w8_batch2/build/language/LocateAnything-3B_embed_tokens.bin \
+  install/lib/hobot_locateanything/models/LocateAnything-3B_embed_tokens.bin
 ```
 
 运行时文件：
 
 ```text
 install/lib/hobot_locateanything/models/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language_batch2.hbm
+├── LocateAnything-3B_vision_336x336.hbm
+├── LocateAnything-3B_language_336x336.hbm
 ├── LocateAnything-3B_embed_tokens.bin
 └── tokenizer/
     ├── vocab.json

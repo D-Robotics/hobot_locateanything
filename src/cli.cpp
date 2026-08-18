@@ -24,7 +24,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "inference.hpp"
-#include "model_profile.hpp"
+#include "processing/image.hpp"
 #include "package_paths.hpp"
 
 namespace fs = std::filesystem;
@@ -166,8 +166,8 @@ struct ConsoleOptions {
   fs::path model_directory;
   fs::path tokenizer_directory;
   fs::path output_directory = "outputs";
-  std::string vision_model = "LocateAnything-3B_vision.hbm";
-  std::string language_model = "LocateAnything-3B_language_batch2.hbm";
+  std::string vision_model = "LocateAnything-3B_vision_336x336.hbm";
+  std::string language_model = "LocateAnything-3B_language_336x336.hbm";
   std::string embeddings = "LocateAnything-3B_embed_tokens.bin";
   int image_width = 336;
   int image_height = 336;

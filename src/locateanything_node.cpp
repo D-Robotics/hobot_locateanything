@@ -208,11 +208,13 @@ class LocateAnythingNode : public rclcpp::Node {
     InferenceOptions options;
     options.vision_model =
         (fs::path(model_directory) /
-         declare_parameter<std::string>("vision_model", "LocateAnything-3B_vision.hbm"))
+         declare_parameter<std::string>(
+             "vision_model", "LocateAnything-3B_vision_336x336.hbm"))
             .string();
     options.language_model =
         (fs::path(model_directory) /
-         declare_parameter<std::string>("language_model", "LocateAnything-3B_language_batch2.hbm"))
+         declare_parameter<std::string>(
+             "language_model", "LocateAnything-3B_language_336x336.hbm"))
             .string();
     options.embeddings =
         (fs::path(model_directory) /

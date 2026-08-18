@@ -3,8 +3,8 @@ hobot_locateanything:
     # Runtime resources are relative to lib/hobot_locateanything.
     model_directory: models
     tokenizer_directory: models/tokenizer
-    vision_model: LocateAnything-3B_vision.hbm
-    language_model: LocateAnything-3B_language_batch2.hbm
+    vision_model: LocateAnything-3B_vision_336x336.hbm
+    language_model: LocateAnything-3B_language_336x336.hbm
     embeddings: LocateAnything-3B_embed_tokens.bin
 
     image_width: 336

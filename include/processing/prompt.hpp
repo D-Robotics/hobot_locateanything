@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "model_profile.hpp"
+#include "processing/image.hpp"
 
 namespace locateanything {
 
