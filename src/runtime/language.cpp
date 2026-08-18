@@ -410,6 +410,28 @@ struct BatchLaneState {
   GenerationMetrics* metrics = nullptr;
 };
 
+/** Emit both Lane states whenever the batch scheduler cannot proceed. */
+bool ReportBatchFailure(const char* stage,
+                        const std::array<BatchLaneState, 2>& lanes) {
+  std::fprintf(
+      stderr,
+      "[FAIL] batch state stage=%s "
+      "lane0={phase=%d history=%d response=%zu pending_pbd=%zu "
+      "graph_tokens=%zu ar_logits=%zu finished=%d} "
+      "lane1={phase=%d history=%d response=%zu pending_pbd=%zu "
+      "graph_tokens=%zu ar_logits=%zu finished=%d}\n",
+      stage,
+      static_cast<int>(lanes[0].phase), lanes[0].history_len,
+      lanes[0].response.size(), lanes[0].pending_pbd.size(),
+      lanes[0].graph_tokens.size(), lanes[0].pending_ar_logits.data.size(),
+      lanes[0].finished ? 1 : 0,
+      static_cast<int>(lanes[1].phase), lanes[1].history_len,
+      lanes[1].response.size(), lanes[1].pending_pbd.size(),
+      lanes[1].graph_tokens.size(), lanes[1].pending_ar_logits.data.size(),
+      lanes[1].finished ? 1 : 0);
+  return false;
+}
+
 struct GenerationMetrics {
   int32_t prefill_tokens = 0;
   double prefill_ms = 0.0;
@@ -2396,7 +2418,9 @@ bool RunBatchPayloads(
   }
 
   const auto cache_initialize_started = std::chrono::steady_clock::now();
-  if (!BuildZeroCaches(*prefill, &engine->batch_prefill_cache)) return false;
+  if (!BuildZeroCaches(*prefill, &engine->batch_prefill_cache)) {
+    return ReportBatchFailure("prefill_zero_cache", *lanes);
+  }
   const double cache_initialize_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cache_initialize_started).count();
   for (GenerationMetrics* metric : metrics) {
@@ -2412,14 +2436,14 @@ bool RunBatchPayloads(
                      engine->batch_prefill_cache, &engine->batch_prefill_outputs,
                      payloads, no_tokens, no_tokens, active_lens, zero_lens,
                      both_active, metrics)) {
-    return false;
+    return ReportBatchFailure("prefill_graph", *lanes);
   }
   const double prefill_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - prefill_started).count();
   const auto cache_seed_started = std::chrono::steady_clock::now();
   if (!BuildBatchFullCaches(*prefill, engine->batch_prefill_outputs,
                             active_lens, &engine->batch_full_cache)) {
-    return false;
+    return ReportBatchFailure("prefill_cache_seed", *lanes);
   }
   const double cache_seed_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cache_seed_started).count();
@@ -2436,7 +2460,7 @@ bool RunBatchPayloads(
     if (!ExtractBatchLane(engine->batch_prefill_outputs[0],
                           static_cast<int32_t>(lane),
                           &bootstrap_logits[lane])) {
-      return false;
+      return ReportBatchFailure("bootstrap_lane_extract", *lanes);
     }
     if ((*lanes)[lane].slow_mode) {
       const int32_t row = bootstrap_logits[lane].shape.size() == 3 &&
@@ -2445,7 +2469,7 @@ bool RunBatchPayloads(
                               : bootstrap_logits[lane].shape[1] - 1;
       if (!SelectLogitsRow(bootstrap_logits[lane], row,
                            &(*lanes)[lane].pending_ar_logits)) {
-        return false;
+        return ReportBatchFailure("bootstrap_ar_logits", *lanes);
       }
     } else {
       bootstrap_pending[lane] = fused_initial_pbd;
@@ -2487,7 +2511,9 @@ bool RunBatchPayloads(
     const int32_t accepted = static_cast<int32_t>(decision.tokens.size());
     const int32_t remaining =
         state.max_new_tokens - static_cast<int32_t>(state.response.size());
-    if (accepted <= 0 || accepted > 6 || remaining <= 0) return false;
+    if (accepted <= 0 || accepted > 6 || remaining <= 0) {
+      return ReportBatchFailure("pbd_decision_contract", *lanes);
+    }
     if (accepted > remaining) {
       if (metric != nullptr) metric->pbd_accepted_tokens += remaining;
       state.response.insert(state.response.end(), decision.tokens.begin(),
@@ -2588,16 +2614,25 @@ bool RunBatchPayloads(
         if (state.graph_tokens.empty() || state.graph_tokens.size() > 5 ||
             state.history_len + static_cast<int32_t>(state.graph_tokens.size()) >
                 cache_len) {
-          return false;
+          return ReportBatchFailure("ar_bridge_contract", *lanes);
         }
         plans[lane] = BatchGraphPlan{
             true, false, 0,
             ArGraphName(static_cast<int32_t>(state.graph_tokens.size()))};
         continue;
       }
-      if (state.phase != BatchPhase::kArStep ||
-          state.pending_ar_logits.data.empty()) {
-        return false;
+      if (state.phase != BatchPhase::kArStep) {
+        return ReportBatchFailure("ar_step_logits", *lanes);
+      }
+      if (state.pending_ar_logits.data.empty()) {
+        // The other Lane may have won the previous graph round. Resume only
+        // an AR token already selected by the state machine; PBD is handled
+        // independently by the kPbd branch above.
+        if (state.graph_tokens.size() == 1) {
+          plans[lane] = BatchGraphPlan{true, false, 0, "decode_ar"};
+          continue;
+        }
+        return ReportBatchFailure("ar_step_logits", *lanes);
       }
       const auto host_started = std::chrono::steady_clock::now();
       const int32_t token =
@@ -2668,7 +2703,7 @@ bool RunBatchPayloads(
     std::array<int32_t, 2> prefixes;
     const int32_t query = LanguageGraphQueryLength(selected.graph,
                                                     prefill->GetInputShapes()[0][1]);
-    if (query <= 0) return false;
+    if (query <= 0) return ReportBatchFailure("graph_query", *lanes);
     for (size_t lane = 0; lane < 2; ++lane) {
       BatchLaneState& state = (*lanes)[lane];
       active[lane] = plans[lane].valid && plans[lane].graph == selected.graph;
@@ -2694,7 +2729,7 @@ bool RunBatchPayloads(
                        no_payloads, explicit_tokens, generated_tokens,
                        std::array<int32_t, 2>{{-1, -1}}, prefixes, active,
                        metrics)) {
-      return false;
+      return ReportBatchFailure("decode_graph", *lanes);
     }
 
     if (selected.pbd) {
@@ -2710,14 +2745,14 @@ bool RunBatchPayloads(
                                       state.history_len,
                                       &engine->batch_full_cache, prefix,
                                       state.metrics)) {
-            return false;
+            return ReportBatchFailure("pbd_cache_update", *lanes);
           }
           state.history_len += prefix;
         }
         if (!ExtractBatchDecisionOutputs(engine->batch_graph_outputs,
                                          static_cast<int32_t>(lane),
                                          &decision_outputs[lane])) {
-          return false;
+          return ReportBatchFailure("pbd_output_extract", *lanes);
         }
       }
       auto decode_lane = [&](size_t lane) {
@@ -2762,20 +2797,20 @@ bool RunBatchPayloads(
           !AppendBatchCacheUpdate(engine->batch_graph_outputs, lane,
                                   state.history_len, &engine->batch_full_cache,
                                   committed, state.metrics)) {
-        return false;
+        return ReportBatchFailure("ar_cache_update", *lanes);
       }
       state.history_len += committed;
       rt::Tensor lane_logits;
       if (!ExtractBatchLane(engine->batch_graph_outputs[0],
                             static_cast<int32_t>(lane), &lane_logits)) {
-        return false;
+        return ReportBatchFailure("ar_logits_extract", *lanes);
       }
       if (lane_logits.shape == std::vector<int32_t>{1, 1, kVocab}) {
         state.pending_ar_logits = std::move(lane_logits);
       } else if (!SelectLogitsRow(lane_logits,
                                   ArLogitRow(lane_logits, committed),
                                   &state.pending_ar_logits)) {
-        return false;
+        return ReportBatchFailure("ar_logits_select", *lanes);
       }
       if (state.metrics != nullptr) ++state.metrics->ar_calls;
       state.graph_tokens.clear();
