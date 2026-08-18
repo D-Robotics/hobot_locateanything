@@ -63,12 +63,12 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ### Detection Profile Comparison
 
-The `fast_336` branch keeps the stable 672 profile and adds an independently configured 336 detection profile. The fast-profile comparison is limited to object detection. Both profiles use Hybrid generation, NMS IoU 0.9, and four BPU cores. The following results use the same 350-frame `person_video.avi` and `/detect person` command on one RDK S600.
+The `fast_336` branch keeps the stable 672 profile and adds an independently configured 336 detection profile. The fast-profile comparison is limited to object detection. Both profiles use Hybrid generation, NMS IoU 0.9, and four BPU cores. The following Batch 1 comparison uses the same 350-frame `person_video.avi` and `/detect person` command on one RDK S600 to isolate the profile change.
 
 | Profile | Frames | Boxes | FPS | Vision mean (ms) | Prefill mean (ms) | Decode mean (ms) | Total mean (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fast_336 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
-| stable_672 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
+| fast_336, Batch 1 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
+| stable_672, Batch 1 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
 
 | Resource mean | fast_336 | stable_672 |
 | --- | ---: | ---: |
@@ -77,18 +77,25 @@ The `fast_336` branch keeps the stable 672 profile and adds an independently con
 | Four-core BPU utilization | 64.1% | 67.2% |
 | DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
 
-fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md).
+Under this Batch 1 comparison, fast_336 increases the measured end-to-end processing FPS by 22.34% and reduces the average total latency by 18.34%. It produced 2.97% more boxes in this video, so its Decode workload was also higher. The full profile comparison and frame-level IoU results are recorded in [the PTQ fast_336 S600 report](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md).
 
 ### 30 FPS ROS Local Replay
 
-The current fused fast_336 runtime uses a depth-one pipeline: the next frame's preprocessing and Vision stage overlap the current frame's serialized Language stage. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared; only one prepared frame is buffered. The same-frame Prefill, PBD/AR transitions, and KV commits remain ordered.
+The current fast_336 runtime uses a two-stage pipeline: the next frame's preprocessing and Vision stage overlap the current batch's Language stage. With the static Batch 2 Language HBM, the prepared queue holds up to two frames; loading a Batch 1 HBM keeps the queue capacity at one. Model weights, graph metadata, tokenizer state, graph I/O, and Language KV workspaces remain shared.
 
-| Prompt | Samples | Result | Output FPS | Preprocess mean (ms) | Vision mean (ms) | Language mean (ms) | Pipeline latency mean (ms) |
+| Prompt | Samples | Result | Output FPS | Preprocess mean (ms) | Vision mean (ms) | Language mean (ms) | End-to-end record mean (ms) |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| `/detect bus` | 40 | 1 box, 40/40 `im_end` | 8.084 | 8.756 | 55.780 | 123.524 | 247.210 |
-| `/detect person,bus,bicycle` | 40 | 5 boxes, 40/40 `im_end` | 2.200 | 8.791 | 55.781 | 454.417 | 909.094 |
+| `/detect bus` | 300 | 300/300, 1 box, `im_end` | 11.616 | 8.630 | 61.791 | 171.923 | 296.697 |
+| `/detect person,bus,bicycle` | 240 | 240/240, 5 boxes, `im_end` | 3.637 | 8.633 | 61.606 | 549.606 | 1052.182 |
 
-The single-target resource window covered 100 steady-state results after model loading: process CPU 57.0%, RSS 174.1 MiB, four-core BPU utilization 79.4%, DDR Read 78.8 GiB/s, DDR Write 0.86 GiB/s, and Read+Write 79.6 GiB/s. DDR values use the same-table `Bandwidth` columns from `hrut_ddr` and convert MiB/s to GiB/s by dividing by 1024.
+Batch 2 Language time is shared by two independent frames, so Output FPS is throughput and is not calculated as `1000 / End-to-end record mean`.
+
+| Prompt | Process CPU mean / peak | RSS mean / peak | Four-core BPU mean / peak | DDR Read mean | DDR Write mean | DDR Read+Write mean / peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `/detect bus` | 68.74% / 72.00% | 198.75 / 198.88 MiB | 85.73% / 97.00% | 71.83 GiB/s | 9.25 GiB/s | 81.07 / 87.44 GiB/s |
+| `/detect person,bus,bicycle` | 84.33% / 91.00% | 202.69 / 202.69 MiB | 76.77% / 95.00% | 85.89 GiB/s | 3.68 GiB/s | 89.57 / 102.81 GiB/s |
+
+The two resource windows exclude model loading. DDR values use the Read and Write `Bandwidth` fields from the same `hrut_ddr` sample. The observed `ion_uncache` heap was 302.06 MiB in both tests; it is a system-wide ION heap value, not process-private memory.
 
 ## Model and Quantization
 
@@ -127,7 +134,8 @@ The RDK S600 requires Ubuntu 24.04 and TogetheROS.Bot Jazzy.
 ### Build the Package
 
 ```bash
-git clone https://github.com/D-Robotics/hobot_locateanything.git
+git clone -b fast_336 --single-branch \
+  https://github.com/D-Robotics/hobot_locateanything.git
 cd hobot_locateanything
 
 source /opt/tros/jazzy/setup.bash
@@ -160,7 +168,7 @@ install/lib/hobot_locateanything/models/
     └── added_tokens.json
 ```
 
-Place locally compiled fast_336 files in the separate model directory:
+This repository does not currently publish a fast_336 HBM download. Compile the fast profile by following the [PTQ fast_336 guide](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336), then place the generated runtime files in the separate model directory:
 
 ```text
 install/lib/hobot_locateanything/models/fast_336/

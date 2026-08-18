@@ -63,12 +63,12 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ### 检测 Profile 对比
 
-`fast_336` 分支保留 stable_672，并增加独立配置的 336 检测 Profile。快速版仅对目标检测进行对比验收。两者均使用 Hybrid、NMS IoU 0.9 和 4 个 BPU 核。以下结果在同一台 RDK S600 上使用相同的 350 帧 `person_video.avi` 和 `/detect person` 指令。
+`fast_336` 分支保留 stable_672，并增加独立配置的 336 检测 Profile。快速版仅对目标检测进行对比验收。两者均使用 Hybrid、NMS IoU 0.9 和 4 个 BPU 核。以下 Batch 1 对比在同一台 RDK S600 上使用相同的 350 帧 `person_video.avi` 和 `/detect person` 指令，用于单独比较 Profile 变化。
 
 | Profile | 帧数 | 检测框 | FPS | Vision 均值 (ms) | Prefill 均值 (ms) | Decode 均值 (ms) | 总耗时均值 (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fast_336 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
-| stable_672 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
+| fast_336，Batch 1 | 350 | 6204 | 0.816 | 23.0 | 51.1 | 1125.1 | 1220.0 |
+| stable_672，Batch 1 | 350 | 6025 | 0.667 | 247.3 | 153.7 | 1049.6 | 1493.9 |
 
 | 资源均值 | fast_336 | stable_672 |
 | --- | ---: | ---: |
@@ -77,7 +77,25 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 | 四核 BPU 利用率 | 64.1% | 67.2% |
 | DDR Read+Write `Bandwidth` | 88.8 GiB/s | 91.8 GiB/s |
 
-fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整逐帧 IoU 与资源统计见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md)。
+在该 Batch 1 对比中，fast_336 的端到端实际处理 FPS 提升 22.34%，平均总耗时降低 18.34%。该视频中 fast_336 的检测框多 2.97%，因此 Decode 工作量也更高。完整 Profile 对比和逐帧 IoU 结果见 [PTQ fast_336 S600 验收记录](https://github.com/D-Robotics/Locateanything_PTQ/blob/fast_336/docs/fast_336/06_s600_comparison.md)。
+
+### 30 FPS ROS 本地回灌
+
+当前 fast_336 Runtime 使用两阶段流水线：下一帧的预处理和 Vision 与当前 Batch 的 Language 阶段重叠。使用静态 Batch 2 Language HBM 时，Prepared 队列最多保存两帧；加载 Batch 1 HBM 时，队列容量保持为一帧。模型权重、图元数据、Tokenizer 状态、图 IO 和 Language KV 工作区保持共享。
+
+| Prompt | 有效结果 | 结果 | 输出 FPS | 预处理均值 (ms) | Vision 均值 (ms) | Language 均值 (ms) | 单帧端到端记录均值 (ms) |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `/detect bus` | 300 | 300/300，1 个框，`im_end` | 11.616 | 8.630 | 61.791 | 171.923 | 296.697 |
+| `/detect person,bus,bicycle` | 240 | 240/240，5 个框，`im_end` | 3.637 | 8.633 | 61.606 | 549.606 | 1052.182 |
+
+Batch 2 的 Language 时间由两个独立帧共享，因此输出 FPS 表示吞吐率，不能使用 `1000 / 单帧端到端记录均值` 计算。
+
+| Prompt | 进程 CPU 均值 / 峰值 | RSS 均值 / 峰值 | 四核 BPU 均值 / 峰值 | DDR Read 均值 | DDR Write 均值 | DDR Read+Write 均值 / 峰值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `/detect bus` | 68.74% / 72.00% | 198.75 / 198.88 MiB | 85.73% / 97.00% | 71.83 GiB/s | 9.25 GiB/s | 81.07 / 87.44 GiB/s |
+| `/detect person,bus,bicycle` | 84.33% / 91.00% | 202.69 / 202.69 MiB | 76.77% / 95.00% | 85.89 GiB/s | 3.68 GiB/s | 89.57 / 102.81 GiB/s |
+
+两组资源采样均不包含模型加载阶段。DDR 使用同一张 `hrut_ddr` 表中的 Read 和 Write `Bandwidth` 字段。两组测试观察到的 `ion_uncache` Heap 均为 302.06 MiB；这是系统级 ION Heap 数值，不是进程私有内存。
 
 ## 模型与量化
 
@@ -116,7 +134,8 @@ RDK S600 需安装 Ubuntu 24.04 和 TogetheROS.Bot Jazzy。
 ### 编译功能包
 
 ```bash
-git clone https://github.com/D-Robotics/hobot_locateanything.git
+git clone -b fast_336 --single-branch \
+  https://github.com/D-Robotics/hobot_locateanything.git
 cd hobot_locateanything
 
 source /opt/tros/jazzy/setup.bash
@@ -149,7 +168,7 @@ install/lib/hobot_locateanything/models/
     └── added_tokens.json
 ```
 
-将自行编译的 fast_336 文件放入独立模型目录：
+当前仓库暂未提供 fast_336 HBM 的公开下载地址。请按照 [PTQ fast_336 指南](https://github.com/D-Robotics/Locateanything_PTQ/tree/fast_336) 编译快速版，并将生成的运行文件放入独立模型目录：
 
 ```text
 install/lib/hobot_locateanything/models/fast_336/

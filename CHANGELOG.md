@@ -4,8 +4,10 @@
 
 - Added the independently configured fast_336 detection profile while retaining stable_672.
 - Added dynamic image profile preprocessing, Vision HBM shape validation, coordinate restoration, and explicit profile model/output directories.
-- Validated Console image/video detection and ROS 2 shared-memory replay on RDK S600.
-- Recorded the 350-frame detection FPS, latency, CPU, BPU, RSS, and DDR comparison.
+- Added the two-stage ROS pipeline and static Batch 2 Language runtime while retaining Batch 1 HBM compatibility.
+- Validated Console image/video detection and 30 FPS ROS 2 shared-memory replay on RDK S600.
+- Recorded the 350-frame Batch 1 profile comparison and the final Batch 2 latency, throughput, CPU, BPU, RSS, ION, and DDR results.
+- Verified 300/300 single-target results at 11.616 FPS and 240/240 five-box results at 3.637 FPS.
 
 ## tros_0.1.0 (2026-08-12)
 
