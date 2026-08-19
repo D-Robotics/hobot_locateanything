@@ -164,11 +164,17 @@ std::string TokenIdsText(const std::vector<int32_t>& tokens) {
 
 }  // namespace
 
+/** Immutable Prompt state shared by every frame in one Prompt generation. */
+struct ActivePrompt {
+  std::string command;
+  uint64_t version = 0;
+};
+
 /** Latest-frame queue item with the Prompt snapshot captured on arrival. */
 struct PendingFrame {
   std_msgs::msg::Header header;
   cv::Mat image;
-  std::string prompt;
+  std::shared_ptr<const ActivePrompt> prompt;
 };
 
 /** One frame after preprocessing and Vision, ready for serialized Language. */
@@ -349,12 +355,28 @@ class LocateAnythingNode : public rclcpp::Node {
                   error.what());
       return;
     }
+    size_t discarded_frames = 0;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      prompt_ = message->data;
+      if (active_prompt_ != nullptr &&
+          active_prompt_->command == message->data) {
+        return;
+      }
+      active_prompt_ = std::make_shared<const ActivePrompt>(
+          ActivePrompt{message->data, ++prompt_version_});
+      if (pending_.has_value()) {
+        pending_.reset();
+        ++discarded_frames;
+      }
+      discarded_frames += prepared_.size();
+      prepared_.clear();
+      dropped_frames_ += discarded_frames;
+      dropped_since_warning_ += discarded_frames;
     }
-    RCLCPP_INFO(get_logger(), "prompt updated: %s",
-                LogText(message->data).c_str());
+    condition_.notify_all();
+    RCLCPP_INFO(get_logger(),
+                "prompt updated: %s; discarded_stale_frames=%zu",
+                LogText(message->data).c_str(), discarded_frames);
   }
 
   /**
@@ -435,7 +457,7 @@ class LocateAnythingNode : public rclcpp::Node {
     uint64_t total_drops = 0;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (prompt_.empty()) {
+      if (active_prompt_ == nullptr) {
         waiting_for_prompt = true;
         const auto now = std::chrono::steady_clock::now();
         if (now - last_prompt_wait_warning_ >= kPromptWaitWarningInterval) {
@@ -454,7 +476,7 @@ class LocateAnythingNode : public rclcpp::Node {
             last_drop_warning_ = now;
           }
         }
-        pending_ = PendingFrame{header, std::move(image), prompt_};
+        pending_ = PendingFrame{header, std::move(image), active_prompt_};
       }
     }
     if (warn_waiting_for_prompt) {
@@ -496,10 +518,15 @@ class LocateAnythingNode : public rclcpp::Node {
       try {
         const rclcpp::Time inference_started = now();
         PreparedInference inference =
-            session_->Prepare(frame.image, frame.prompt);
+            session_->Prepare(frame.image, frame.prompt->command);
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (stopping_) return;
+          if (frame.prompt != active_prompt_) {
+            ++dropped_frames_;
+            ++dropped_since_warning_;
+            continue;
+          }
           prepared_.push_back(PreparedFrame{
               std::move(frame), std::move(inference), inference_started});
         }
@@ -526,6 +553,7 @@ class LocateAnythingNode : public rclcpp::Node {
           });
           if (stopping_) return;
         }
+        if (prepared_.empty()) continue;
         const size_t count = std::min(prepared_capacity_, prepared_.size());
         batch.reserve(count);
         for (size_t index = 0; index < count; ++index) {
@@ -577,7 +605,7 @@ class LocateAnythingNode : public rclcpp::Node {
               "  Timing      preprocess_ms=%.3f vision_ms=%.3f "
               "language_ms=%.3f postprocess_ms=%.3f total_ms=%.3f",
               LogText(frame.header.frame_id).c_str(),
-              LogText(frame.prompt).c_str(), labels.c_str(),
+              LogText(frame.prompt->command).c_str(), labels.c_str(),
               output.prediction.detections.size(),
               output.prediction.points.size(), language.executed_mode.c_str(),
               language.prompt_tokens, language.generated_tokens,
@@ -757,7 +785,8 @@ class LocateAnythingNode : public rclcpp::Node {
   }
 
   std::unique_ptr<InferenceSession> session_;
-  std::string prompt_;
+  std::shared_ptr<const ActivePrompt> active_prompt_;
+  uint64_t prompt_version_ = 0;
   std::mutex mutex_;
   std::condition_variable condition_;
   std::optional<PendingFrame> pending_;
