@@ -144,21 +144,21 @@ void PrintBanner(const Colors& color) {
  */
 void PrintHelp(const Colors& color) {
   std::cout << color.bold << color.cyan << "Tasks" << color.reset << '\n'
-            << "  /detect cat,dog              目标检测\n"
-            << "  /ground <query>[,<query>...] 指代表达，多查询\n"
-            << "  /ground_single <query>[,...] 指代表达，单目标查询\n"
-            << "  /gui <query>[,<query>...]    GUI 点定位\n"
-            << "  /gui_box <query>[,<query>...] GUI 框定位\n"
-            << "  /text                        文本 OCR\n"
-            << "  /ground_text <query>[,...]   指定文本定位\n"
-            << "  /layout title,table,figure   文档版面分析\n"
-            << "  /point <query>[,<query>...]  通用点定位\n"
+             << "  /detect cat,dog               Object detection\n"
+             << "  /ground <query>[,<query>...]  Referring expression grounding (multi-query)\n"
+             << "  /ground_single <query>[,...]  Referring expression grounding (single target)\n"
+             << "  /gui <query>[,<query>...]     GUI point grounding\n"
+             << "  /gui_box <query>[,<query>...] GUI box grounding\n"
+             << "  /text                         Text OCR\n"
+             << "  /ground_text <query>[,...]    Text grounding\n"
+             << "  /layout title,table,figure    Document layout analysis\n"
+             << "  /point <query>[,<query>...]   Point grounding\n"
             << color.bold << color.cyan << "Session" << color.reset << '\n'
-            << "  /image <image_path>          加载图片\n"
-            << "  /video <video_path>          加载视频并处理全部帧\n"
-            << "  regen                        重跑上次请求\n"
-            << "  reset                        清除当前媒体\n"
-            << "  exit                         退出程序\n";
+             << "  /image <image_path>           Load an image\n"
+             << "  /video <video_path>           Process all video frames\n"
+             << "  regen                         Re-run the previous request\n"
+             << "  reset                         Clear the current media\n"
+             << "  exit                          Exit the application\n";
 }
 
 struct ConsoleOptions {
