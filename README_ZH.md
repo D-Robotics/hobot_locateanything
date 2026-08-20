@@ -21,29 +21,29 @@
 
 ### 任务类型
 
-| 类型 | 任务说明 | 输出 |
-| --- | --- | --- |
-| 开放词汇目标检测 | 根据用户给出的类别名称检测目标，不受预设类别表限制 | 目标类别及边界框 |
-| 指代定位 | 根据目标的外观、属性、位置或关系等自然语言描述定位目标 | 目标边界框 |
-| GUI 定位 | 根据文字描述定位软件界面中的按钮、图标、输入框等控件 | 控件点坐标或边界框 |
-| OCR | 识别图像中的文字内容及其所在位置 | 识别文字及文字边界框 |
-| 文本定位 | 根据用户给出的文字内容定位其在图像中的位置 | 指定文字及边界框 |
-| 文档版面定位 | 定位文档中的标题、正文、表格、图片等结构区域 | 版面元素类别及边界框 |
-| 点定位 | 根据自然语言描述定位普通视觉场景中的目标位置 | 目标点坐标 |
+| 类型       | 任务说明                        | 输出         |
+| -------- | --------------------------- | ---------- |
+| 开放词汇目标检测 | 根据用户给出的类别名称检测目标，不受预设类别表限制   | 目标类别及边界框   |
+| 指代定位     | 根据目标的外观、属性、位置或关系等自然语言描述定位目标 | 目标边界框      |
+| GUI 定位   | 根据文字描述定位软件界面中的按钮、图标、输入框等控件  | 控件点坐标或边界框  |
+| OCR      | 识别图像中的文字内容及其所在位置            | 识别文字及文字边界框 |
+| 文本定位     | 根据用户给出的文字内容定位其在图像中的位置       | 指定文字及边界框   |
+| 文档版面定位   | 定位文档中的标题、正文、表格、图片等结构区域      | 版面元素类别及边界框 |
+| 点定位      | 根据自然语言描述定位普通视觉场景中的目标位置      | 目标点坐标      |
 
 LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固定。我们按照训练数据采用的提示词格式内置了各类任务模板，使用时只需通过对应命令输入查询目标（Query）。`<query>` 表示查询目标，多个 Query 使用英文逗号分隔；`<type>` 表示版面元素类型。
 
-| 命令 | 使用示例 | 说明 |
-| --- | --- | --- |
-| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | 检测 person、bus 和 bicycle 类别的全部目标 |
-| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | 分别定位符合三个自然语言描述的全部目标 |
-| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | 定位一个符合自然语言描述的目标 |
-| `/gui <query>[,<query>...]` | `/gui Go to file/function` | 定位指定界面控件并返回操作点 |
-| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | 分别定位三个界面控件并返回边界框 |
-| `/text` | `/text` | 识别图像中的全部文字及其位置 |
-| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | 分别定位三段指定文字 |
-| `/layout <type>[,<type>...]` | `/layout plot,text` | 定位文档中的图表和文本区域 |
-| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | 分别返回两处目标的点坐标 |
+| 命令                                    | 使用示例                                                                         | 说明                              |
+| ------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------- |
+| `/detect <query>[,<query>...]`        | `/detect person,bus,bicycle`                                                 | 检测 person、bus 和 bicycle 类别的全部目标 |
+| `/ground <query>[,<query>...]`        | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | 分别定位符合三个自然语言描述的全部目标             |
+| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap`                             | 定位一个符合自然语言描述的目标                 |
+| `/gui <query>[,<query>...]`           | `/gui Go to file/function`                                                   | 定位指定界面控件并返回操作点                  |
+| `/gui_box <query>[,<query>...]`       | `/gui_box Go to file/function,Environment tab,Files tab`                     | 分别定位三个界面控件并返回边界框                |
+| `/text`                               | `/text`                                                                      | 识别图像中的全部文字及其位置                  |
+| `/ground_text <query>[,<query>...]`   | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia`            | 分别定位三段指定文字                      |
+| `/layout <type>[,<type>...]`          | `/layout plot,text`                                                          | 定位文档中的图表和文本区域                   |
+| `/point <query>[,<query>...]`         | `/point succulent,the succulent in the center`                               | 分别返回两处目标的点坐标                    |
 
 模型仓库：[D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
 
@@ -51,15 +51,15 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 ## 推理性能
 
-| Platform | 任务 | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | 目标检测 | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
-| RDK S600 | GUI 定位 | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| RDK S600 | 指代定位 | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
-| RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| RDK S600 | 指定文本定位 | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| RDK S600 | 版面定位 | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| RDK S600 | 点定位 | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
+| Platform | 任务     | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
+| -------- | ------ | --------:| -----------:| ------------:| -----------:| --------:| ----------------:|
+| RDK S600 | 目标检测   | 47       | 254.7       | 151.6        | 526.3       | 978.5    | 89.3             |
+| RDK S600 | GUI 定位 | 14       | 253.2       | 149.7        | 266.0       | 720.7    | 52.6             |
+| RDK S600 | 指代定位   | 14       | 246.0       | 152.3        | 164.5       | 603.6    | 85.1             |
+| RDK S600 | OCR    | 66       | 245.5       | 152.4        | 665.3       | 1148.3   | 99.2             |
+| RDK S600 | 指定文本定位 | 15       | 253.0       | 150.2        | 166.6       | 653.5    | 90.0             |
+| RDK S600 | 版面定位   | 43       | 245.4       | 151.8        | 448.1       | 904.7    | 96.0             |
+| RDK S600 | 点定位    | 37       | 246.0       | 152.2        | 480.5       | 923.5    | 77.0             |
 
 ## 模型与量化
 
@@ -69,27 +69,27 @@ LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固�
 
 推理流程为 `图像 + Prompt -> 预处理 -> MoonViT -> Qwen2.5 Decoder -> 结构化结果解析`。
 
-| 项目 | 配置 |
-| --- | --- |
-| Vision | MoonViT，27 个 Block，`672 x 672`，有符号 W8 权重 |
-| Language | Qwen2.5 Decoder，36 层，Hidden Size 2048，有符号 W8 权重 |
-| 激活 | 动态量化 |
-| Visual Token | 576 |
-| LM Head | W8，词表大小 152681 |
-| Prefill / KV Cache | 1024 / 4096 Token |
-| 解码 | PBD q=6、AR q=1、Host 采样 |
-| 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
+| 项目                 | 配置                                              |
+| ------------------ | ----------------------------------------------- |
+| Vision             | MoonViT，27 个 Block，`672 x 672`，有符号 W8 权重        |
+| Language           | Qwen2.5 Decoder，36 层，Hidden Size 2048，有符号 W8 权重 |
+| 激活                 | 动态量化                                            |
+| Visual Token       | 576                                             |
+| LM Head            | W8，词表大小 152681                                  |
+| Prefill / KV Cache | 1024 / 4096 Token                               |
+| 解码                 | PBD q=6、AR q=1、Host 采样                          |
+| 运行平台               | Nash-P，4 个 BPU 核，L2 `6:6:6:6`                   |
 
 ## 开发环境
 
-| 项目 | 版本 |
-| --- | --- |
-| 硬件 | 地瓜机器人 RDK S600，AArch64 |
-| 系统 | Ubuntu 24.04 LTS |
-| TROS | Jazzy |
-| 开发语言 | C++17 |
-| 编译工具 | CMake、colcon |
-| 依赖 | `rclcpp`、`sensor_msgs`、`std_msgs`、`hbm_img_msgs`、`ai_msgs`、`hobot_codec`、OpenCV、yaml-cpp |
+| 项目   | 版本                                                                                       |
+| ---- | ---------------------------------------------------------------------------------------- |
+| 硬件   | 地瓜机器人 RDK S600，AArch64                                                                   |
+| 系统   | Ubuntu 24.04 LTS                                                                         |
+| TROS | Jazzy                                                                                    |
+| 开发语言 | C++17                                                                                    |
+| 编译工具 | CMake、colcon                                                                             |
+| 依赖   | `rclcpp`、`sensor_msgs`、`std_msgs`、`hbm_img_msgs`、`ai_msgs`、`hobot_codec`、OpenCV、yaml-cpp |
 
 ## 准备工作
 
@@ -151,21 +151,21 @@ Loading Language HBM...
 HBM loaded  [============================] 16.7 s
 Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
 Tasks
-  /detect cat,dog               目标检测
-  /ground <query>[,<query>...]  指代表达，多查询
-  /ground_single <query>[,...]  指代表达，单目标查询
-  /gui <query>[,<query>...]     GUI 点定位
-  /gui_box <query>[,<query>...] GUI 框定位
-  /text                         文本 OCR
-  /ground_text <query>[,...]    指定文本定位
-  /layout title,table,figure    文档版面分析
-  /point <query>[,<query>...]   通用点定位
+  /detect cat,dog               Object detection
+  /ground <query>[,<query>...]  Referring expression grounding (multi-query)
+  /ground_single <query>[,...]  Referring expression grounding (single target)
+  /gui <query>[,<query>...]     GUI point grounding
+  /gui_box <query>[,<query>...] GUI box grounding
+  /text                         Text OCR
+  /ground_text <query>[,...]    Text grounding
+  /layout title,table,figure    Document layout analysis
+  /point <query>[,<query>...]   Point grounding
 Session
-  /image <image_path>           加载图片
-  /video <video_path>           加载视频并处理全部帧
-  regen                         重跑上次请求
-  reset                         清除当前媒体
-  exit                          退出程序
+  /image <image_path>           Load an image
+  /video <video_path>           Process all video frames
+  regen                         Re-run the previous request
+  reset                         Clear the current media
+  exit                          Exit the application
 ```
 
 加载图片：

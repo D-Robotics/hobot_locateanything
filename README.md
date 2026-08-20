@@ -21,29 +21,29 @@ English | [简体中文](./README_ZH.md)
 
 ### Task Categories
 
-| Type | Description | Output |
-| --- | --- | --- |
-| Open-vocabulary object detection | Detects objects by user-provided category names without a fixed category list | Object categories and bounding boxes |
-| Referring expression grounding | Locates objects from natural-language descriptions of appearance, attributes, position, or relationships | Object bounding boxes |
-| GUI grounding | Locates buttons, icons, input fields, and other controls from text descriptions | Control points or bounding boxes |
-| OCR | Recognizes text content and its position in an image | Recognized text and text bounding boxes |
-| Text grounding | Locates user-specified text in an image | Specified text and bounding boxes |
-| Document layout grounding | Locates titles, body text, tables, figures, and other document regions | Layout categories and bounding boxes |
-| Point localization | Locates objects in general visual scenes from natural-language descriptions | Object point coordinates |
+| Type                             | Description                                                                                              | Output                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Open-vocabulary object detection | Detects objects by user-provided category names without a fixed category list                            | Object categories and bounding boxes    |
+| Referring expression grounding   | Locates objects from natural-language descriptions of appearance, attributes, position, or relationships | Object bounding boxes                   |
+| GUI grounding                    | Locates buttons, icons, input fields, and other controls from text descriptions                          | Control points or bounding boxes        |
+| OCR                              | Recognizes text content and its position in an image                                                     | Recognized text and text bounding boxes |
+| Text grounding                   | Locates user-specified text in an image                                                                  | Specified text and bounding boxes       |
+| Document layout grounding        | Locates titles, body text, tables, figures, and other document regions                                   | Layout categories and bounding boxes    |
+| Point localization               | Locates objects in general visual scenes from natural-language descriptions                              | Object point coordinates                |
 
 LocateAnything is designed primarily for visual detection and grounding tasks, whose Prompt formats are relatively fixed. We provide built-in task templates based on the Prompt formats used in the training data. Users only need to enter the query target through the corresponding command. `<query>` denotes a query target; separate multiple queries with commas. `<type>` denotes a document layout element type.
 
-| Command | Example | Description |
-| --- | --- | --- |
-| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | Detects all instances of the person, bus, and bicycle categories |
-| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | Locates all objects matching the three natural-language descriptions |
-| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | Locates one object matching the natural-language description |
-| `/gui <query>[,<query>...]` | `/gui Go to file/function` | Locates the specified GUI control and returns an interaction point |
-| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | Locates the three GUI controls and returns their bounding boxes |
-| `/text` | `/text` | Recognizes all text in the image and its position |
-| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | Locates the three specified text strings |
-| `/layout <type>[,<type>...]` | `/layout plot,text` | Locates plot and text regions in a document |
-| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | Returns point coordinates for the two queries |
+| Command                               | Example                                                                      | Description                                                          |
+| ------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `/detect <query>[,<query>...]`        | `/detect person,bus,bicycle`                                                 | Detects all instances of the person, bus, and bicycle categories     |
+| `/ground <query>[,<query>...]`        | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | Locates all objects matching the three natural-language descriptions |
+| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap`                             | Locates one object matching the natural-language description         |
+| `/gui <query>[,<query>...]`           | `/gui Go to file/function`                                                   | Locates the specified GUI control and returns an interaction point   |
+| `/gui_box <query>[,<query>...]`       | `/gui_box Go to file/function,Environment tab,Files tab`                     | Locates the three GUI controls and returns their bounding boxes      |
+| `/text`                               | `/text`                                                                      | Recognizes all text in the image and its position                    |
+| `/ground_text <query>[,<query>...]`   | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia`            | Locates the three specified text strings                             |
+| `/layout <type>[,<type>...]`          | `/layout plot,text`                                                          | Locates plot and text regions in a document                          |
+| `/point <query>[,<query>...]`         | `/point succulent,the succulent in the center`                               | Returns point coordinates for the two queries                        |
 
 Model: [D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
 
@@ -51,15 +51,15 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ## Inference Performance
 
-| Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | Object detection | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
-| RDK S600 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| RDK S600 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
-| RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| RDK S600 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| RDK S600 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| RDK S600 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
+| Platform | Task                | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
+| -------- | ------------------- | -------------:| -----------:| ------------:| -----------:| ----------:| -----------------:|
+| RDK S600 | Object detection    | 47            | 254.7       | 151.6        | 526.3       | 978.5      | 89.3              |
+| RDK S600 | GUI grounding       | 14            | 253.2       | 149.7        | 266.0       | 720.7      | 52.6              |
+| RDK S600 | Referring grounding | 14            | 246.0       | 152.3        | 164.5       | 603.6      | 85.1              |
+| RDK S600 | OCR                 | 66            | 245.5       | 152.4        | 665.3       | 1148.3     | 99.2              |
+| RDK S600 | Text grounding      | 15            | 253.0       | 150.2        | 166.6       | 653.5      | 90.0              |
+| RDK S600 | Layout grounding    | 43            | 245.4       | 151.8        | 448.1       | 904.7      | 96.0              |
+| RDK S600 | Point localization  | 37            | 246.0       | 152.2        | 480.5       | 923.5      | 77.0              |
 
 ## Model and Quantization
 
@@ -69,26 +69,26 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 decoder -> structured result parsing`.
 
-| Item | Configuration |
-| --- | --- |
-| Vision | MoonViT, 27 blocks, `672 x 672`, signed W8 weights |
-| Language | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
-| Activations | Dynamic quantization |
-| Visual tokens | 576 |
-| LM Head | W8, vocabulary size 152681 |
-| Prefill / KV Cache | 1024 / 4096 tokens |
-| Decoding | PBD q=6, AR q=1, Host sampling |
-| Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
+| Item               | Configuration                                                   |
+| ------------------ | --------------------------------------------------------------- |
+| Vision             | MoonViT, 27 blocks, `672 x 672`, signed W8 weights              |
+| Language           | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
+| Activations        | Dynamic quantization                                            |
+| Visual tokens      | 576                                                             |
+| LM Head            | W8, vocabulary size 152681                                      |
+| Prefill / KV Cache | 1024 / 4096 tokens                                              |
+| Decoding           | PBD q=6, AR q=1, Host sampling                                  |
+| Target             | Nash-P, four BPU cores, L2 `6:6:6:6`                            |
 
 ## Development Environment
 
-| Item | Version |
-| --- | --- |
-| Hardware | D-Robotics RDK S600, AArch64 |
-| OS | Ubuntu 24.04 LTS |
-| TROS | Jazzy |
-| Language | C++17 |
-| Build tools | CMake, colcon |
+| Item         | Version                                                                                         |
+| ------------ | ----------------------------------------------------------------------------------------------- |
+| Hardware     | D-Robotics RDK S600, AArch64                                                                    |
+| OS           | Ubuntu 24.04 LTS                                                                                |
+| TROS         | Jazzy                                                                                           |
+| Language     | C++17                                                                                           |
+| Build tools  | CMake, colcon                                                                                   |
 | Dependencies | `rclcpp`, `sensor_msgs`, `std_msgs`, `hbm_img_msgs`, `ai_msgs`, `hobot_codec`, OpenCV, yaml-cpp |
 
 ## Preparation
@@ -151,21 +151,21 @@ Loading Language HBM...
 HBM loaded  [============================] 16.7 s
 Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
 Tasks
-  /detect cat,dog               目标检测
-  /ground <query>[,<query>...]  指代表达，多查询
-  /ground_single <query>[,...]  指代表达，单目标查询
-  /gui <query>[,<query>...]     GUI 点定位
-  /gui_box <query>[,<query>...] GUI 框定位
-  /text                         文本 OCR
-  /ground_text <query>[,...]    指定文本定位
-  /layout title,table,figure    文档版面分析
-  /point <query>[,<query>...]   通用点定位
+  /detect cat,dog               Object detection
+  /ground <query>[,<query>...]  Referring expression grounding (multi-query)
+  /ground_single <query>[,...]  Referring expression grounding (single target)
+  /gui <query>[,<query>...]     GUI point grounding
+  /gui_box <query>[,<query>...] GUI box grounding
+  /text                         Text OCR
+  /ground_text <query>[,...]    Text grounding
+  /layout title,table,figure    Document layout analysis
+  /point <query>[,<query>...]   Point grounding
 Session
-  /image <image_path>           加载图片
-  /video <video_path>           加载视频并处理全部帧
-  regen                         重跑上次请求
-  reset                         清除当前媒体
-  exit                          退出程序
+  /image <image_path>           Load an image
+  /video <video_path>           Process all video frames
+  regen                         Re-run the previous request
+  reset                         Clear the current media
+  exit                          Exit the application
 ```
 
 Load an image:
@@ -465,21 +465,21 @@ Loading Language HBM...
 HBM loaded  [============================] 16.7 s
 Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
 Tasks
-  /detect cat,dog               目标检测
-  /ground <query>[,<query>...]  指代表达，多查询
-  /ground_single <query>[,...]  指代表达，单目标查询
-  /gui <query>[,<query>...]     GUI 点定位
-  /gui_box <query>[,<query>...] GUI 框定位
-  /text                         文本 OCR
-  /ground_text <query>[,...]    指定文本定位
-  /layout title,table,figure    文档版面分析
-  /point <query>[,<query>...]   通用点定位
+  /detect cat,dog               Object detection
+  /ground <query>[,<query>...]  Referring expression grounding (multi-query)
+  /ground_single <query>[,...]  Referring expression grounding (single target)
+  /gui <query>[,<query>...]     GUI point grounding
+  /gui_box <query>[,<query>...] GUI box grounding
+  /text                         Text OCR
+  /ground_text <query>[,...]    Text grounding
+  /layout title,table,figure    Document layout analysis
+  /point <query>[,<query>...]   Point grounding
 Session
-  /image <image_path>           加载图片
-  /video <video_path>           加载视频并处理全部帧
-  regen                         重跑上次请求
-  reset                         清除当前媒体
-  exit                          退出程序
+  /image <image_path>           Load an image
+  /video <video_path>           Process all video frames
+  regen                         Re-run the previous request
+  reset                         Clear the current media
+  exit                          Exit the application
 ```
 
 Separate multiple queries with commas. Vision runs once per image or video frame, followed by each Language query and merged results.
