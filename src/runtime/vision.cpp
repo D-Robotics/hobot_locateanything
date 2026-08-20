@@ -1,0 +1,116 @@
+// Copyright (c) 2026 LiuAnclouds / Kangjie Xu / D-Robotics
+
+#include "runtime/vision.hpp"
+
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <mutex>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "runtime/hbm.hpp"
+
+namespace locateanything {
+namespace {
+
+namespace rt = locateanything_runtime;
+
+constexpr int32_t kFp16 = 4;
+const std::vector<int32_t> kInputShape{1, 2304, 588};
+const std::vector<int32_t> kOutputShape{1, 576, 2048};
+
+/** Return the number of scalar elements represented by a tensor shape. */
+int64_t ElementCount(const std::vector<int32_t>& shape) {
+  return std::accumulate(shape.begin(), shape.end(), int64_t{1},
+                         std::multiplies<int64_t>());
+}
+
+}  // namespace
+
+struct VisionEngine::Impl {
+  locateanything_runtime::HbmSession session;
+  std::mutex mutex;
+  bool initialized = false;
+};
+
+VisionEngine::VisionEngine() : impl_(std::make_unique<Impl>()) {}
+VisionEngine::~VisionEngine() = default;
+VisionEngine::VisionEngine(VisionEngine&&) noexcept = default;
+VisionEngine& VisionEngine::operator=(VisionEngine&&) noexcept = default;
+
+void VisionEngine::Initialize(const std::string& model_path,
+                              uint32_t backend_mask) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->initialized) return;
+  if (model_path.empty()) {
+    throw std::invalid_argument("Vision HBM path is empty");
+  }
+
+  impl_->session.SetBackendMask(backend_mask);
+  const rt::Result loaded = impl_->session.Load(model_path);
+  if (!loaded.ok()) {
+    throw std::runtime_error("cannot load Vision HBM: " + loaded.message);
+  }
+  rt::Graph* graph = impl_->session.GetGraph("visual");
+  if (graph == nullptr || graph->GetInputShapes().size() != 1 ||
+      graph->GetInputDtypes().size() != 1 ||
+      graph->GetOutputShapes().size() != 1 ||
+      graph->GetOutputDtypes().size() != 1 ||
+      graph->GetInputShapes()[0] != kInputShape ||
+      graph->GetInputDtypes()[0] != kFp16 ||
+      graph->GetOutputShapes()[0] != kOutputShape ||
+      graph->GetOutputDtypes()[0] != kFp16) {
+    throw std::runtime_error("unexpected Vision HBM graph contract");
+  }
+  impl_->initialized = true;
+}
+
+VisionResult VisionEngine::Infer(const std::vector<uint16_t>& patches) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (!impl_->initialized) {
+    throw std::logic_error("Vision engine is not initialized");
+  }
+  const size_t expected_elements =
+      static_cast<size_t>(ElementCount(kInputShape));
+  if (patches.size() != expected_elements) {
+    throw std::invalid_argument(
+        "Vision input must contain exactly " +
+        std::to_string(expected_elements) + " FP16 values");
+  }
+
+  rt::Tensor input;
+  input.shape = kInputShape;
+  input.dtype = kFp16;
+  input.data.resize(patches.size() * sizeof(uint16_t));
+  std::memcpy(input.data.data(), patches.data(), input.data.size());
+
+  std::vector<rt::Tensor> outputs;
+  const auto started = std::chrono::steady_clock::now();
+  const rt::Result executed =
+      impl_->session.ExecuteGraphByName("visual", {input}, &outputs);
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+  if (!executed.ok()) {
+    throw std::runtime_error("Vision HBM inference failed: " +
+                             executed.message);
+  }
+  if (outputs.size() != 1 || outputs[0].shape != kOutputShape ||
+      outputs[0].dtype != kFp16 ||
+      outputs[0].data.size() !=
+          static_cast<size_t>(ElementCount(kOutputShape)) * sizeof(uint16_t)) {
+    throw std::runtime_error("unexpected Vision HBM output contract");
+  }
+
+  VisionResult result;
+  result.visual_features_fp16 = std::move(outputs[0].data);
+  result.elapsed_ms = elapsed_ms;
+  return result;
+}
+
+}  // namespace locateanything

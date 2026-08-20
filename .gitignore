@@ -1,44 +1,20 @@
-# Heavy external assets
-/eagle/
-/oellm/s600_sdk/
-/oellm/s600_doc/
+# Local deployment models
+/models/*
+!/models/.gitignore
+!/models/tokenizer/
+/models/tokenizer/*
+!/models/tokenizer/vocab.json
+!/models/tokenizer/merges.txt
+!/models/tokenizer/added_tokens.json
 
-# Model weights and generated artifacts
-*.safetensors
-*.bin
-*.hbm
-*.hbo
-*.bc
-*.onnx
-*.pt
-*.pth
-*.gguf
-*.npy
-*.npz
-*.tar
-*.tar.gz
-*.tgz
-*.zip
-*.xz
+# Console inference results
+/outputs/*
+!/outputs/.gitignore
 
-# Generated data and outputs
-/main/golden/**
-/main/outputs/**
-/main/logs/**
-/main/benchmarks/**
-/main/**/output/**
-/main/**/outputs/**
-/main/**/cache/**
-/main/**/__pycache__/**
+# colcon build outputs
+/build/
+/install/
+/log/
 
-# Python / editor
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-.vscode/
-.idea/
-.DS_Store
-
-# Keep directory placeholders
-!.gitkeep
-!README.md
+# Python launch cache
+/launch/__pycache__/

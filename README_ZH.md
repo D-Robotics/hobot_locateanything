@@ -1,4 +1,4 @@
-English | [简体中文](./README_ZH.md)
+[English](./README.md) | 简体中文
 
 # hobot_locateanything
 
@@ -10,92 +10,92 @@ English | [简体中文](./README_ZH.md)
 ![W8](https://img.shields.io/badge/quantization-W8-E67E22)
 
 <p align="center">
-  <img src="assets/LocateAnything.jpg" alt="LocateAnything on RDK S600" width="100%">
+  <img src="assets/LocateAnything.jpg" alt="LocateAnything 在 RDK S600 上运行" width="100%">
 </p>
 
-`hobot_locateanything` runs LocateAnything-3B on the D-Robotics RDK S600. The Console reads local images and videos and saves annotated results. The ROS 2 node receives TROS images and prompts, then publishes `ai_msgs/msg/PerceptionTargets`. Both entry points use the same C++ inference core.
+`hobot_locateanything` 是 LocateAnything-3B 的 RDK S600 TROS 推理功能包。Console 读取本地图片和视频，并保存标注结果；ROS 2 节点订阅 TROS 图像与 Prompt，发布 `ai_msgs/msg/PerceptionTargets`。两个入口共用同一套 C++ 推理核心。
 
-## Model Overview
+## 算法简介
 
-[LocateAnything](https://github.com/NVlabs/Eagle/tree/main/Embodied) is an open-semantic visual grounding model. It performs object detection, referring expression grounding, GUI and text grounding, document layout grounding, and point localization from text instructions. PBD (Parallel Box Decoding) generates bounding-box coordinates in parallel.
+[LocateAnything](https://github.com/NVlabs/Eagle/tree/main/Embodied) 是开放语义视觉定位模型，通过文本指令完成目标检测、指代定位、GUI 与文本定位、文档版面定位和点定位。PBD（Parallel Box Decoding）以并行方式生成边界框坐标。
 
-### Task Categories
+### 任务类型
 
-| Type | Description | Output |
+| 类型 | 任务说明 | 输出 |
 | --- | --- | --- |
-| Open-vocabulary object detection | Detects objects by user-provided category names without a fixed category list | Object categories and bounding boxes |
-| Referring expression grounding | Locates objects from natural-language descriptions of appearance, attributes, position, or relationships | Object bounding boxes |
-| GUI grounding | Locates buttons, icons, input fields, and other controls from text descriptions | Control points or bounding boxes |
-| OCR | Recognizes text content and its position in an image | Recognized text and text bounding boxes |
-| Text grounding | Locates user-specified text in an image | Specified text and bounding boxes |
-| Document layout grounding | Locates titles, body text, tables, figures, and other document regions | Layout categories and bounding boxes |
-| Point localization | Locates objects in general visual scenes from natural-language descriptions | Object point coordinates |
+| 开放词汇目标检测 | 根据用户给出的类别名称检测目标，不受预设类别表限制 | 目标类别及边界框 |
+| 指代定位 | 根据目标的外观、属性、位置或关系等自然语言描述定位目标 | 目标边界框 |
+| GUI 定位 | 根据文字描述定位软件界面中的按钮、图标、输入框等控件 | 控件点坐标或边界框 |
+| OCR | 识别图像中的文字内容及其所在位置 | 识别文字及文字边界框 |
+| 文本定位 | 根据用户给出的文字内容定位其在图像中的位置 | 指定文字及边界框 |
+| 文档版面定位 | 定位文档中的标题、正文、表格、图片等结构区域 | 版面元素类别及边界框 |
+| 点定位 | 根据自然语言描述定位普通视觉场景中的目标位置 | 目标点坐标 |
 
-LocateAnything is designed primarily for visual detection and grounding tasks, whose Prompt formats are relatively fixed. We provide built-in task templates based on the Prompt formats used in the training data. Users only need to enter the query target through the corresponding command. `<query>` denotes a query target; separate multiple queries with commas. `<type>` denotes a document layout element type.
+LocateAnything 主要面向视觉检测与定位任务，Prompt 格式相对固定。我们按照训练数据采用的提示词格式内置了各类任务模板，使用时只需通过对应命令输入查询目标（Query）。`<query>` 表示查询目标，多个 Query 使用英文逗号分隔；`<type>` 表示版面元素类型。
 
-| Command | Example | Description |
+| 命令 | 使用示例 | 说明 |
 | --- | --- | --- |
-| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | Detects all instances of the person, bus, and bicycle categories |
-| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | Locates all objects matching the three natural-language descriptions |
-| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | Locates one object matching the natural-language description |
-| `/gui <query>[,<query>...]` | `/gui Go to file/function` | Locates the specified GUI control and returns an interaction point |
-| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | Locates the three GUI controls and returns their bounding boxes |
-| `/text` | `/text` | Recognizes all text in the image and its position |
-| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | Locates the three specified text strings |
-| `/layout <type>[,<type>...]` | `/layout plot,text` | Locates plot and text regions in a document |
-| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | Returns point coordinates for the two queries |
+| `/detect <query>[,<query>...]` | `/detect person,bus,bicycle` | 检测 person、bus 和 bicycle 类别的全部目标 |
+| `/ground <query>[,<query>...]` | `/ground person wearing a graduation cap,woman in a black dress,clock tower` | 分别定位符合三个自然语言描述的全部目标 |
+| `/ground_single <query>[,<query>...]` | `/ground_single person wearing a graduation cap` | 定位一个符合自然语言描述的目标 |
+| `/gui <query>[,<query>...]` | `/gui Go to file/function` | 定位指定界面控件并返回操作点 |
+| `/gui_box <query>[,<query>...]` | `/gui_box Go to file/function,Environment tab,Files tab` | 分别定位三个界面控件并返回边界框 |
+| `/text` | `/text` | 识别图像中的全部文字及其位置 |
+| `/ground_text <query>[,<query>...]` | `/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia` | 分别定位三段指定文字 |
+| `/layout <type>[,<type>...]` | `/layout plot,text` | 定位文档中的图表和文本区域 |
+| `/point <query>[,<query>...]` | `/point succulent,the succulent in the center` | 分别返回两处目标的点坐标 |
 
-Model: [D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
+模型仓库：[D-Robotics/LocateAnything-3B-BPU](https://huggingface.co/D-Robotics/LocateAnything-3B-BPU)
 
-Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ)
+模型校准与 HBM 编译：[D-Robotics/Locateanything_PTQ](https://github.com/D-Robotics/Locateanything_PTQ)
 
-## Inference Performance
+## 推理性能
 
-| Platform | Task | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
+| Platform | 任务 | 输出 Token | Vision (ms) | Prefill (ms) | Decode (ms) | 总耗时 (ms) | Decode (Token/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RDK S600 | Object detection | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
-| RDK S600 | GUI grounding | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
-| RDK S600 | Referring grounding | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
+| RDK S600 | 目标检测 | 47 | 254.7 | 151.6 | 526.3 | 978.5 | 89.3 |
+| RDK S600 | GUI 定位 | 14 | 253.2 | 149.7 | 266.0 | 720.7 | 52.6 |
+| RDK S600 | 指代定位 | 14 | 246.0 | 152.3 | 164.5 | 603.6 | 85.1 |
 | RDK S600 | OCR | 66 | 245.5 | 152.4 | 665.3 | 1148.3 | 99.2 |
-| RDK S600 | Text grounding | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
-| RDK S600 | Layout grounding | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
-| RDK S600 | Point localization | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
+| RDK S600 | 指定文本定位 | 15 | 253.0 | 150.2 | 166.6 | 653.5 | 90.0 |
+| RDK S600 | 版面定位 | 43 | 245.4 | 151.8 | 448.1 | 904.7 | 96.0 |
+| RDK S600 | 点定位 | 37 | 246.0 | 152.2 | 480.5 | 923.5 | 77.0 |
 
-## Model and Quantization
+## 模型与量化
 
 <p align="center">
-  <img src="assets/LocateAnything_pipeline.png" alt="LocateAnything inference pipeline" width="100%">
+  <img src="assets/LocateAnything_pipeline.png" alt="LocateAnything 推理流程" width="100%">
 </p>
 
-The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 decoder -> structured result parsing`.
+推理流程为 `图像 + Prompt -> 预处理 -> MoonViT -> Qwen2.5 Decoder -> 结构化结果解析`。
 
-| Item | Configuration |
+| 项目 | 配置 |
 | --- | --- |
-| Vision | MoonViT, 27 blocks, `672 x 672`, signed W8 weights |
-| Language | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
-| Activations | Dynamic quantization |
-| Visual tokens | 576 |
-| LM Head | W8, vocabulary size 152681 |
-| Prefill / KV Cache | 1024 / 4096 tokens |
-| Decoding | PBD q=6, AR q=1, Host sampling |
-| Target | Nash-P, four BPU cores, L2 `6:6:6:6` |
+| Vision | MoonViT，27 个 Block，`672 x 672`，有符号 W8 权重 |
+| Language | Qwen2.5 Decoder，36 层，Hidden Size 2048，有符号 W8 权重 |
+| 激活 | 动态量化 |
+| Visual Token | 576 |
+| LM Head | W8，词表大小 152681 |
+| Prefill / KV Cache | 1024 / 4096 Token |
+| 解码 | PBD q=6、AR q=1、Host 采样 |
+| 运行平台 | Nash-P，4 个 BPU 核，L2 `6:6:6:6` |
 
-## Development Environment
+## 开发环境
 
-| Item | Version |
+| 项目 | 版本 |
 | --- | --- |
-| Hardware | D-Robotics RDK S600, AArch64 |
-| OS | Ubuntu 24.04 LTS |
+| 硬件 | 地瓜机器人 RDK S600，AArch64 |
+| 系统 | Ubuntu 24.04 LTS |
 | TROS | Jazzy |
-| Language | C++17 |
-| Build tools | CMake, colcon |
-| Dependencies | `rclcpp`, `sensor_msgs`, `std_msgs`, `hbm_img_msgs`, `ai_msgs`, `hobot_codec`, OpenCV, yaml-cpp |
+| 开发语言 | C++17 |
+| 编译工具 | CMake、colcon |
+| 依赖 | `rclcpp`、`sensor_msgs`、`std_msgs`、`hbm_img_msgs`、`ai_msgs`、`hobot_codec`、OpenCV、yaml-cpp |
 
-## Preparation
+## 准备工作
 
-The RDK S600 requires Ubuntu 24.04 and TogetheROS.Bot Jazzy.
+RDK S600 需安装 Ubuntu 24.04 和 TogetheROS.Bot Jazzy。
 
-### Build the Package
+### 编译功能包
 
 ```bash
 git clone https://github.com/D-Robotics/hobot_locateanything.git
@@ -106,7 +106,7 @@ colcon build --merge-install --packages-select hobot_locateanything
 source install/setup.bash
 ```
 
-### Download the Model
+### 下载模型
 
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
@@ -118,7 +118,7 @@ wget -c -P install/lib/hobot_locateanything/models \
   https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
 ```
 
-Runtime files:
+运行时文件：
 
 ```text
 install/lib/hobot_locateanything/models/
@@ -131,9 +131,9 @@ install/lib/hobot_locateanything/models/
     └── added_tokens.json
 ```
 
-## Basic Feature: Object Detection
+## 基础功能：目标检测
 
-### Console Inference
+### Console 推理
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -141,7 +141,7 @@ source install/setup.bash
 ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
-Console output:
+终端输出：
 
 ```text
 [UCP]: UCP version = 3.12.3
@@ -168,25 +168,25 @@ Session
   exit                          退出程序
 ```
 
-Load an image:
+加载图片：
 
 ```text
 /image image/07_detection_multiclass.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/07_detection_multiclass.jpg
 ```
 
-Enter a detection command:
+输入检测指令：
 
 ```text
 /detect person,bus,bicycle
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /detect person,bus,bicycle
@@ -200,21 +200,21 @@ Result
   Labels bicycle, bus, person  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
-Results are saved to `outputs/07_detection_multiclass/annotated.jpg` and `prediction.json`.
+结果保存在 `outputs/07_detection_multiclass/annotated.jpg` 和 `prediction.json`。
 
-<img src="assets/results/detection_multiclass.jpg" alt="Open-vocabulary object detection" width="720">
+<img src="assets/results/detection_multiclass.jpg" alt="开放词汇目标检测" width="720">
 
-### ROS 2 Inference
+### ROS 2 推理
 
-Results are published on `/perception/locateanything`. Prompts are updated through `/locateanything/prompt`.
+结果通过 `/perception/locateanything` 发布，Prompt 通过 `/locateanything/prompt` 更新。
 
-#### Local Image Replay
+#### 本地图片回灌
 
-The default launch replays `image/07_detection_multiclass.jpg` at 2 FPS. Change `publish_image_source` to use another image.
+默认以 2 FPS 回灌 `image/07_detection_multiclass.jpg`。使用其他图片时修改 `publish_image_source`。
 
-##### Commands
+##### 启动命令
 
-Terminal 1, start image replay and the inference node:
+终端 1，启动图片回灌和推理节点：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -225,7 +225,7 @@ ros2 launch hobot_locateanything hobot_locateanything.launch.py \
   publish_image_source:=image/07_detection_multiclass.jpg
 ```
 
-Terminal 2, subscribe to detection results:
+终端 2，订阅检测结果：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -233,7 +233,7 @@ source install/setup.bash
 ros2 topic echo /perception/locateanything ai_msgs/msg/PerceptionTargets
 ```
 
-Terminal 3, publish a detection prompt:
+终端 3，发布检测 Prompt：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -242,9 +242,9 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect person,bus,bicycle'}"
 ```
 
-##### Outputs
+##### 运行结果
 
-Terminal 1, image publisher and inference node output:
+终端 1，图片发布和推理节点输出：
 
 ```text
 [UCP]: UCP version = 3.12.3
@@ -268,7 +268,7 @@ Terminal 1, image publisher and inference node output:
 [INFO] [hobot_locateanything]: frame_id=38 prompt="/detect person,bus,bicycle" output="<ref>person</ref><box><220><392><312><690></box><box><666><424><758><701></box><ref>bus</ref><box><124><265><595><653></box><ref>bicycle</ref><box><514><465><646><618></box><box><735><575><878><782></box><|im_end|>" labels="person | person | bus | bicycle | bicycle" boxes=5 points=0 fps=1 stop_reason=im_end prompt_tokens=620 generated_tokens=41 pbd_calls=9 pbd_accepted_tokens=41 mode=hybrid preprocess_ms=43.935 vision_ms=250.393 language_ms=557.831 postprocess_ms=0.023 total_ms=852.182
 ```
 
-Terminal 2, detection result output:
+终端 2，检测结果输出：
 
 ```yaml
 header:
@@ -311,16 +311,16 @@ targets:
         confidence: -1.0
 ```
 
-The image publisher supplies input at 2 FPS. The result topic's `fps: 1` is the measured inference result rate for this run.
+图片发布节点以 2 FPS 输入，结果话题中的 `fps: 1` 是本次实际推理结果帧率。
 
-Terminal 3, prompt publisher output:
+终端 3，Prompt 发布输出：
 
 ```text
 publisher: beginning loop
 publishing #1: std_msgs.msg.String(data='/detect person,bus,bicycle')
 ```
 
-Terminal 3, update the detection prompt:
+终端 3，更新检测 Prompt：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -329,14 +329,14 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect bus'}"
 ```
 
-Inference output after the prompt update:
+Prompt 更新后的推理输出：
 
 ```text
 [INFO] [hobot_locateanything]: prompt updated: /detect bus
 [INFO] [hobot_locateanything]: frame_id=44 prompt="/detect bus" output="<ref>bus</ref><box><124><263><595><657></box><|im_end|>" labels="bus" boxes=1 points=0 fps=1 stop_reason=im_end prompt_tokens=615 generated_tokens=10 pbd_calls=3 pbd_accepted_tokens=10 mode=hybrid preprocess_ms=43.837 vision_ms=245.829 language_ms=304.013 postprocess_ms=0.013 total_ms=593.692
 ```
 
-Updated detection result:
+更新后的检测结果：
 
 ```yaml
 header:
@@ -350,13 +350,13 @@ targets:
         confidence: -1.0
 ```
 
-After a new valid prompt is published, subsequent images use the new prompt without restarting the nodes. A frame already in inference may still produce one result for the previous prompt.
+发布新的有效 Prompt 后，后续图像使用新 Prompt，无需重启节点。已经进入推理的帧可能仍输出一次旧 Prompt 结果。
 
-#### USB Camera
+#### USB 摄像头
 
-##### Commands
+##### 启动命令
 
-Terminal 1, start the USB camera and inference node:
+终端 1，启动 USB 摄像头和推理节点：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -369,7 +369,7 @@ ros2 launch hobot_locateanything hobot_locateanything.launch.py \
   locateanything_image_height:=720
 ```
 
-Terminal 2, subscribe to detection results:
+终端 2，订阅检测结果：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -377,7 +377,7 @@ source install/setup.bash
 ros2 topic echo /perception/locateanything ai_msgs/msg/PerceptionTargets
 ```
 
-Terminal 3, publish a detection prompt:
+终端 3，发布检测 Prompt：
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -386,9 +386,9 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect cardboard box,person'}"
 ```
 
-##### Outputs
+##### 运行结果
 
-Terminal 1, USB camera and inference node output:
+终端 1，USB 摄像头和推理节点输出：
 
 ```text
 [UCP]: UCP version = 3.12.3
@@ -405,7 +405,7 @@ Terminal 1, USB camera and inference node output:
 [INFO] [hobot_locateanything]: frame_id=532 prompt="/detect cardboard box,person" output="<ref>cardboard box</ref><box><461><615><516><656></box><ref>person</ref><box><381><638><420><780></box><|im_end|>" labels="cardboard box | person" boxes=2 points=0 fps=1 stop_reason=im_end prompt_tokens=618 generated_tokens=21 pbd_calls=5 pbd_accepted_tokens=16 mode=hybrid preprocess_ms=26.183 vision_ms=261.752 language_ms=552.914 postprocess_ms=0.017 total_ms=840.866
 ```
 
-Terminal 2, detection result output:
+终端 2，检测结果输出：
 
 ```yaml
 header:
@@ -433,7 +433,7 @@ targets:
         confidence: -1.0
 ```
 
-Terminal 3, prompt publisher output:
+终端 3，Prompt 发布输出：
 
 ```text
 Waiting for at least 1 matching subscription(s)...
@@ -441,13 +441,13 @@ publisher: beginning loop
 publishing #1: std_msgs.msg.String(data='/detect cardboard box,person')
 ```
 
-While the camera is publishing, send a new prompt from terminal 3. Subsequent frames use the new prompt without restarting the nodes.
+摄像头持续发布期间可直接在终端 3 发布新的 Prompt，后续新帧使用新 Prompt，无需重启节点。
 
-The ROS node publishes structured results. Downstream TROS nodes handle rendering and file storage.
+ROS 节点发布结构化结果；结果渲染和文件保存由下游 TROS 节点完成。
 
-## Advanced Features
+## 进阶功能
 
-### Console Inference
+### Console 推理
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -455,7 +455,7 @@ source install/setup.bash
 ros2 run hobot_locateanything console --config config/config.yaml
 ```
 
-Console output:
+终端输出：
 
 ```text
 [UCP]: UCP version = 3.12.3
@@ -482,29 +482,29 @@ Session
   exit                          退出程序
 ```
 
-Separate multiple queries with commas. Vision runs once per image or video frame, followed by each Language query and merged results.
+多个查询使用逗号分隔。同一图像或视频帧只执行一次 Vision，各项 Language 推理完成后合并结果。
 
-### GUI Grounding
+### GUI 定位
 
-Load an image:
+加载图片：
 
 ```text
 /image image/02_gui_rstudio.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/02_gui_rstudio.jpg
 ```
 
-Enter a grounding command:
+输入定位指令：
 
 ```text
 /gui_box Go to file/function,Environment tab,Files tab
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
@@ -518,29 +518,29 @@ Result
   Labels Environment tab, Files tab, Go to file/function  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/gui_rstudio.jpg" alt="GUI grounding" width="720">
+<img src="assets/results/gui_rstudio.jpg" alt="GUI 定位" width="720">
 
-### Referring Expression Grounding
+### 指代定位
 
-Load an image:
+加载图片：
 
 ```text
 /image image/03_referring_graduation.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/03_referring_graduation.jpg
 ```
 
-Enter a grounding command:
+输入定位指令：
 
 ```text
 /ground person wearing a graduation cap,woman in a black dress,clock tower
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
@@ -554,29 +554,29 @@ Result
   Labels clock tower, person wearing a graduation cap, woman in a black dress  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/referring_graduation.jpg" alt="Referring expression grounding" width="520">
+<img src="assets/results/referring_graduation.jpg" alt="指代定位" width="520">
 
 ### OCR
 
-Load an image:
+加载图片：
 
 ```text
 /image image/04_ocr_scrapbook.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/04_ocr_scrapbook.jpg
 ```
 
-Enter the OCR command:
+输入 OCR 指令：
 
 ```text
 /text
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /text
@@ -593,27 +593,27 @@ Result
 
 <img src="assets/results/ocr_scrapbook.jpg" alt="OCR" width="720">
 
-### Text Grounding
+### 指定文本定位
 
-Load an image:
+加载图片：
 
 ```text
 /image image/04_ocr_scrapbook.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/04_ocr_scrapbook.jpg
 ```
 
-Enter a grounding command:
+输入定位指令：
 
 ```text
 /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
@@ -627,29 +627,29 @@ Result
   Labels LIVE love LAUGH., Yes Virginia., laugh giggle be silly.  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/ground_text_scrapbook.jpg" alt="Text grounding" width="720">
+<img src="assets/results/ground_text_scrapbook.jpg" alt="指定文本定位" width="720">
 
-### Layout Grounding
+### 版面定位
 
-Load an image:
+加载图片：
 
 ```text
 /image image/05_layout_plot.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/05_layout_plot.jpg
 ```
 
-Enter a layout command:
+输入定位指令：
 
 ```text
 /layout plot,text
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /layout plot,text
@@ -663,29 +663,29 @@ Result
   Labels plot, text  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/layout_plot.jpg" alt="Layout grounding" width="720">
+<img src="assets/results/layout_plot.jpg" alt="版面定位" width="720">
 
-### Point Localization
+### 点定位
 
-Load an image:
+加载图片：
 
 ```text
 /image image/06_pointing_succulent.jpg
 ```
 
-Image loading output:
+图片加载结果：
 
 ```text
 Image loaded  image/06_pointing_succulent.jpg
 ```
 
-Enter a point localization command:
+输入定位指令：
 
 ```text
 /point succulent,the succulent in the center
 ```
 
-Inference output:
+推理结果：
 
 ```text
 [Assistant] >>> /point succulent,the succulent in the center
@@ -699,20 +699,20 @@ Result
   Labels succulent, the succulent in the center  |  Boxes 0  |  Points 9  |  Stop im_end
 ```
 
-<img src="assets/results/point_succulent.jpg" alt="Point localization" width="512">
+<img src="assets/results/point_succulent.jpg" alt="点定位" width="512">
 
-## Image and Video Outputs
+## 图片与视频输出
 
-Image results are saved to `outputs/<image-name>/annotated.jpg` and `prediction.json`.
+图片结果保存在 `outputs/<图片名>/annotated.jpg` 和 `prediction.json`。
 
-Load a video with `/video` and use the same task commands:
+视频通过 `/video` 加载，任务命令与图片一致：
 
 ```text
 /video image/person_video.avi
 /detect person
 ```
 
-Video results are saved to:
+视频结果保存在：
 
 ```text
 outputs/person_video/

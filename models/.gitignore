@@ -1,0 +1,7 @@
+*
+!.gitignore
+!tokenizer/
+tokenizer/*
+!tokenizer/vocab.json
+!tokenizer/merges.txt
+!tokenizer/added_tokens.json
