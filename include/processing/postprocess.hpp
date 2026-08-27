@@ -38,17 +38,20 @@ class Postprocessor {
  public:
   /**
    * @brief Create a postprocessor with a detection NMS IoU threshold.
-   * @param nms_iou Duplicate-box suppression threshold in [0, 1].
+   * @param[in] nms_iou Duplicate-box suppression threshold in [0, 1].
+   * @throws std::invalid_argument if nms_iou is outside [0, 1].
    */
   explicit Postprocessor(float nms_iou = 0.9f);
 
   /**
    * Parse generated token IDs into boxes and points.
-   * @param tokens Generated Language token IDs.
-   * @param transform Transform used to restore source-image coordinates.
-   * @param tokenizer Tokenizer used to decode reference labels.
-   * @param task Normalized LocateAnything task name.
+   * @param[in] tokens Generated Language token IDs.
+   * @param[in] transform Transform used to restore source-image coordinates.
+   * @param[in] tokenizer Tokenizer used to decode reference labels.
+   * @param[in] task Normalized LocateAnything task name.
    * @return Structured boxes and points in source-image coordinates.
+   * @throws std::invalid_argument if the source-to-canvas transform is invalid.
+   * @throws std::runtime_error if label token decoding fails.
    */
   Prediction Parse(const std::vector<int32_t>& tokens,
                    const ImageTransform& transform,
@@ -56,19 +59,19 @@ class Postprocessor {
                    const std::string& task) const;
   /**
    * @brief Draw boxes and points onto a copy for Console output.
-   * @param source Original source image.
-   * @param prediction Structured boxes and points.
-   * @return Annotated image copy.
+   * @param[in] source Original source image.
+   * @param[in] prediction Structured boxes and points.
+   * @return Annotated image copy, or an empty image when source is empty.
    */
   cv::Mat Draw(const cv::Mat& source, const Prediction& prediction) const;
   /**
    * @brief Serialize a prediction and its diagnostics as one JSON object.
-   * @param prediction Structured boxes and points.
-   * @param task Normalized LocateAnything task name.
-   * @param stop_reason Language generation terminal reason.
-   * @param frame_index Source frame identifier.
-   * @param metrics End-to-end inference metrics.
-   * @param pretty Add indentation and line breaks when true.
+   * @param[in] prediction Structured boxes and points.
+   * @param[in] task Normalized LocateAnything task name.
+   * @param[in] stop_reason Language generation terminal reason.
+   * @param[in] frame_index Source frame identifier serialized as metadata.
+   * @param[in] metrics End-to-end inference metrics.
+   * @param[in] pretty Add indentation and line breaks when true.
    * @return One JSON object without a trailing newline.
    */
   std::string ToJson(const Prediction& prediction,

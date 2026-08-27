@@ -24,6 +24,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "inference.hpp"
+#include "processing/image.hpp"
 #include "package_paths.hpp"
 
 namespace fs = std::filesystem;
@@ -58,6 +59,7 @@ std::string Trim(std::string value) {
  * @param line Complete interactive command.
  * @param command Matched command prefix.
  * @return Unquoted non-empty media path.
+ * @throws std::invalid_argument if the command contains no path.
  */
 std::string PathArgument(const std::string& line, const std::string& command) {
   std::string value = Trim(line.substr(command.size()));
@@ -107,7 +109,10 @@ struct Colors {
   std::string red;
 };
 
-/** Select ANSI colors only when output is an interactive terminal. */
+/**
+ * @brief Select ANSI presentation colors for an interactive terminal.
+ * @return Enabled color sequences for a TTY, or empty sequences otherwise.
+ */
 Colors TerminalColors() {
   if (!isatty(STDOUT_FILENO) || std::getenv("NO_COLOR") != nullptr) return {};
   return {"\033[0m", "\033[1m", "\033[2m", "\033[36m", "\033[32m",
@@ -176,15 +181,21 @@ struct ConsoleOptions {
   float nms_iou = 0.9f;
 };
 
-/** Print the process-level command-line usage. */
+/**
+ * @brief Print the Console executable's process-level command-line usage.
+ */
 void PrintUsage() {
   std::cout << "usage: console [--config FILE]\n";
 }
 
 /**
  * @brief Load shared runtime settings from the ROS-compatible YAML file.
- * @param path Explicit configuration file path.
- * @param options Destination options initialized with defaults by the caller.
+ * @param[in] path Explicit configuration file path.
+ * @param[in,out] options Destination options initialized with defaults by the
+ * caller.
+ * @throws std::runtime_error if the YAML cannot be read or lacks the ROS
+ * parameter mapping.
+ * @throws YAML::Exception if a configured scalar has the wrong type.
  */
 void LoadConfig(const fs::path& path, ConsoleOptions* options) {
   YAML::Node root;
@@ -236,6 +247,8 @@ void LoadConfig(const fs::path& path, ConsoleOptions* options) {
  * @param argc Process argument count.
  * @param argv Process argument values.
  * @return Validated absolute-path Console settings.
+ * @throws std::invalid_argument if arguments or configured values are invalid.
+ * @throws std::runtime_error if the configuration cannot be loaded.
  */
 ConsoleOptions ParseArguments(int argc, char** argv) {
   ConsoleOptions options;
@@ -267,8 +280,8 @@ ConsoleOptions ParseArguments(int argc, char** argv) {
       throw std::invalid_argument("unknown argument: " + argument);
     }
   }
-  if (!(options.nms_iou > 0.0f && options.nms_iou <= 1.0f)) {
-    throw std::invalid_argument("nms_iou must be in (0, 1]");
+  if (!(options.nms_iou >= 0.0f && options.nms_iou <= 1.0f)) {
+    throw std::invalid_argument("nms_iou must be in [0, 1]");
   }
   if (options.max_new_tokens <= 0) {
     throw std::invalid_argument("max_new_tokens in config must be positive");
@@ -306,6 +319,8 @@ struct Request {
  * @param options Console settings containing the output root.
  * @param source Input image or video path.
  * @return Created output directory path.
+ * @throws std::runtime_error if source has no safe output name.
+ * @throws std::filesystem::filesystem_error if the directory cannot be created.
  */
 fs::path OutputPath(const ConsoleOptions& options, const fs::path& source) {
   const std::string name = source.stem().string();
@@ -369,14 +384,21 @@ class Console {
         color_(TerminalColors()),
         session_(BuildInferenceOptions()) {}
 
-  /** Run initialization and the interactive command loop until shutdown. */
+  /**
+   * @brief Run initialization and the interactive command loop until shutdown.
+   * @return Zero after a normal Console session.
+   * @throws std::invalid_argument if configured inference values are invalid.
+   * @throws std::runtime_error if runtime initialization fails.
+   */
   int Run() {
     PrintBanner(color_);
     const auto initialization_started = std::chrono::steady_clock::now();
     InitializeSession(initialization_started);
     PrintInitializationComplete(initialization_started);
+    const locateanything::ModelCanvas canvas = session_.model_canvas();
     std::cout << color_.green << "Ready" << color_.reset
-              << "  S600/Nash-P  |  " << options_.generation_mode
+              << "  S600/Nash-P  |  " << canvas.width << 'x' << canvas.height
+              << "  |  " << options_.generation_mode
               << "  |  max tokens " << options_.max_new_tokens << '\n';
     PrintHelp(color_);
 
@@ -429,14 +451,16 @@ class Console {
  private:
   /**
    * @brief Load both HBM files while a lightweight thread refreshes the UI.
-   * @param started Monotonic initialization start time.
+   * @param[in] started Monotonic initialization start time.
+   * @throws std::invalid_argument if configured inference values are invalid.
+   * @throws std::runtime_error if runtime initialization fails.
    */
   void InitializeSession(
       const std::chrono::steady_clock::time_point started) {
     std::mutex state_mutex;
     std::condition_variable state_changed;
     bool loading = true;
-    std::string stage = "Starting";
+    std::string stage = "Vision HBM";
 
     std::thread renderer([&] {
       std::unique_lock<std::mutex> lock(state_mutex);
@@ -478,8 +502,8 @@ class Console {
 
   /**
    * @brief Render a moving initialization bar and elapsed seconds.
-   * @param stage Current model-loading stage.
-   * @param started Monotonic initialization start time.
+   * @param[in] stage Current model-loading stage.
+   * @param[in] started Monotonic initialization start time.
    */
   void PrintInitializationProgress(
       const std::string& stage,
@@ -511,7 +535,7 @@ class Console {
 
   /**
    * @brief Replace the moving bar with the final HBM initialization status.
-   * @param started Monotonic initialization start time.
+   * @param[in] started Monotonic initialization start time.
    */
   void PrintInitializationComplete(
       const std::chrono::steady_clock::time_point started) const {
@@ -524,7 +548,11 @@ class Console {
               << std::setprecision(1) << elapsed << " s\n";
   }
 
-  /** Translate YAML Console settings into shared inference options. */
+  /**
+   * @brief Translate YAML Console settings into shared inference options.
+   * @return Explicit model paths, generation settings, and backend masks.
+   * @throws std::runtime_error if the requested BPU L2 setting cannot be set.
+   */
   locateanything::InferenceOptions BuildInferenceOptions() const {
     locateanything::InferenceOptions inference;
     if (setenv("HB_DNN_USER_DEFINED_L2M_SIZES", options_.l2m_sizes.c_str(), 1) != 0) {
@@ -547,8 +575,11 @@ class Console {
 
   /**
    * @brief Resolve Console media without depending on the source directory.
-   * @param value Absolute, working-directory-relative, or installed media path.
+   * @param[in] value Absolute, working-directory-relative, or installed media
+   * path.
    * @return Normalized media path.
+   * @throws ament_index_cpp::PackageNotFoundError if an unresolved relative
+   * path requires a package prefix that is unavailable.
    */
   fs::path ResolveMediaPath(const std::string& value) const {
     const fs::path path(value);
@@ -559,7 +590,8 @@ class Console {
 
   /**
    * @brief Validate and remember one local image for the next task.
-   * @param value User-provided image path.
+   * @param[in] value User-provided image path.
+   * @throws std::runtime_error if the image is missing or unreadable.
    */
   void LoadImage(const std::string& value) {
     const fs::path path = ResolveMediaPath(value);
@@ -572,7 +604,8 @@ class Console {
 
   /**
    * @brief Validate and remember one local video for the next task.
-   * @param value User-provided video path.
+   * @param[in] value User-provided video path.
+   * @throws std::runtime_error if the video is missing or unreadable.
    */
   void LoadVideo(const std::string& value) {
     const fs::path path = ResolveMediaPath(value);
@@ -591,9 +624,12 @@ class Console {
 
   /**
    * @brief Dispatch a task to the selected media adapter.
-   * @param media Selected image or video.
-   * @param command Public LocateAnything task command.
-   * @param remember Store this request for `regen` when true.
+   * @param[in] media Selected image or video.
+   * @param[in] command Public LocateAnything task command.
+   * @param[in] remember Store this request for `regen` when true.
+   * @throws std::logic_error if inference is requested before initialization.
+   * @throws std::invalid_argument if the command or media content is invalid.
+   * @throws std::runtime_error if inference or output persistence fails.
    */
   void Execute(const Media& media, const std::string& command, bool remember) {
     if (remember) {
@@ -611,8 +647,12 @@ class Console {
 
   /**
    * @brief Run one local image and save annotated image and JSON result.
-   * @param path Validated image path.
-   * @param command Public LocateAnything task command.
+   * @param[in] path Validated image path.
+   * @param[in] command Public LocateAnything task command.
+   * @throws std::runtime_error if the image or an output file cannot be written.
+   * @throws std::logic_error if the shared core is not initialized.
+   * @throws std::invalid_argument if the command or image is invalid.
+   * @throws std::runtime_error if inference or output persistence fails.
    */
   void RunImage(const fs::path& path, const std::string& command) {
     const cv::Mat image = cv::imread(path.string());
@@ -638,8 +678,13 @@ class Console {
 
   /**
    * @brief Run every local-video frame and save media plus structured reports.
-   * @param path Validated video path.
-   * @param command Public LocateAnything task command applied to every frame.
+   * @param[in] path Validated video path.
+   * @param[in] command Public LocateAnything task command applied to every
+   * frame.
+   * @throws std::runtime_error if media or result files cannot be opened.
+   * @throws std::logic_error if the shared core is not initialized.
+   * @throws std::invalid_argument if the command or a video frame is invalid.
+   * @throws std::runtime_error if inference or output persistence fails.
    */
   void RunVideo(const fs::path& path, const std::string& command) {
     cv::VideoCapture video(path.string());
@@ -732,7 +777,7 @@ int main(int argc, char** argv) {
     fs::create_directories(options.output_directory);
     return Console(std::move(options)).Run();
   } catch (const std::exception& error) {
-    std::cerr << "[FAIL] " << error.what() << '\n';
+    std::cerr << "[ERROR] " << error.what() << '\n';
     return 1;
   }
 }

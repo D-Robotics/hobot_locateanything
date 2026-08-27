@@ -14,8 +14,6 @@
 namespace locateanything {
 namespace {
 
-constexpr float kCanvasSize = 672.0f;
-
 const std::array<cv::Scalar, 8> kAnnotationColors = {
     cv::Scalar(255, 184, 45), cv::Scalar(66, 214, 164),
     cv::Scalar(80, 126, 255), cv::Scalar(72, 202, 255),
@@ -24,10 +22,10 @@ const std::array<cv::Scalar, 8> kAnnotationColors = {
 
 /**
  * @brief Paint a translucent rectangle without changing pixels outside it.
- * @param image Destination BGR image.
- * @param rectangle Region to tint.
- * @param color Overlay color in BGR order.
- * @param opacity Overlay opacity in [0, 1].
+ * @param[in,out] image Destination BGR image.
+ * @param[in] rectangle Region to tint.
+ * @param[in] color Overlay color in BGR order.
+ * @param[in] opacity Overlay opacity in [0, 1].
  */
 void FillTranslucent(cv::Mat* image, const cv::Rect& rectangle,
                      const cv::Scalar& color, double opacity) {
@@ -41,13 +39,13 @@ void FillTranslucent(cv::Mat* image, const cv::Rect& rectangle,
 
 /**
  * @brief Draw a readable caption next to an annotation anchor.
- * @param image Destination BGR image.
- * @param caption Text rendered with OpenCV's ASCII font.
- * @param anchor Top-left target coordinate.
- * @param color Accent color assigned to the target.
- * @param font_scale Font scale derived from source resolution.
- * @param text_width Text stroke width.
- * @param prefer_above Place the caption above the anchor when space permits.
+ * @param[in,out] image Destination BGR image.
+ * @param[in] caption Text rendered with OpenCV's ASCII font.
+ * @param[in] anchor Top-left target coordinate.
+ * @param[in] color Accent color assigned to the target.
+ * @param[in] font_scale Font scale derived from source resolution.
+ * @param[in] text_width Text stroke width.
+ * @param[in] prefer_above Place the caption above the anchor when space permits.
  * @return Final caption rectangle in image coordinates.
  */
 cv::Rect DrawCaption(cv::Mat* image, const std::string& caption,
@@ -83,26 +81,36 @@ cv::Rect DrawCaption(cv::Mat* image, const std::string& caption,
 
 /**
  * @brief Map one normalized model coordinate back to a source pixel.
- * @param value Model coordinate in the 0..1000 range.
- * @param vertical Select the vertical transform when true.
- * @param transform Resize and padding metadata.
+ * @param[in] value Model coordinate in the 0..1000 range.
+ * @param[in] vertical Select the vertical transform when true.
+ * @param[in] transform Source image dimensions and letterbox geometry.
  * @return Clamped source-image coordinate.
+ * @throws std::invalid_argument if transform dimensions or scales are invalid.
  */
 float RestoreCoordinate(int32_t value, bool vertical,
                         const ImageTransform& transform) {
-  const float padding = vertical ? transform.pad_top : transform.pad_left;
+  // Model coordinates are normalized to the model-input canvas. For
+  // letterbox preprocessing the canvas is padded, so map canvas ->
+  // resized (subtract pad) -> source (divide by resize scale).
+  const float canvas = static_cast<float>(
+      vertical ? transform.canvas_height : transform.canvas_width);
+  const float pad = static_cast<float>(
+      vertical ? transform.pad_top : transform.pad_left);
   const float scale = vertical ? transform.scale_y : transform.scale_x;
   const float limit = static_cast<float>(vertical ? transform.source_height
                                                    : transform.source_width);
-  const float pixel = (static_cast<float>(value) / 1000.0f * kCanvasSize - padding) /
-                      scale;
+  if (canvas <= 0.0f || limit <= 0.0f || scale <= 0.0f) {
+    throw std::invalid_argument("invalid image transform");
+  }
+  const float pixel =
+      (static_cast<float>(value) / 1000.0f * canvas - pad) / scale;
   return std::clamp(pixel, 0.0f, limit);
 }
 
 /**
  * @brief Compute intersection-over-union for two source-space boxes.
- * @param left First detection.
- * @param right Second detection.
+ * @param[in] left First detection.
+ * @param[in] right Second detection.
  * @return IoU in [0, 1].
  */
 float IoU(const Detection& left, const Detection& right) {
@@ -121,7 +129,7 @@ float IoU(const Detection& left, const Detection& right) {
 
 /**
  * @brief Normalize a label for case-insensitive duplicate comparison.
- * @param value Raw decoded label.
+ * @param[in] value Raw decoded label.
  * @return Lowercase label with normalized whitespace.
  */
 std::string CanonicalLabel(std::string value) {
@@ -141,7 +149,7 @@ std::string CanonicalLabel(std::string value) {
 
 /**
  * @brief Escape control characters and quotes for a JSON string field.
- * @param value Raw UTF-8 field value.
+ * @param[in] value Raw UTF-8 field value.
  * @return JSON-escaped field contents without surrounding quotes.
  */
 std::string JsonEscape(const std::string& value) {
@@ -169,12 +177,28 @@ std::string JsonEscape(const std::string& value) {
 
 }  // namespace
 
+/**
+ * @brief Create result parsing and rendering with a configured NMS threshold.
+ * @param[in] nms_iou IoU threshold in [0, 1] for same-label duplicate boxes.
+ * @throws std::invalid_argument if nms_iou is outside [0, 1].
+ */
 Postprocessor::Postprocessor(float nms_iou) : nms_iou_(nms_iou) {
   if (nms_iou < 0.0f || nms_iou > 1.0f) {
     throw std::invalid_argument("NMS IoU must be between zero and one");
   }
 }
 
+/**
+ * @brief Parse generated LocateAnything markup into source-coordinate targets.
+ * @param[in] tokens Generated Language token IDs.
+ * @param[in] transform Letterbox transform used for the Vision input.
+ * @param[in] tokenizer Tokenizer used to resolve structural IDs and labels.
+ * @param[in] task Normalized task name controlling detection NMS behavior.
+ * @return Parsed boxes and points restored to source-image coordinates.
+ * @throws std::invalid_argument if transform geometry is invalid.
+ * @throws std::runtime_error if required structural tokens are missing or a
+ *         label cannot be decoded.
+ */
 Prediction Postprocessor::Parse(const std::vector<int32_t>& tokens,
                                 const ImageTransform& transform,
                                 const Tokenizer& tokenizer,
@@ -257,6 +281,12 @@ Prediction Postprocessor::Parse(const std::vector<int32_t>& tokens,
   return result;
 }
 
+/**
+ * @brief Draw parsed boxes, points, indices, and labels on an image copy.
+ * @param[in] source Original source image.
+ * @param[in] prediction Structured boxes and points to render.
+ * @return Annotated image copy, or an empty image when source is empty.
+ */
 cv::Mat Postprocessor::Draw(const cv::Mat& source,
                             const Prediction& prediction) const {
   cv::Mat image = source.clone();
@@ -344,6 +374,16 @@ cv::Mat Postprocessor::Draw(const cv::Mat& source,
   return image;
 }
 
+/**
+ * @brief Serialize one structured prediction and its metrics as JSON.
+ * @param[in] prediction Parsed boxes and points.
+ * @param[in] task Normalized LocateAnything task name.
+ * @param[in] stop_reason Language generation terminal reason.
+ * @param[in] frame_index Source frame identifier.
+ * @param[in] metrics End-to-end inference timings and counters.
+ * @param[in] pretty Add indentation and line breaks when true.
+ * @return One JSON object without a trailing newline.
+ */
 std::string Postprocessor::ToJson(const Prediction& prediction,
                                   const std::string& task,
                                   const std::string& stop_reason,
@@ -445,6 +485,13 @@ std::string Postprocessor::ToJson(const Prediction& prediction,
   output << "\"ar_tokens\"" << colon << language.ar_tokens << ',';
   newline();
   indent(2);
+  output << "\"cache_initialize_ms\"" << colon
+         << language.cache_initialize_ms << ',';
+  newline();
+  indent(2);
+  output << "\"cache_seed_ms\"" << colon << language.cache_seed_ms << ',';
+  newline();
+  indent(2);
   output << "\"graph_timings\"" << colon << '[';
   if (!language.graph_timings.empty()) newline();
   for (size_t index = 0; index < language.graph_timings.size(); ++index) {
@@ -453,9 +500,19 @@ std::string Postprocessor::ToJson(const Prediction& prediction,
     output << "{\"graph\"" << colon << '"' << JsonEscape(timing.graph) << '"'
            << comma << "\"calls\"" << colon << timing.calls << comma
            << "\"total_ms\"" << colon << timing.total_ms << comma
+           << "\"input_build_ms\"" << colon << timing.input_build_ms << comma
+           << "\"buffer_prepare_ms\"" << colon << timing.buffer_prepare_ms
+           << comma << "\"input_pack_ms\"" << colon << timing.input_pack_ms
+           << comma << "\"input_flush_ms\"" << colon << timing.input_flush_ms
+           << comma
            << "\"bpu_wait_ms\"" << colon << timing.bpu_wait_ms << comma
            << "\"submit_ms\"" << colon << timing.submit_ms << comma
+           << "\"output_flush_ms\"" << colon << timing.output_flush_ms
+           << comma << "\"output_unpack_ms\"" << colon
+           << timing.output_unpack_ms << comma
            << "\"input_bytes\"" << colon << timing.input_bytes << comma
+           << "\"resident_input_bytes\"" << colon
+           << timing.resident_input_bytes << comma
            << "\"output_bytes\"" << colon << timing.output_bytes << '}';
     if (index + 1 != language.graph_timings.size()) output << ',';
     newline();

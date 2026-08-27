@@ -9,6 +9,20 @@
 
 namespace locateanything_runtime {
 
+/**
+ * @brief Append accepted KV rows to a mirrored host-side ring buffer.
+ * @param[in,out] storage Contiguous cache storage; a single cache copy is
+ *                        expanded to two mirrored copies on first use.
+ * @param[in] cache_rows Number of logical rows in one cache copy.
+ * @param[in] row_bytes Byte width of one KV row.
+ * @param[in] update Source bytes containing the newly accepted rows.
+ * @param[in] update_bytes Number of readable bytes in update.
+ * @param[in] committed_rows Number of leading update rows to append.
+ * @param[in,out] byte_offset Logical start offset of the active cache window.
+ * @param[out] copied_bytes Optional cumulative Host copy counter.
+ * @return True when all rows are appended; false for invalid sizes, pointers,
+ *         offsets, integer overflow, or incompatible storage layout.
+ */
 bool AppendMirroredRingRows(std::vector<uint8_t>* storage,
                             size_t cache_rows,
                             size_t row_bytes,
@@ -68,6 +82,19 @@ bool AppendMirroredRingRows(std::vector<uint8_t>* storage,
   return true;
 }
 
+/**
+ * @brief Append accepted KV rows directly to a mirrored device ring buffer.
+ * @param[in,out] cache Tensor whose device buffer owns two mirrored cache copies;
+ *                      byte_offset is advanced to the new logical window start.
+ * @param[in] cache_rows Number of logical rows in one cache copy.
+ * @param[in] row_bytes Byte width of one KV row.
+ * @param[in] update Host bytes containing the newly accepted rows.
+ * @param[in] update_bytes Number of readable bytes in update.
+ * @param[in] committed_rows Number of leading update rows to append.
+ * @param[out] copied_bytes Optional cumulative Host-to-device byte counter.
+ * @return True when both mirrored copies are updated; false for an invalid
+ *         layout or when a device write fails.
+ */
 bool AppendMirroredDeviceRingRows(Tensor* cache,
                                   size_t cache_rows,
                                   size_t row_bytes,

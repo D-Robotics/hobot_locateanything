@@ -2,12 +2,17 @@
 
 #include "runtime/attention_mask.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace locateanything_runtime {
 
-/** Convert FP32 to binary16 with round-to-nearest-even semantics. */
+/**
+ * @brief Convert one FP32 value to its IEEE 754 binary16 bit pattern.
+ * @param[in] f Source floating-point value.
+ * @return Raw binary16 bits rounded with round-to-nearest-even semantics.
+ */
 uint16_t FloatToFp16Bits(float f) {
   // IEEE 754 binary32 -> binary16 conversion (round to nearest, ties to even).
   uint32_t bits;
@@ -60,19 +65,33 @@ uint16_t FloatToFp16Bits(float f) {
   return static_cast<uint16_t>(sign);
 }
 
-/** Build the fixed-width causal/PBD attention mask consumed by Language HBM. */
-bool BuildAttentionMask(int32_t q_len,
-                        int32_t cache_len,
-                        int32_t past_len,
-                        int32_t block_size,
-                        uint16_t mask_value_fp16,
-                        bool causal_attn,
-                        AttentionMask *out) {
-  if (q_len <= 0 || cache_len <= 0 || past_len < 0 || past_len + q_len > cache_len) {
+/**
+ * @brief Fill caller-owned storage with one fixed-width causal or PBD mask.
+ * @param[in] q_len Number of query positions in this execution step.
+ * @param[in] cache_len Total number of columns in the fixed KV cache.
+ * @param[in] past_len Number of committed history positions.
+ * @param[in] block_size Width of the PBD generation block, or zero to disable it.
+ * @param[in] mask_value_fp16 Raw binary16 value used for masked positions.
+ * @param[in] causal_attn Keep strict causal visibility when true.
+ * @param[out] data Destination storage in row-major order.
+ * @param[in] element_count Number of binary16 elements available in data.
+ * @return True on success; false for invalid dimensions, a null destination,
+ *         insufficient storage, or a query window that exceeds the cache.
+ */
+bool BuildAttentionMaskData(int32_t q_len,
+                            int32_t cache_len,
+                            int32_t past_len,
+                            int32_t block_size,
+                            uint16_t mask_value_fp16,
+                            bool causal_attn,
+                            uint16_t *data,
+                            size_t element_count) {
+  if (q_len <= 0 || cache_len <= 0 || past_len < 0 ||
+      past_len + q_len > cache_len || data == nullptr ||
+      element_count < static_cast<size_t>(q_len) * cache_len) {
     return false;
   }
-  out->shape = {1, q_len, cache_len};
-  out->data.assign(static_cast<size_t>(q_len) * cache_len, mask_value_fp16);
+  std::fill_n(data, static_cast<size_t>(q_len) * cache_len, mask_value_fp16);
 
   const uint16_t kAllow = FloatToFp16Bits(0.0f);  // 0x0000
   const int32_t current_start = cache_len - q_len;
@@ -82,7 +101,7 @@ bool BuildAttentionMask(int32_t q_len,
   // current K/V update. Keep history directly before the right-aligned query
   // window so the graph's internal slice preserves the active sequence.
   for (int32_t i = 0; i < q_len; ++i) {
-    uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+    uint16_t *row = data + static_cast<size_t>(i) * cache_len;
     for (int32_t j = history_start; j < current_start; ++j) {
       row[j] = kAllow;
     }
@@ -92,7 +111,7 @@ bool BuildAttentionMask(int32_t q_len,
   //   standard causal — query at window-index i can see window-indices 0..i.
   for (int32_t wi = 0; wi < q_len; ++wi) {
     int32_t row_idx = wi;  // absolute row = wi (rows are q_len positions)
-    uint16_t *row = out->data.data() + static_cast<size_t>(row_idx) * cache_len;
+    uint16_t *row = data + static_cast<size_t>(row_idx) * cache_len;
     for (int32_t wj = 0; wj <= wi; ++wj) {
       int32_t col_idx = current_start + wj;
       if (col_idx < cache_len) {
@@ -114,7 +133,7 @@ bool BuildAttentionMask(int32_t q_len,
     int32_t blk_col_start = cache_len - block_size;
     // (1) bidirectional block
     for (int32_t i = blk_row_start; i < q_len; ++i) {
-      uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+      uint16_t *row = data + static_cast<size_t>(i) * cache_len;
       for (int32_t j = blk_col_start; j < cache_len; ++j) {
         row[j] = kAllow;
       }
@@ -126,13 +145,40 @@ bool BuildAttentionMask(int32_t q_len,
     int32_t prev_trail_col = cache_len - block_size - 1;
     if (prev_trail_col >= 0) {
       for (int32_t i = blk_row_start; i < q_len; ++i) {
-        uint16_t *row = out->data.data() + static_cast<size_t>(i) * cache_len;
+        uint16_t *row = data + static_cast<size_t>(i) * cache_len;
         row[prev_trail_col] = mask_value_fp16;
       }
     }
   }
 
   return true;
+}
+
+/**
+ * @brief Allocate and build a complete attention-mask value object.
+ * @param[in] q_len Number of query positions in this execution step.
+ * @param[in] cache_len Total number of columns in the fixed KV cache.
+ * @param[in] past_len Number of committed history positions.
+ * @param[in] block_size Width of the PBD generation block, or zero to disable it.
+ * @param[in] mask_value_fp16 Raw binary16 value used for masked positions.
+ * @param[in] causal_attn Keep strict causal visibility when true.
+ * @param[out] out Destination shape and row-major binary16 mask storage.
+ * @return True on success; false when the output pointer or dimensions are
+ *         invalid, or when the requested window does not fit the cache.
+ */
+bool BuildAttentionMask(int32_t q_len,
+                        int32_t cache_len,
+                        int32_t past_len,
+                        int32_t block_size,
+                        uint16_t mask_value_fp16,
+                        bool causal_attn,
+                        AttentionMask *out) {
+  if (out == nullptr || q_len <= 0 || cache_len <= 0) return false;
+  out->shape = {1, q_len, cache_len};
+  out->data.resize(static_cast<size_t>(q_len) * cache_len);
+  return BuildAttentionMaskData(q_len, cache_len, past_len, block_size,
+                                mask_value_fp16, causal_attn,
+                                out->data.data(), out->data.size());
 }
 
 }  // namespace locateanything_runtime

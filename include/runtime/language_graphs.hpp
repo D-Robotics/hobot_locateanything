@@ -27,7 +27,10 @@ struct GraphValidation {
   std::vector<std::string> unexpected;
   std::vector<std::string> duplicates;
 
-  /** Return true when the actual HBM graph set exactly matches the contract. */
+  /**
+   * @brief Check whether the actual HBM graph set exactly matches the contract.
+   * @return True when no graph is missing, unexpected, or duplicated.
+   */
   bool ok() const {
     return missing.empty() && unexpected.empty() && duplicates.empty();
   }

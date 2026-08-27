@@ -18,6 +18,9 @@ constexpr int64_t kFp16Bytes = 2;  // sizeof(__fp16) on aarch64
 
 }  // namespace
 
+/**
+ * @brief Unmap the embedding table and close its backing file descriptor.
+ */
 EmbedLookup::~EmbedLookup() {
   if (base_ != nullptr) {
     munmap(base_, file_bytes_);
@@ -29,6 +32,14 @@ EmbedLookup::~EmbedLookup() {
   }
 }
 
+/**
+ * @brief Memory-map a row-major FP16 embedding table.
+ * @param[in] path Embedding file path.
+ * @param[in] vocab_size Required number of vocabulary rows.
+ * @param[in] hidden_dim Required FP16 values per row.
+ * @return True when the file exists, is large enough, and maps successfully;
+ *         false for invalid dimensions or any file/mapping failure.
+ */
 bool EmbedLookup::Open(const std::string &path, int32_t vocab_size, int32_t hidden_dim) {
   // Close any prior mapping.
   if (base_ != nullptr) {
@@ -84,6 +95,15 @@ bool EmbedLookup::Open(const std::string &path, int32_t vocab_size, int32_t hidd
   return true;
 }
 
+/**
+ * @brief Gather embedding rows into caller-owned contiguous FP16 storage.
+ * @param[in] token_ids Token IDs to read; an out-of-range ID uses row zero.
+ * @param[in] count Number of input IDs and output rows.
+ * @param[out] out Destination for count times hidden_dim FP16 values.
+ *
+ * The function returns without writing when the table is not mapped, a pointer
+ * is null, or count is not positive.
+ */
 void EmbedLookup::Gather(const int32_t *token_ids, int32_t count, void *out) const {
   if (base_ == nullptr) {
     return;
