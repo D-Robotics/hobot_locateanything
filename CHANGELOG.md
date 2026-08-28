@@ -1,6 +1,6 @@
 # Changelog for package hobot_locateanything
 
-## merge_final (2026-08-28)
+## tros_0.2.0 (2026-08-28)
 
 - Added the Balance (448) inference profile alongside the Max (672) profile,
   with independent YAML settings and HBM model selection.
