@@ -1,5 +1,16 @@
 # Changelog for package hobot_locateanything
 
+## merge_final (2026-08-28)
+
+- Added the Balance (448) inference profile alongside the Max (672) profile,
+  with independent YAML settings and HBM model selection.
+- Reworked ROS real-time inference around a shared asynchronous Prepare/Complete
+  pipeline with bounded latest-frame and Prompt handling.
+- Improved runtime efficiency through persistent graph buffers, reusable
+  inference workspaces, device-side KV-cache updates, and HBM layout discovery.
+- Unified Console, ROS 2, and the official WebSocket launch around the same
+  inference core, with clearer loading and performance output.
+
 ## tros_0.1.0 (2026-08-12)
 
 - Added LocateAnything-3B inference for RDK S600.
