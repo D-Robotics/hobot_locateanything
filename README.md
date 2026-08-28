@@ -202,27 +202,19 @@ Session
   exit                          Exit the application
 ```
 
-Load an image:
+Load an image and enter a detection command:
 
 ```text
 /image image/07_detection_multiclass.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/07_detection_multiclass.jpg
-```
-
-Enter a detection command:
-
-```text
 /detect person,bus,bicycle
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/07_detection_multiclass.jpg
+Image loaded  image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
   Vision   246.7 ms
@@ -273,27 +265,19 @@ Session
   exit                          Exit the application
 ```
 
-Load an image:
+Load an image and enter a detection command:
 
 ```text
 /image image/07_detection_multiclass.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/07_detection_multiclass.jpg
-```
-
-Enter a detection command:
-
-```text
 /detect person,bus,bicycle
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/07_detection_multiclass.jpg
+Image loaded  image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
   Vision   54.3 ms
@@ -828,27 +812,19 @@ Separate multiple queries with commas. Vision runs once per image or video frame
 
 #### Max (672)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/02_gui_rstudio.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/02_gui_rstudio.jpg
-```
-
-Enter a grounding command:
-
-```text
 /gui_box Go to file/function,Environment tab,Files tab
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/02_gui_rstudio.jpg
+Image loaded  image/02_gui_rstudio.jpg
+[User] <<< /gui_box Go to file/function,Environment tab,Files tab
 [Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
 Performance
   Vision   246.9 ms
@@ -864,27 +840,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/02_gui_rstudio.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/02_gui_rstudio.jpg
-```
-
-Enter a grounding command:
-
-```text
 /gui_box Go to file/function,Environment tab,Files tab
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/02_gui_rstudio.jpg
+Image loaded  image/02_gui_rstudio.jpg
+[User] <<< /gui_box Go to file/function,Environment tab,Files tab
 [Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
 Performance
   Vision   51.4 ms
@@ -902,27 +870,19 @@ Result
 
 #### Max (672)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/03_referring_graduation.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/03_referring_graduation.jpg
-```
-
-Enter a grounding command:
-
-```text
 /ground person wearing a graduation cap,woman in a black dress,clock tower
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/03_referring_graduation.jpg
+Image loaded  image/03_referring_graduation.jpg
+[User] <<< /ground person wearing a graduation cap,woman in a black dress,clock tower
 [Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
 Performance
   Vision   245.8 ms
@@ -938,27 +898,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/03_referring_graduation.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/03_referring_graduation.jpg
-```
-
-Enter a grounding command:
-
-```text
 /ground person wearing a graduation cap,woman in a black dress,clock tower
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/03_referring_graduation.jpg
+Image loaded  image/03_referring_graduation.jpg
+[User] <<< /ground person wearing a graduation cap,woman in a black dress,clock tower
 [Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
 Performance
   Vision   51.3 ms
@@ -976,27 +928,19 @@ Result
 
 #### Max (672)
 
-Load an image:
+Load an image and enter the OCR command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/04_ocr_scrapbook.jpg
-```
-
-Enter the OCR command:
-
-```text
 /text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /text
 [Assistant] >>> /text
 Performance
   Vision   245.1 ms
@@ -1012,27 +956,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter the OCR command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/04_ocr_scrapbook.jpg
-```
-
-Enter the OCR command:
-
-```text
 /text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /text
 [Assistant] >>> /text
 Performance
   Vision   51.7 ms
@@ -1050,27 +986,19 @@ Result
 
 #### Max (672)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/04_ocr_scrapbook.jpg
-```
-
-Enter a grounding command:
-
-```text
 /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 [Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 Performance
   Vision   245.9 ms
@@ -1086,27 +1014,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter a grounding command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/04_ocr_scrapbook.jpg
-```
-
-Enter a grounding command:
-
-```text
 /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 [Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 Performance
   Vision   51.1 ms
@@ -1124,27 +1044,19 @@ Result
 
 #### Max (672)
 
-Load an image:
+Load an image and enter a layout command:
 
 ```text
 /image image/05_layout_plot.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/05_layout_plot.jpg
-```
-
-Enter a layout command:
-
-```text
 /layout plot,text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/05_layout_plot.jpg
+Image loaded  image/05_layout_plot.jpg
+[User] <<< /layout plot,text
 [Assistant] >>> /layout plot,text
 Performance
   Vision   245.7 ms
@@ -1160,27 +1072,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter a layout command:
 
 ```text
 /image image/05_layout_plot.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/05_layout_plot.jpg
-```
-
-Enter a layout command:
-
-```text
 /layout plot,text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/05_layout_plot.jpg
+Image loaded  image/05_layout_plot.jpg
+[User] <<< /layout plot,text
 [Assistant] >>> /layout plot,text
 Performance
   Vision   51.4 ms
@@ -1198,27 +1102,19 @@ Result
 
 #### Max (672)
 
-Load an image:
+Load an image and enter a point localization command:
 
 ```text
 /image image/06_pointing_succulent.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/06_pointing_succulent.jpg
-```
-
-Enter a point localization command:
-
-```text
 /point succulent,the succulent in the center
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/06_pointing_succulent.jpg
+Image loaded  image/06_pointing_succulent.jpg
+[User] <<< /point succulent,the succulent in the center
 [Assistant] >>> /point succulent,the succulent in the center
 Performance
   Vision   245.8 ms
@@ -1234,27 +1130,19 @@ Result
 
 #### Balance (448)
 
-Load an image:
+Load an image and enter a point localization command:
 
 ```text
 /image image/06_pointing_succulent.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/06_pointing_succulent.jpg
-```
-
-Enter a point localization command:
-
-```text
 /point succulent,the succulent in the center
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/06_pointing_succulent.jpg
+Image loaded  image/06_pointing_succulent.jpg
+[User] <<< /point succulent,the succulent in the center
 [Assistant] >>> /point succulent,the succulent in the center
 Performance
   Vision   51.4 ms
