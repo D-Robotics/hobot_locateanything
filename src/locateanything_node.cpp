@@ -115,10 +115,10 @@ float ClampPoint(float value, float limit) {
 
 /**
  * @brief Append one inference stage timing to the outgoing ai_msgs message.
- * @param message Destination PerceptionTargets message.
- * @param type Public stage name.
- * @param inference_started ROS timestamp corresponding to inference start.
- * @param timing Monotonic stage offsets from the shared inference core.
+ * @param[in,out] message Destination PerceptionTargets message.
+ * @param[in] type Public stage name.
+ * @param[in] inference_started ROS timestamp corresponding to inference start.
+ * @param[in] timing Monotonic stage offsets from the shared inference core.
  */
 void AppendPerf(ai_msgs::msg::PerceptionTargets* message,
                 const std::string& type,
@@ -161,9 +161,20 @@ struct PendingFrame {
   std::string prompt;
 };
 
+/** One frame after preprocessing and Vision, ready for serialized Language. */
+struct PreparedFrame {
+  PendingFrame frame;
+  PreparedInference inference;
+  rclcpp::Time inference_started;
+};
+
 class LocateAnythingNode : public rclcpp::Node {
  public:
-  /** Declare parameters, load the shared inference core, and wire TROS topics. */
+  /**
+   * @brief Declare parameters, load the inference core, and wire TROS topics.
+   * @throws std::invalid_argument if ROS parameters are inconsistent.
+   * @throws std::runtime_error if runtime assets or HBM contracts are invalid.
+   */
   LocateAnythingNode() : Node("hobot_locateanything") {
     const std::string input_topic =
         declare_parameter<std::string>("input_topic", "/hbmem_img");
@@ -233,6 +244,7 @@ class LocateAnythingNode : public rclcpp::Node {
     session_->Initialize([this](const std::string& stage) {
       RCLCPP_INFO(get_logger(), "loading %s", stage.c_str());
     });
+    const ModelCanvas canvas = session_->model_canvas();
     const double initialization_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - initialization_started).count();
     RCLCPP_INFO(get_logger(), "inference core ready in %.1f s",
@@ -258,10 +270,14 @@ class LocateAnythingNode : public rclcpp::Node {
             OnImage(message);
           });
     }
-    worker_ = std::thread([this] { Run(); });
+    // Pipelined inference: prepare the next frame (preprocess + Vision) while
+    // the current frame runs Language. Applies to every model profile.
+    prepare_worker_ = std::thread([this] { PrepareFrames(); });
+    inference_worker_ = std::thread([this] { Run(); });
     RCLCPP_INFO(get_logger(),
-                "ready: input=%s transport=%s prompt_topic=%s result=%s",
-                input_topic.c_str(),
+                "ready: image=%dx%d input=%s transport=%s prompt_topic=%s "
+                "result=%s pipelined=true",
+                canvas.width, canvas.height, input_topic.c_str(),
                 is_shared_mem_sub ? "hbmem" : "sensor_msgs/Image",
                 prompt_topic.c_str(), result_topic.c_str());
     last_prompt_wait_warning_ = std::chrono::steady_clock::now();
@@ -289,21 +305,23 @@ class LocateAnythingNode : public rclcpp::Node {
                   static_cast<unsigned long long>(total_drops));
     }
     condition_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    if (prepare_worker_.joinable()) prepare_worker_.join();
+    if (inference_worker_.joinable()) inference_worker_.join();
   }
 
  private:
   /**
    * @brief Validate a public Prompt before changing active Prompt state.
-   * @param prompt Public LocateAnything task command.
+   * @param[in] prompt Public LocateAnything task command.
+   * @throws std::invalid_argument if the command syntax is unsupported.
    */
   static void ValidatePrompt(const std::string& prompt) {
-    (void)PromptBuilder{}.Build(prompt);
+    PromptBuilder::Validate(prompt);
   }
 
   /**
    * @brief Validate and activate a Prompt message for subsequently received frames.
-   * @param message Incoming `/locateanything/prompt` message.
+   * @param[in] message Incoming `/locateanything/prompt` message.
    */
   void OnPrompt(const std_msgs::msg::String::ConstSharedPtr message) {
     try {
@@ -324,7 +342,7 @@ class LocateAnythingNode : public rclcpp::Node {
 
   /**
    * @brief Convert an official TROS shared-memory NV12 or JPEG message and queue it.
-   * @param message Incoming `hbm_img_msgs/msg/HbmMsg1080P` frame.
+   * @param[in] message Incoming `hbm_img_msgs/msg/HbmMsg1080P` frame.
    */
   void OnSharedImage(
       const hbm_img_msgs::msg::HbmMsg1080P& message) {
@@ -359,7 +377,7 @@ class LocateAnythingNode : public rclcpp::Node {
 
   /**
    * @brief Convert a standard ROS image message to BGR and queue it.
-   * @param message Incoming `sensor_msgs/msg/Image` frame.
+   * @param[in] message Incoming `sensor_msgs/msg/Image` frame.
    */
   void OnImage(const sensor_msgs::msg::Image::ConstSharedPtr message) {
     try {
@@ -387,8 +405,10 @@ class LocateAnythingNode : public rclcpp::Node {
 
   /**
    * @brief Replace the pending frame and snapshot the active Prompt atomically.
-   * @param header Source message header retained for the result.
-   * @param image Converted source image transferred into the latest-frame queue.
+   * @param[in] header Source message header retained for the result.
+   * @param[in] image Converted source image transferred into the latest-frame
+   * queue.
+   * @throws std::runtime_error if image conversion produced an empty frame.
    */
   void QueueFrame(const std_msgs::msg::Header& header, cv::Mat image) {
     if (image.empty()) {
@@ -435,71 +455,113 @@ class LocateAnythingNode : public rclcpp::Node {
                   static_cast<unsigned long long>(warn_drops),
                   static_cast<unsigned long long>(total_drops));
     }
-    condition_.notify_one();
+    condition_.notify_all();
   }
 
-  /** @brief Consume latest queued frames until ROS shutdown or node teardown. */
-  void Run() {
+  /**
+   * @brief Prepare the latest frame while the previous frame runs Language.
+   *
+   * The single prepared slot bounds memory and prevents speculative Vision
+   * work from competing with Language after the next frame is ready.
+   */
+  void PrepareFrames() {
     while (rclcpp::ok()) {
       PendingFrame frame;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        condition_.wait(lock, [this] { return stopping_ || pending_.has_value(); });
+        condition_.wait(lock, [this] {
+          return stopping_ ||
+                 (pending_.has_value() && !prepared_.has_value());
+        });
         if (stopping_) return;
         frame = std::move(*pending_);
         pending_.reset();
       }
-      const uint32_t frame_index = FrameIndex(frame.header);
       try {
         const rclcpp::Time inference_started = now();
+        PreparedInference inference =
+            session_->Prepare(frame.image, frame.prompt);
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (stopping_) return;
+          prepared_.emplace(PreparedFrame{
+              std::move(frame), std::move(inference), inference_started});
+        }
+        condition_.notify_all();
+      } catch (const std::exception& error) {
+        RCLCPP_ERROR(get_logger(), "frame_id=%s preparation failed: %s",
+                     LogText(frame.header.frame_id).c_str(), error.what());
+      }
+    }
+  }
+
+  /** @brief Complete prepared frames until ROS shutdown or node teardown. */
+  void Run() {
+    while (rclcpp::ok()) {
+      PreparedFrame prepared;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock,
+                        [this] { return stopping_ || prepared_.has_value(); });
+        if (stopping_) return;
+        prepared = std::move(*prepared_);
+        prepared_.reset();
+      }
+      condition_.notify_all();
+      PendingFrame& frame_ref = prepared.frame;
+      const uint32_t frame_index = FrameIndex(frame_ref.header);
+      try {
         InferenceOutput output =
-            session_->Infer(frame.image, frame.prompt, frame_index);
+            session_->Complete(std::move(prepared.inference), frame_index);
         const int16_t fps = RecordOutputFps(output.metrics.total_ms);
         ai_msgs::msg::PerceptionTargets result =
-            BuildResult(frame, output, fps, inference_started);
+            BuildResult(frame_ref, output, fps, prepared.inference_started);
         result_publisher_->publish(result);
 
         const LanguageMetrics& language = output.metrics.language;
         const std::string labels = ResultLabels(output.prediction);
         RCLCPP_INFO(
             get_logger(),
-            "frame_id=%s prompt=\"%s\" output=\"%s\" labels=\"%s\" "
-            "boxes=%zu points=%zu "
-            "fps=%d stop_reason=%s prompt_tokens=%d generated_tokens=%d "
-            "pbd_calls=%d pbd_accepted_tokens=%d mode=%s "
-            "preprocess_ms=%.3f vision_ms=%.3f language_ms=%.3f "
-            "postprocess_ms=%.3f total_ms=%.3f",
-            LogText(frame.header.frame_id).c_str(), LogText(frame.prompt).c_str(),
-            LogText(output.generated_text).c_str(), labels.c_str(),
+            "Inference\n"
+            "  Input       frame_id=%s prompt=\"%s\"\n"
+            "  Prediction  labels=\"%s\" boxes=%zu points=%zu\n"
+            "  Language    mode=%s prompt_tokens=%d generated_tokens=%d "
+            "stop_reason=%s\n"
+            "  PBD         calls=%d accepted_tokens=%d\n"
+            "  Throughput  fps=%d total_ms=%.3f\n"
+            "  Timing      preprocess_ms=%.3f vision_ms=%.3f "
+            "language_ms=%.3f postprocess_ms=%.3f",
+            LogText(frame_ref.header.frame_id).c_str(),
+            LogText(frame_ref.prompt).c_str(), labels.c_str(),
             output.prediction.detections.size(),
-            output.prediction.points.size(), static_cast<int>(fps),
-            output.stop_reason.c_str(), language.prompt_tokens,
-            language.generated_tokens, language.pbd_calls,
-            language.pbd_accepted_tokens, language.executed_mode.c_str(),
-            output.metrics.preprocess_ms, output.metrics.vision_ms,
-            output.metrics.language_ms, output.metrics.postprocess_ms,
-            output.metrics.total_ms);
+            output.prediction.points.size(), language.executed_mode.c_str(),
+            language.prompt_tokens, language.generated_tokens,
+            output.stop_reason.c_str(), language.pbd_calls,
+            language.pbd_accepted_tokens, static_cast<int>(fps),
+            output.metrics.total_ms, output.metrics.preprocess_ms,
+            output.metrics.vision_ms, output.metrics.language_ms,
+            output.metrics.postprocess_ms);
         RCLCPP_DEBUG(get_logger(), "frame_id=%s generated_token_ids=[%s]",
-                     LogText(frame.header.frame_id).c_str(),
+                     LogText(frame_ref.header.frame_id).c_str(),
                      TokenIdsText(output.generated_token_ids).c_str());
         if (!language.fallback_reason.empty()) {
           RCLCPP_DEBUG(get_logger(), "frame_id=%s language fallback: %s",
-                       LogText(frame.header.frame_id).c_str(),
+                       LogText(frame_ref.header.frame_id).c_str(),
                        LogText(language.fallback_reason).c_str());
         }
       } catch (const std::exception& error) {
         RCLCPP_ERROR(get_logger(), "frame_id=%s inference failed: %s",
-                     LogText(frame.header.frame_id).c_str(), error.what());
+                     LogText(frame_ref.header.frame_id).c_str(), error.what());
       }
     }
   }
 
   /**
    * @brief Convert shared inference output into the public ai_msgs contract.
-   * @param frame Source header, image extent, and Prompt snapshot.
-   * @param output Structured shared-core inference output.
-   * @param fps Measured result publication throughput.
-   * @param inference_started ROS timestamp corresponding to inference start.
+   * @param[in] frame Source header, image extent, and Prompt snapshot.
+   * @param[in] output Structured shared-core inference output.
+   * @param[in] fps Measured result publication throughput.
+   * @param[in] inference_started ROS timestamp corresponding to inference start.
    * @return One PerceptionTargets message, including empty-target frames.
    */
   static ai_msgs::msg::PerceptionTargets BuildResult(
@@ -564,8 +626,10 @@ class LocateAnythingNode : public rclcpp::Node {
 
   /**
    * @brief Compute output throughput from the rolling completion window.
-   * @param total_ms Current frame latency used before the window has two samples.
-   * @return Rounded result FPS clamped to the message field range.
+   * @param[in] total_ms Current frame latency used before the window has two
+   * samples.
+   * @return Rounded result FPS clamped to the message field range, or -1 when
+   * a multi-sample window has no positive elapsed time.
    */
   int16_t RecordOutputFps(double total_ms) {
     const auto timestamp = std::chrono::steady_clock::now();
@@ -591,7 +655,7 @@ class LocateAnythingNode : public rclcpp::Node {
 
   /**
    * @brief Extract a numeric frame index when the publisher provides one.
-   * @param header Source message header.
+   * @param[in] header Source message header.
    * @return Parsed frame index, or zero for a non-numeric frame ID.
    */
   static uint32_t FrameIndex(const std_msgs::msg::Header& header) {
@@ -610,6 +674,7 @@ class LocateAnythingNode : public rclcpp::Node {
   std::mutex mutex_;
   std::condition_variable condition_;
   std::optional<PendingFrame> pending_;
+  std::optional<PreparedFrame> prepared_;
   bool stopping_ = false;
   uint64_t dropped_frames_ = 0;
   uint64_t dropped_since_warning_ = 0;
@@ -618,7 +683,8 @@ class LocateAnythingNode : public rclcpp::Node {
   std::chrono::steady_clock::time_point last_prompt_wait_warning_ =
       std::chrono::steady_clock::now();
   std::deque<std::chrono::steady_clock::time_point> output_timestamps_;
-  std::thread worker_;
+  std::thread prepare_worker_;
+  std::thread inference_worker_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_subscription_;
   rclcpp::Subscription<hbm_img_msgs::msg::HbmMsg1080P>::SharedPtr
       shared_image_subscription_;
@@ -627,7 +693,12 @@ class LocateAnythingNode : public rclcpp::Node {
       result_publisher_;
 };
 
-/** Construct the ROS node through the small package-level entry interface. */
+/**
+ * @brief Construct the configured ROS inference node through the package API.
+ * @return Shared node instance ready to be added to an executor.
+ * @throws std::invalid_argument if ROS parameters are inconsistent.
+ * @throws std::runtime_error if model assets or HBM contracts are invalid.
+ */
 std::shared_ptr<rclcpp::Node> CreateLocateAnythingNode() {
   return std::make_shared<LocateAnythingNode>();
 }

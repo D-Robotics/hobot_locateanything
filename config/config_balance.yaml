@@ -10,11 +10,11 @@ hobot_locateanything:
 
     # Vision HBM filename or absolute path. Relative filenames are resolved
     # against model_directory.
-    vision_model: LocateAnything-3B_vision.hbm
+    vision_model: LocateAnything-3B_vision_balance.hbm
 
     # Language HBM filename or absolute path. Relative filenames are resolved
     # against model_directory.
-    language_model: LocateAnything-3B_language.hbm
+    language_model: LocateAnything-3B_language_balance.hbm
 
     # FP16 token embedding table filename or absolute path. Relative filenames
     # are resolved against model_directory.
@@ -26,7 +26,7 @@ hobot_locateanything:
 
     # Maximum response tokens generated for one request. The Language HBM
     # capacity remains authoritative.
-    max_new_tokens: 4096
+    max_new_tokens: 640
 
     # IoU threshold used to suppress duplicate boxes with the same label.
     # The valid range is 0.0 to 1.0.

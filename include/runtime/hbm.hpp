@@ -4,11 +4,10 @@
 //
 // Loads a .hbm file (one or multiple graphs packed inside) and exposes a
 // minimal execute() that:
-//   - allocates BPU-cached memory for each input tensor
-//   - memcpy user data into the device buffers
-//   - allocates output tensor memory
+//   - allocates reusable BPU-cached input/output memory once per graph
+//   - copies changed host inputs or binds caller-owned device buffers
 //   - submits an inference task and waits for it to complete
-//   - copies the results back into host-side std::vector
+//   - materializes only the requested output rows in host-side storage
 //
 // The wrapper is deliberately small: it exposes graph metadata, reusable
 // input/output buffers, explicit cache-backed tensors, and synchronous graph
@@ -42,7 +41,7 @@ struct Result;
 // graph. `data` is contiguous row-major; `shape` is in NCHW-ish order
 // (whatever the hbm declared); `dtype` follows hb_dnn's HB_DNN_TENSOR_TYPE_*.
 struct Tensor {
-  std::vector<int32_t> shape;   // e.g. [1, 1024, 588]
+  std::vector<int32_t> shape;   // e.g. [1, patch_count, patch_vector]
   int32_t dtype = 0;            // HB_DNN_TENSOR_TYPE_F16 = 4 etc.
   std::vector<uint8_t> data;    // raw bytes, size = element_count * element_bytes
   size_t byte_offset = 0;       // logical view start; used by ring-buffer KV caches
@@ -61,7 +60,7 @@ class DeviceBuffer {
   DeviceBuffer(const DeviceBuffer &) = delete;
   DeviceBuffer &operator=(const DeviceBuffer &) = delete;
 
-  /** Return the number of bytes allocated for this buffer. */
+  /** @brief Return the allocated byte count. @return Bytes, or zero if empty. */
   size_t size() const;
 
  private:
@@ -82,9 +81,9 @@ class DeviceBuffer {
 struct Result {
   int32_t code = 0;
   std::string message;
-  /** Return whether the wrapped vendor call succeeded. */
+  /** @brief Check the wrapped vendor call. @return True when code is zero. */
   bool ok() const { return code == 0; }
-  /** Construct a successful result. */
+  /** @brief Construct a successful result. @return Result with code zero. */
   static Result Ok() { return {0, ""}; }
   /**
    * @brief Construct a failed result.
@@ -161,12 +160,6 @@ class Graph {
    */
   Result RefreshIO(hbDNNHandle_t handle);
 
-  // Release graph-private input/output allocations while retaining the graph
-  // handle and cached IO metadata. Device-resident KV buffers are owned by
-  // callers and are unaffected.
-  /** Release graph-private input/output allocations while retaining metadata. */
-  void ReleasePersistentBuffers();
-
   // Remember the C handle for later Execute calls. Kept separate from
   // RefreshIO so that the HbmSession can pass the handle in once when it
   // first looks the graph up.
@@ -175,7 +168,7 @@ class Graph {
    * @param handle Non-owning vendor graph handle.
    */
   void SetHandle(void *handle) { c_handle_ = handle; }
-  /** Return the remembered vendor graph handle. */
+  /** @brief Return the remembered graph handle. @return Non-owning C handle. */
   void *GetHandle() const { return c_handle_; }
 
   /**
@@ -244,17 +237,17 @@ class Graph {
                  ExecutionMetrics *metrics = nullptr,
                  const std::vector<OutputSlice> *output_slices = nullptr);
 
-  /** Return cached input names in vendor order. */
+  /** @brief Return cached input names. @return Names in vendor order. */
   const std::vector<std::string> &GetInputNames() const { return input_names_; }
-  /** Return cached output names in vendor order. */
+  /** @brief Return cached output names. @return Names in vendor order. */
   const std::vector<std::string> &GetOutputNames() const { return output_names_; }
-  /** Return cached input shapes in vendor order. */
+  /** @brief Return cached input shapes. @return Shapes in vendor order. */
   const std::vector<std::vector<int32_t>> &GetInputShapes() const { return input_shapes_; }
-  /** Return cached output shapes in vendor order. */
+  /** @brief Return cached output shapes. @return Shapes in vendor order. */
   const std::vector<std::vector<int32_t>> &GetOutputShapes() const { return output_shapes_; }
-  /** Return cached input data types in vendor order. */
+  /** @brief Return cached input dtypes. @return Dtypes in vendor order. */
   const std::vector<int32_t> &GetInputDtypes() const { return input_dtypes_; }
-  /** Return cached output data types in vendor order. */
+  /** @brief Return cached output dtypes. @return Dtypes in vendor order. */
   const std::vector<int32_t> &GetOutputDtypes() const { return output_dtypes_; }
 
  private:
@@ -353,14 +346,13 @@ class HbmSession {
 
   // List of all graph names in this hbm (e.g. ["visual"], or
   // ["prefill", "decode"]).
-  /** Return all graph names in the packed HBM file. */
+  /** @brief Return packed graph names. @return Names in vendor order. */
   const std::vector<std::string> &GetGraphNames() const { return graph_names_; }
 
  private:
   void *packed_handle_ = nullptr;  // hbDNNPackedHandle_t
   std::vector<std::string> graph_names_;
   std::unordered_map<std::string, std::unique_ptr<Graph>> graphs_;
-  Graph *active_graph_ = nullptr;  // owned by graphs_
   uint32_t backend_mask_ = 15;
 };
 

@@ -14,29 +14,96 @@
 
 import os
 
+import yaml
 from ament_index_python import get_package_share_directory
 from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
 from launch_ros.actions import Node
 
 
-def generate_launch_description():
+def create_websocket_launch(context):
+    """Create the official WebSocket bridge from the selected YAML file.
+
+    Args:
+        context: Active launch context used to resolve ``config_file``.
+
+    Returns:
+        A one-element list containing the WebSocket launch include.
+
+    Raises:
+        RuntimeError: If the selected YAML cannot be read or does not contain
+            the required inference topic and WebSocket settings.
+        PackageNotFoundError: If the official WebSocket package is unavailable.
     """
-    Function:
-        Start the selected official image source and LocateAnything node.
-    Parameters:
-        None. Launch arguments and CAM_TYPE configure the returned description.
+    config_path = LaunchConfiguration("config_file").perform(context)
+    try:
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file)
+    except (OSError, yaml.YAMLError) as error:
+        raise RuntimeError(
+            f"cannot load WebSocket settings from config_file={config_path}: "
+            f"{error}"
+        ) from error
+
+    try:
+        inference = config["hobot_locateanything"]["ros__parameters"]
+        websocket = config["websocket"]["ros__parameters"]
+        arguments = {
+            "websocket_image_topic": str(websocket["image_topic"]),
+            "websocket_image_type": str(websocket["image_type"]),
+            "websocket_only_show_image": str(websocket["only_show_image"]),
+            "websocket_output_fps": str(websocket["output_fps"]),
+            "websocket_smart_topic": str(inference["result_topic"]),
+            "websocket_channel": str(websocket["channel"]),
+            "log_level": str(websocket["log_level"]),
+        }
+    except (KeyError, TypeError) as error:
+        field = str(error).strip("'")
+        raise RuntimeError(
+            f"WebSocket config missing required field: {field}, "
+            f"config_file={config_path}"
+        ) from error
+
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(
+                    get_package_share_directory("websocket"),
+                    "launch/websocket.launch.py",
+                )
+            ),
+            launch_arguments=arguments.items(),
+        )
+    ]
+
+
+def generate_launch_description():
+    """Build the official image-source, inference, and WebSocket pipeline.
+
+    Returns:
+        LaunchDescription configured by ``CAM_TYPE`` and launch arguments.
+
+    Raises:
+        PackageNotFoundError: If a selected ROS package is not installed.
     """
     package_name = "hobot_locateanything"
     package_runtime = os.path.join(
         get_package_prefix(package_name), "lib", package_name
     )
     config_path = os.path.join(package_runtime, "config", "config.yaml")
-    model_directory = os.path.join(package_runtime, "models")
-    tokenizer_directory = os.path.join(model_directory, "tokenizer")
+
+    config_file_arg = DeclareLaunchArgument(
+        "config_file",
+        default_value=config_path,
+        description="LocateAnything ROS parameter file",
+    )
 
     image_width_arg = DeclareLaunchArgument(
         "locateanything_image_width", default_value=TextSubstitution(text="1920")
@@ -66,6 +133,7 @@ def generate_launch_description():
                 "usb_image_width": LaunchConfiguration("locateanything_image_width"),
                 "usb_image_height": LaunchConfiguration("locateanything_image_height"),
                 "usb_framerate": "30",
+                "usb_pixel_format": "mjpeg",
                 "usb_video_device": LaunchConfiguration("device"),
             }.items(),
         )
@@ -171,16 +239,10 @@ def generate_launch_description():
         package=package_name,
         executable=package_name,
         output="screen",
-        parameters=[
-            config_path,
-            {
-                "model_directory": model_directory,
-                "tokenizer_directory": tokenizer_directory,
-                "input_topic": "/hbmem_img",
-                "is_shared_mem_sub": True,
-            },
-        ],
+        parameters=[LaunchConfiguration("config_file")],
     )
+
+    websocket_node = OpaqueFunction(function=create_websocket_launch)
 
     shared_memory_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -195,23 +257,27 @@ def generate_launch_description():
         return LaunchDescription(
             [
                 camera_device_arg,
+                config_file_arg,
                 image_width_arg,
                 image_height_arg,
                 shared_memory_node,
                 camera_node,
                 jpeg_codec_node,
                 inference_node,
+                websocket_node,
             ]
         )
 
     return LaunchDescription(
         [
             camera_device_arg,
+            config_file_arg,
             image_width_arg,
             image_height_arg,
             shared_memory_node,
             camera_node,
             nv12_codec_node,
             inference_node,
+            websocket_node,
         ]
     )

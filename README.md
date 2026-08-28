@@ -51,15 +51,29 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 ## Inference Performance
 
+### Max (672)
+
 | Platform | Task                | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
 | -------- | ------------------- | -------------:| -----------:| ------------:| -----------:| ----------:| -----------------:|
-| RDK S600 | Object detection    | 47            | 254.7       | 151.6        | 526.3       | 978.5      | 89.3              |
-| RDK S600 | GUI grounding       | 14            | 253.2       | 149.7        | 266.0       | 720.7      | 52.6              |
-| RDK S600 | Referring grounding | 14            | 246.0       | 152.3        | 164.5       | 603.6      | 85.1              |
-| RDK S600 | OCR                 | 66            | 245.5       | 152.4        | 665.3       | 1148.3     | 99.2              |
-| RDK S600 | Text grounding      | 15            | 253.0       | 150.2        | 166.6       | 653.5      | 90.0              |
-| RDK S600 | Layout grounding    | 43            | 245.4       | 151.8        | 448.1       | 904.7      | 96.0              |
-| RDK S600 | Point localization  | 37            | 246.0       | 152.2        | 480.5       | 923.5      | 77.0              |
+| RDK S600 | Object detection    | 47            | 246.7       | 147.8        | 461.6       | 893.1      | 101.8             |
+| RDK S600 | GUI grounding       | 36            | 246.9       | 440.0        | 449.4       | 1189.3     | 80.1              |
+| RDK S600 | Referring grounding | 39            | 245.8       | 439.6        | 380.9       | 1091.2     | 102.4             |
+| RDK S600 | OCR                 | 66            | 245.1       | 146.1        | 575.6       | 1030.8     | 114.7             |
+| RDK S600 | Text grounding      | 43            | 245.9       | 438.7        | 386.2       | 1139.8     | 111.3             |
+| RDK S600 | Layout grounding    | 43            | 245.7       | 146.2        | 386.2       | 816.1      | 111.3             |
+| RDK S600 | Point localization  | 50            | 245.8       | 292.5        | 581.8       | 1145.6     | 85.9              |
+
+### Balance (448)
+
+| Platform | Task                | Output tokens | Vision (ms) | Prefill (ms) | Decode (ms) | Total (ms) | Decode (tokens/s) |
+| -------- | ------------------- | -------------:| -----------:| ------------:| -----------:| ----------:| -----------------:|
+| RDK S600 | Object detection    | 41            | 54.3        | 60.5         | 423.3       | 557.6      | 120.3             |
+| RDK S600 | GUI grounding       | 36            | 51.4        | 176.6        | 301.2       | 554.7      | 119.5             |
+| RDK S600 | Referring grounding | 39            | 51.3        | 176.5        | 248.3       | 490.9      | 157.1             |
+| RDK S600 | OCR                 | 82            | 51.7        | 59.0         | 665.3       | 828.0      | 123.3             |
+| RDK S600 | Text grounding      | 43            | 51.1        | 176.4        | 253.1       | 534.8      | 169.9             |
+| RDK S600 | Layout grounding    | 43            | 51.4        | 58.9         | 335.6       | 473.9      | 128.1             |
+| RDK S600 | Point localization  | 42            | 51.4        | 117.5        | 399.9       | 583.1      | 105.0             |
 
 ## Model and Quantization
 
@@ -69,6 +83,8 @@ Calibration and HBM compilation: [D-Robotics/Locateanything_PTQ](https://github.
 
 The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 decoder -> structured result parsing`.
 
+### Max (672)
+
 | Item               | Configuration                                                   |
 | ------------------ | --------------------------------------------------------------- |
 | Vision             | MoonViT, 27 blocks, `672 x 672`, signed W8 weights              |
@@ -77,6 +93,19 @@ The inference path is `Image + Prompt -> preprocessing -> MoonViT -> Qwen2.5 dec
 | Visual tokens      | 576                                                             |
 | LM Head            | W8, vocabulary size 152681                                      |
 | Prefill / KV Cache | 1024 / 4096 tokens                                              |
+| Decoding           | PBD q=6, AR q=1, Host sampling                                  |
+| Target             | Nash-P, four BPU cores, L2 `6:6:6:6`                            |
+
+### Balance (448)
+
+| Item               | Configuration                                                   |
+| ------------------ | --------------------------------------------------------------- |
+| Vision             | MoonViT, 27 blocks, `448 x 448`, signed W8 weights              |
+| Language           | Qwen2.5 decoder, 36 layers, hidden size 2048, signed W8 weights |
+| Activations        | Dynamic quantization                                            |
+| Visual tokens      | 256                                                             |
+| LM Head            | W8, vocabulary size 152681                                      |
+| Prefill / KV Cache | 384 / 1024 tokens                                               |
 | Decoding           | PBD q=6, AR q=1, Host sampling                                  |
 | Target             | Nash-P, four BPU cores, L2 `6:6:6:6`                            |
 
@@ -108,6 +137,10 @@ source install/setup.bash
 
 ### Download the Model
 
+We provide two compiled inference models: **Max** (high accuracy) and **Balance** (high performance). Max focuses on recognition accuracy optimization, while Balance focuses on inference performance optimization. Download the corresponding models from the links below.
+
+#### Max (672)
+
 ```bash
 mkdir -p install/lib/hobot_locateanything/models
 wget -c -P install/lib/hobot_locateanything/models \
@@ -118,22 +151,23 @@ wget -c -P install/lib/hobot_locateanything/models \
   https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU/resolve/main/LocateAnything-3B_embed_tokens.bin
 ```
 
-Runtime files:
+#### Balance (448)
 
-```text
-install/lib/hobot_locateanything/models/
-├── LocateAnything-3B_vision.hbm
-├── LocateAnything-3B_language.hbm
-├── LocateAnything-3B_embed_tokens.bin
-└── tokenizer/
-    ├── vocab.json
-    ├── merges.txt
-    └── added_tokens.json
+```bash
+mkdir -p install/lib/hobot_locateanything/models
+wget -c -O install/lib/hobot_locateanything/models/LocateAnything-3B_vision_balance.hbm \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU-Balance/resolve/main/LocateAnything-3B_vision.hbm
+wget -c -O install/lib/hobot_locateanything/models/LocateAnything-3B_language_balance.hbm \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU-Balance/resolve/main/LocateAnything-3B_language.hbm
+wget -c -O install/lib/hobot_locateanything/models/LocateAnything-3B_embed_tokens.bin \
+  https://hf-mirror.com/D-Robotics/LocateAnything-3B-BPU-Balance/resolve/main/LocateAnything-3B_embed_tokens.bin
 ```
 
 ## Basic Feature: Object Detection
 
 ### Console Inference
+
+#### Max (672)
 
 ```bash
 source /opt/tros/jazzy/setup.bash
@@ -148,8 +182,8 @@ Console output:
 [DNN]: 3.12.3_(4.5.4 HBRT)
 Loading Vision HBM...
 Loading Language HBM...
-HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+HBM loaded  [============================] 16.6 s
+Ready  S600/Nash-P  |  672x672  |  hybrid  |  max tokens 4096
 Tasks
   /detect cat,dog               Object detection
   /ground <query>[,<query>...]  Referring expression grounding (multi-query)
@@ -168,41 +202,96 @@ Session
   exit                          Exit the application
 ```
 
-Load an image:
+Load an image and enter a detection command:
 
 ```text
 /image image/07_detection_multiclass.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/07_detection_multiclass.jpg
-```
-
-Enter a detection command:
-
-```text
 /detect person,bus,bicycle
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/07_detection_multiclass.jpg
+Image loaded  image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
 [Assistant] >>> /detect person,bus,bicycle
 Performance
-  Vision   254.7 ms
-  Prefill  151.6 ms  620 tokens
-  Decode   526.3 ms  47 tokens  89.3 tokens/s
-  Host     41.4 ms
-  Total    978.5 ms
+  Vision   246.7 ms
+  Prefill  147.8 ms  620 tokens
+  Decode   461.6 ms  47 tokens  101.8 tokens/s
+  Host     30.4 ms
+  Total    893.1 ms
 Result
   Labels bicycle, bus, person  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
 Results are saved to `outputs/07_detection_multiclass/annotated.jpg` and `prediction.json`.
 
-<img src="assets/results/detection_multiclass.jpg" alt="Open-vocabulary object detection" width="720">
+<img src="assets/results/detection_multiclass_max.jpg" alt="Open-vocabulary object detection with Max (672)" width="720">
+
+#### Balance (448)
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 run hobot_locateanything console --config config/config_balance.yaml
+```
+
+Console output:
+
+```text
+[UCP]: UCP version = 3.12.3
+[DNN]: 3.12.3_(4.5.4 HBRT)
+Loading Vision HBM...
+Loading Language HBM...
+HBM loaded  [============================] 12.1 s
+Ready  S600/Nash-P  |  448x448  |  hybrid  |  max tokens 640
+Tasks
+  /detect cat,dog               Object detection
+  /ground <query>[,<query>...]  Referring expression grounding (multi-query)
+  /ground_single <query>[,...]  Referring expression grounding (single target)
+  /gui <query>[,<query>...]     GUI point grounding
+  /gui_box <query>[,<query>...] GUI box grounding
+  /text                         Text OCR
+  /ground_text <query>[,...]    Text grounding
+  /layout title,table,figure    Document layout analysis
+  /point <query>[,<query>...]   Point grounding
+Session
+  /image <image_path>           Load an image
+  /video <video_path>           Process all video frames
+  regen                         Re-run the previous request
+  reset                         Clear the current media
+  exit                          Exit the application
+```
+
+Load an image and enter a detection command:
+
+```text
+/image image/07_detection_multiclass.jpg
+/detect person,bus,bicycle
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/07_detection_multiclass.jpg
+Image loaded  image/07_detection_multiclass.jpg
+[User] <<< /detect person,bus,bicycle
+[Assistant] >>> /detect person,bus,bicycle
+Performance
+  Vision   54.3 ms
+  Prefill  60.5 ms  300 tokens
+  Decode   423.3 ms  41 tokens  96.9 tokens/s
+  Host     26.5 ms
+  Total    557.6 ms
+Result
+  Labels bicycle, bus, person  |  Boxes 5  |  Points 0  |  Stop im_end
+```
+
+Results are saved to `outputs/07_detection_multiclass/annotated.jpg` and `prediction.json`.
+
+<img src="assets/results/detection_multiclass_balance.jpg" alt="Open-vocabulary object detection with Balance (448)" width="720">
 
 ### ROS 2 Inference
 
@@ -212,7 +301,9 @@ Results are published on `/perception/locateanything`. Prompts are updated throu
 
 The default launch replays `image/07_detection_multiclass.jpg` at 2 FPS. Change `publish_image_source` to use another image.
 
-##### Commands
+##### Max (672)
+
+###### Commands
 
 Terminal 1, start image replay and the inference node:
 
@@ -222,6 +313,7 @@ source install/setup.bash
 
 export CAM_TYPE=fb
 ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config.yaml \
   publish_image_source:=image/07_detection_multiclass.jpg
 ```
 
@@ -242,7 +334,7 @@ ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
   "{data: '/detect person,bus,bicycle'}"
 ```
 
-##### Outputs
+###### Outputs
 
 Terminal 1, image publisher and inference node output:
 
@@ -251,8 +343,8 @@ Terminal 1, image publisher and inference node output:
 [DNN]: 3.12.3_(4.5.4 HBRT)
 [INFO] [hobot_locateanything]: loading Vision HBM
 [INFO] [hobot_locateanything]: loading Language HBM
-[INFO] [hobot_locateanything]: inference core ready in 16.5 s
-[INFO] [hobot_locateanything]: ready: input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything
+[INFO] [hobot_locateanything]: inference core ready in 16.6 s
+[INFO] [hobot_locateanything]: ready: image=672x672 input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything pipelined=true
 [WARN] [hobot_locateanything]: waiting for prompt on /locateanything/prompt; image frames are ignored until a valid prompt arrives
 [INFO] [hobot_image_pub-1]: process started
 [image_pub_node]: parameter:
@@ -265,24 +357,30 @@ Terminal 1, image publisher and inference node output:
  msg_pub_topic_name: /hbmem_img
 [hobot_image_pub]: Enabling zero-copy
 [INFO] [hobot_locateanything]: prompt updated: /detect person,bus,bicycle
-[INFO] [hobot_locateanything]: frame_id=38 prompt="/detect person,bus,bicycle" output="<ref>person</ref><box><220><392><312><690></box><box><666><424><758><701></box><ref>bus</ref><box><124><265><595><653></box><ref>bicycle</ref><box><514><465><646><618></box><box><735><575><878><782></box><|im_end|>" labels="person | person | bus | bicycle | bicycle" boxes=5 points=0 fps=1 stop_reason=im_end prompt_tokens=620 generated_tokens=41 pbd_calls=9 pbd_accepted_tokens=41 mode=hybrid preprocess_ms=43.935 vision_ms=250.393 language_ms=557.831 postprocess_ms=0.023 total_ms=852.182
+[INFO] [hobot_locateanything]: Inference
+  Input       frame_id=152 prompt="/detect person,bus,bicycle"
+  Prediction  labels="person | person | bus | bicycle | bicycle" boxes=5 points=0
+  Language    mode=hybrid prompt_tokens=620 generated_tokens=41 stop_reason=im_end
+  PBD         calls=9 accepted_tokens=41
+  Throughput  fps=1 total_ms=1022.971
+  Timing      preprocess_ms=45.153 vision_ms=246.513 language_ms=731.251 postprocess_ms=0.023
 ```
 
 Terminal 2, detection result output:
 
 ```yaml
 header:
-  frame_id: '38'
+  frame_id: '152'
 fps: 1
 perfs:
   - type: preprocess
-    time_ms_duration: 43.935122
+    time_ms_duration: 45.153442
   - type: vision
-    time_ms_duration: 250.392581
+    time_ms_duration: 246.513345
   - type: language
-    time_ms_duration: 557.831141
+    time_ms_duration: 731.251405
   - type: postprocess
-    time_ms_duration: 0.022575
+    time_ms_duration: 0.023075
 targets:
   - type: person
     rois:
@@ -333,15 +431,21 @@ Inference output after the prompt update:
 
 ```text
 [INFO] [hobot_locateanything]: prompt updated: /detect bus
-[INFO] [hobot_locateanything]: frame_id=44 prompt="/detect bus" output="<ref>bus</ref><box><124><263><595><657></box><|im_end|>" labels="bus" boxes=1 points=0 fps=1 stop_reason=im_end prompt_tokens=615 generated_tokens=10 pbd_calls=3 pbd_accepted_tokens=10 mode=hybrid preprocess_ms=43.837 vision_ms=245.829 language_ms=304.013 postprocess_ms=0.013 total_ms=593.692
+[INFO] [hobot_locateanything]: Inference
+  Input       frame_id=229 prompt="/detect bus"
+  Prediction  labels="bus" boxes=1 points=0
+  Language    mode=hybrid prompt_tokens=615 generated_tokens=10 stop_reason=im_end
+  PBD         calls=3 accepted_tokens=10
+  Throughput  fps=2 total_ms=580.160
+  Timing      preprocess_ms=44.434 vision_ms=246.067 language_ms=258.649 postprocess_ms=0.035
 ```
 
 Updated detection result:
 
 ```yaml
 header:
-  frame_id: '48'
-fps: 1
+  frame_id: '229'
+fps: 2
 targets:
   - type: bus
     rois:
@@ -350,11 +454,123 @@ targets:
         confidence: -1.0
 ```
 
+##### Balance (448)
+
+###### Commands
+
+Terminal 1, start image replay and the inference node:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+
+export CAM_TYPE=fb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config_balance.yaml \
+  publish_image_source:=image/07_detection_multiclass.jpg
+```
+
+Terminal 2, subscribe to detection results:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 topic echo /perception/locateanything ai_msgs/msg/PerceptionTargets
+```
+
+Terminal 3, publish a detection prompt:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
+  "{data: '/detect person,bus,bicycle'}"
+```
+
+###### Outputs
+
+Terminal 1, image publisher and inference node output:
+
+```text
+[UCP]: UCP version = 3.12.3
+[DNN]: 3.12.3_(4.5.4 HBRT)
+[INFO] [hobot_locateanything]: loading Vision HBM
+[INFO] [hobot_locateanything]: loading Language HBM
+[INFO] [hobot_locateanything]: inference core ready in 12.7 s
+[INFO] [hobot_locateanything]: ready: image=448x448 input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything pipelined=true
+[WARN] [hobot_locateanything]: waiting for prompt on /locateanything/prompt; image frames are ignored until a valid prompt arrives
+[INFO] [hobot_image_pub-1]: process started
+[image_pub_node]: parameter:
+ image_source: image/07_detection_multiclass.jpg
+ fps: 2
+ is_shared_mem: 1
+ is_loop: 1
+ image_format: jpg
+ pub_encoding: nv12
+ msg_pub_topic_name: /hbmem_img
+[hobot_image_pub]: Enabling zero-copy
+[INFO] [hobot_locateanything]: prompt updated: /detect person,bus,bicycle
+[INFO] [hobot_locateanything]: Inference
+  Input       frame_id=92 prompt="/detect person,bus,bicycle"
+  Prediction  labels="person | person | bus | bicycle | bicycle" boxes=5 points=0
+  Language    mode=hybrid prompt_tokens=300 generated_tokens=41 stop_reason=im_end
+  PBD         calls=9 accepted_tokens=41
+  Throughput  fps=2 total_ms=420.363
+  Timing      preprocess_ms=38.225 vision_ms=54.308 language_ms=327.780 postprocess_ms=0.021
+```
+
+Terminal 2, detection result output:
+
+```yaml
+header:
+  frame_id: '92'
+fps: 2
+perfs:
+  - type: preprocess
+    time_ms_duration: 38.225197
+  - type: vision
+    time_ms_duration: 54.307770
+  - type: language
+    time_ms_duration: 327.779695
+  - type: postprocess
+    time_ms_duration: 0.021100
+targets:
+  - type: person
+    rois:
+      - type: person
+        rect: {x_offset: 420, y_offset: 331, height: 576, width: 191}
+        confidence: -1.0
+  - type: person
+    rois:
+      - type: person
+        rect: {x_offset: 1283, y_offset: 394, height: 542, width: 176}
+        confidence: -1.0
+  - type: bus
+    rois:
+      - type: bus
+        rect: {x_offset: 240, y_offset: 77, height: 763, width: 1004}
+        confidence: -1.0
+  - type: bicycle
+    rois:
+      - type: bicycle
+        rect: {x_offset: 991, y_offset: 490, height: 307, width: 251}
+        confidence: -1.0
+  - type: bicycle
+    rois:
+      - type: bicycle
+        rect: {x_offset: 1409, y_offset: 690, height: 390, width: 271}
+        confidence: -1.0
+```
+
+The image publisher supplies input at 2 FPS. The result topic's `fps: 2` is the measured inference result rate for this run.
+
 After a new valid prompt is published, subsequent images use the new prompt without restarting the nodes. A frame already in inference may still produce one result for the previous prompt.
 
 #### USB Camera
 
-##### Commands
+##### Max (672)
+
+###### Commands
 
 Terminal 1, start the USB camera and inference node:
 
@@ -364,6 +580,7 @@ source install/setup.bash
 
 export CAM_TYPE=usb
 ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config.yaml \
   device:=/dev/video0 \
   locateanything_image_width:=1280 \
   locateanything_image_height:=720
@@ -383,10 +600,10 @@ Terminal 3, publish a detection prompt:
 source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
-  "{data: '/detect cardboard box,person'}"
+  "{data: '/detect bottle'}"
 ```
 
-##### Outputs
+###### Outputs
 
 Terminal 1, USB camera and inference node output:
 
@@ -395,50 +612,124 @@ Terminal 1, USB camera and inference node output:
 [DNN]: 3.12.3_(4.5.4 HBRT)
 [INFO] [hobot_locateanything]: loading Vision HBM
 [INFO] [hobot_locateanything]: loading Language HBM
-[INFO] [hobot_locateanything]: inference core ready in 16.5 s
-[INFO] [hobot_locateanything]: ready: input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything
+[INFO] [hobot_locateanything]: inference core ready in 16.2 s
+[INFO] [hobot_locateanything]: ready: image=672x672 input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything pipelined=true
 [WARN] [hobot_locateanything]: waiting for prompt on /locateanything/prompt; image frames are ignored until a valid prompt arrives
 [INFO] [hobot_usb_cam-1]: process started
 [hobot_usb_cam]: framerate: 30
 [hobot_usb_cam]: pixel_format_name: mjpeg
-[INFO] [hobot_locateanything]: prompt updated: /detect cardboard box,person
-[INFO] [hobot_locateanything]: frame_id=532 prompt="/detect cardboard box,person" output="<ref>cardboard box</ref><box><461><615><516><656></box><ref>person</ref><box><381><638><420><780></box><|im_end|>" labels="cardboard box | person" boxes=2 points=0 fps=1 stop_reason=im_end prompt_tokens=618 generated_tokens=21 pbd_calls=5 pbd_accepted_tokens=16 mode=hybrid preprocess_ms=26.183 vision_ms=261.752 language_ms=552.914 postprocess_ms=0.017 total_ms=840.866
+[INFO] [hobot_locateanything]: prompt updated: /detect bottle
+[INFO] [hobot_locateanything]: Inference
+  Input       frame_id=384 prompt="/detect bottle"
+  Prediction  labels="" boxes=0 points=0
+  Language    mode=hybrid prompt_tokens=615 generated_tokens=8 stop_reason=im_end
+  PBD         calls=3 accepted_tokens=8
+  Throughput  fps=2 total_ms=967.905
+  Timing      preprocess_ms=26.812 vision_ms=358.622 language_ms=483.846 postprocess_ms=0.011
 ```
 
 Terminal 2, detection result output:
 
 ```yaml
 header:
-  frame_id: '532'
-fps: 1
+  frame_id: '384'
+fps: 2
 perfs:
   - type: preprocess
-    time_ms_duration: 26.182972
+    time_ms_duration: 26.811845
   - type: vision
-    time_ms_duration: 261.751575
+    time_ms_duration: 358.622130
   - type: language
-    time_ms_duration: 552.913972
+    time_ms_duration: 483.845598
   - type: postprocess
-    time_ms_duration: 0.017050
-targets:
-  - type: cardboard box
-    rois:
-      - type: cardboard box
-        rect: {x_offset: 590, y_offset: 507, height: 53, width: 70}
-        confidence: -1.0
-  - type: person
-    rois:
-      - type: person
-        rect: {x_offset: 488, y_offset: 537, height: 181, width: 50}
-        confidence: -1.0
+    time_ms_duration: 0.010776
+targets: []
 ```
 
-Terminal 3, prompt publisher output:
+##### Balance (448)
+
+###### Commands
+
+Terminal 1, start the USB camera and inference node:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+
+export CAM_TYPE=usb
+ros2 launch hobot_locateanything hobot_locateanything.launch.py \
+  config_file:=config/config_balance.yaml \
+  device:=/dev/video0 \
+  locateanything_image_width:=1280 \
+  locateanything_image_height:=720
+```
+
+Terminal 2, subscribe to detection results:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 topic echo /perception/locateanything ai_msgs/msg/PerceptionTargets
+```
+
+Terminal 3, publish a detection prompt:
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 topic pub --once /locateanything/prompt std_msgs/msg/String \
+  "{data: '/detect bottle'}"
+```
+
+###### Outputs
+
+Terminal 1, USB camera and inference node output:
+
+```text
+[UCP]: UCP version = 3.12.3
+[DNN]: 3.12.3_(4.5.4 HBRT)
+[INFO] [hobot_locateanything]: loading Vision HBM
+[INFO] [hobot_locateanything]: loading Language HBM
+[INFO] [hobot_locateanything]: inference core ready in 12.4 s
+[INFO] [hobot_locateanything]: ready: image=448x448 input=/hbmem_img transport=hbmem prompt_topic=/locateanything/prompt result=/perception/locateanything pipelined=true
+[WARN] [hobot_locateanything]: waiting for prompt on /locateanything/prompt; image frames are ignored until a valid prompt arrives
+[INFO] [hobot_usb_cam-1]: process started
+[hobot_usb_cam]: framerate: 30
+[hobot_usb_cam]: pixel_format_name: mjpeg
+[INFO] [hobot_locateanything]: prompt updated: /detect bottle
+[INFO] [hobot_locateanything]: Inference
+  Input       frame_id=332 prompt="/detect bottle"
+  Prediction  labels="" boxes=0 points=0
+  Language    mode=hybrid prompt_tokens=295 generated_tokens=8 stop_reason=im_end
+  PBD         calls=3 accepted_tokens=8
+  Throughput  fps=6 total_ms=323.855
+  Timing      preprocess_ms=19.682 vision_ms=85.117 language_ms=161.977 postprocess_ms=0.012
+```
+
+Terminal 2, detection result output:
+
+```yaml
+header:
+  frame_id: '332'
+fps: 6
+perfs:
+  - type: preprocess
+    time_ms_duration: 19.682163
+  - type: vision
+    time_ms_duration: 85.116727
+  - type: language
+    time_ms_duration: 161.977154
+  - type: postprocess
+    time_ms_duration: 0.011500
+targets: []
+```
+
+Terminal 3, prompt publisher output for both modes:
 
 ```text
 Waiting for at least 1 matching subscription(s)...
 publisher: beginning loop
-publishing #1: std_msgs.msg.String(data='/detect cardboard box,person')
+publishing #1: std_msgs.msg.String(data='/detect bottle')
 ```
 
 While the camera is publishing, send a new prompt from terminal 3. Subsequent frames use the new prompt without restarting the nodes.
@@ -449,13 +740,13 @@ The ROS node publishes structured results. Downstream TROS nodes handle renderin
 
 ### Console Inference
 
+#### Max (672)
+
 ```bash
 source /opt/tros/jazzy/setup.bash
 source install/setup.bash
 ros2 run hobot_locateanything console --config config/config.yaml
 ```
-
-Console output:
 
 ```text
 [UCP]: UCP version = 3.12.3
@@ -463,7 +754,40 @@ Console output:
 Loading Vision HBM...
 Loading Language HBM...
 HBM loaded  [============================] 16.7 s
-Ready  S600/Nash-P  |  hybrid  |  max tokens 4096
+Ready  S600/Nash-P  |  672x672  |  hybrid  |  max tokens 4096
+Tasks
+  /detect cat,dog               Object detection
+  /ground <query>[,<query>...]  Referring expression grounding (multi-query)
+  /ground_single <query>[,...]  Referring expression grounding (single target)
+  /gui <query>[,<query>...]     GUI point grounding
+  /gui_box <query>[,<query>...] GUI box grounding
+  /text                         Text OCR
+  /ground_text <query>[,...]    Text grounding
+  /layout title,table,figure    Document layout analysis
+  /point <query>[,<query>...]   Point grounding
+Session
+  /image <image_path>           Load an image
+  /video <video_path>           Process all video frames
+  regen                         Re-run the previous request
+  reset                         Clear the current media
+  exit                          Exit the application
+```
+
+#### Balance (448)
+
+```bash
+source /opt/tros/jazzy/setup.bash
+source install/setup.bash
+ros2 run hobot_locateanything console --config config/config_balance.yaml
+```
+
+```text
+[UCP]: UCP version = 3.12.3
+[DNN]: 3.12.3_(4.5.4 HBRT)
+Loading Vision HBM...
+Loading Language HBM...
+HBM loaded  [============================] 12.3 s
+Ready  S600/Nash-P  |  448x448  |  hybrid  |  max tokens 640
 Tasks
   /detect cat,dog               Object detection
   /ground <query>[,<query>...]  Referring expression grounding (multi-query)
@@ -486,220 +810,351 @@ Separate multiple queries with commas. Vision runs once per image or video frame
 
 ### GUI Grounding
 
-Load an image:
+#### Max (672)
+
+Load an image and enter a grounding command:
 
 ```text
 /image image/02_gui_rstudio.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/02_gui_rstudio.jpg
-```
-
-Enter a grounding command:
-
-```text
 /gui_box Go to file/function,Environment tab,Files tab
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/02_gui_rstudio.jpg
+Image loaded  image/02_gui_rstudio.jpg
+[User] <<< /gui_box Go to file/function,Environment tab,Files tab
 [Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
 Performance
-  Vision   252.9 ms
-  Prefill  463.7 ms  1848 tokens
-  Decode   519.8 ms  36 tokens  69.3 tokens/s
-  Host     29.4 ms
-  Total    1342.8 ms
+  Vision   246.9 ms
+  Prefill  440.0 ms  1848 tokens
+  Decode   449.4 ms  36 tokens  80.1 tokens/s
+  Host     22.5 ms
+  Total    1189.3 ms
 Result
   Labels Environment tab, Files tab, Go to file/function  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/gui_rstudio.jpg" alt="GUI grounding" width="720">
+<img src="assets/results/gui_rstudio_max.jpg" alt="GUI grounding with Max (672)" width="720">
+
+#### Balance (448)
+
+Load an image and enter a grounding command:
+
+```text
+/image image/02_gui_rstudio.jpg
+/gui_box Go to file/function,Environment tab,Files tab
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/02_gui_rstudio.jpg
+Image loaded  image/02_gui_rstudio.jpg
+[User] <<< /gui_box Go to file/function,Environment tab,Files tab
+[Assistant] >>> /gui_box Go to file/function,Environment tab,Files tab
+Performance
+  Vision   51.4 ms
+  Prefill  176.6 ms  888 tokens
+  Decode   301.2 ms  36 tokens  119.5 tokens/s
+  Host     20.8 ms
+  Total    554.7 ms
+Result
+  Labels Environment tab, Files tab, Go to file/function  |  Boxes 3  |  Points 0  |  Stop im_end
+```
+
+<img src="assets/results/gui_rstudio_balance.jpg" alt="GUI grounding with Balance (448)" width="720">
 
 ### Referring Expression Grounding
 
-Load an image:
+#### Max (672)
+
+Load an image and enter a grounding command:
 
 ```text
 /image image/03_referring_graduation.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/03_referring_graduation.jpg
-```
-
-Enter a grounding command:
-
-```text
 /ground person wearing a graduation cap,woman in a black dress,clock tower
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/03_referring_graduation.jpg
+Image loaded  image/03_referring_graduation.jpg
+[User] <<< /ground person wearing a graduation cap,woman in a black dress,clock tower
 [Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
 Performance
-  Vision   250.4 ms
-  Prefill  462.5 ms  1854 tokens
-  Decode   461.2 ms  39 tokens  84.6 tokens/s
-  Host     29.9 ms
-  Total    1268.8 ms
+  Vision   245.8 ms
+  Prefill  439.6 ms  1854 tokens
+  Decode   380.9 ms  39 tokens  102.4 tokens/s
+  Host     21.4 ms
+  Total    1091.2 ms
 Result
   Labels clock tower, person wearing a graduation cap, woman in a black dress  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/referring_graduation.jpg" alt="Referring expression grounding" width="520">
+<img src="assets/results/referring_graduation_max.jpg" alt="Referring expression grounding with Max (672)" width="520">
+
+#### Balance (448)
+
+Load an image and enter a grounding command:
+
+```text
+/image image/03_referring_graduation.jpg
+/ground person wearing a graduation cap,woman in a black dress,clock tower
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/03_referring_graduation.jpg
+Image loaded  image/03_referring_graduation.jpg
+[User] <<< /ground person wearing a graduation cap,woman in a black dress,clock tower
+[Assistant] >>> /ground person wearing a graduation cap,woman in a black dress,clock tower
+Performance
+  Vision   51.3 ms
+  Prefill  176.5 ms  894 tokens
+  Decode   248.3 ms  39 tokens  157.1 tokens/s
+  Host     21.6 ms
+  Total    490.9 ms
+Result
+  Labels clock tower, person wearing a graduation cap, woman in a black dress  |  Boxes 3  |  Points 0  |  Stop im_end
+```
+
+<img src="assets/results/referring_graduation_balance.jpg" alt="Referring expression grounding with Balance (448)" width="520">
 
 ### OCR
 
-Load an image:
+#### Max (672)
+
+Load an image and enter the OCR command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/04_ocr_scrapbook.jpg
-```
-
-Enter the OCR command:
-
-```text
 /text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /text
 [Assistant] >>> /text
 Performance
-  Vision   246.2 ms
-  Prefill  155.7 ms  610 tokens
-  Decode   666.4 ms  66 tokens  99.0 tokens/s
-  Host     63.0 ms
-  Total    1153.9 ms
+  Vision   245.1 ms
+  Prefill  146.1 ms  610 tokens
+  Decode   575.6 ms  66 tokens  114.7 tokens/s
+  Host     49.0 ms
+  Total    1030.8 ms
 Result
-  Labels LIVE love LAUGH, Yes, Virginiaina, [to-day]], laugh giggle be silly
-  Boxes 5  |  Points 0  |  Stop im_end
+  Labels LIVE love LAUGH, Yes, Virginiaina, [to-day]], laugh giggle be silly  |  Boxes 5  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/ocr_scrapbook.jpg" alt="OCR" width="720">
+<img src="assets/results/ocr_scrapbook_max.jpg" alt="OCR with Max (672)" width="720">
 
-### Text Grounding
+#### Balance (448)
 
-Load an image:
+Load an image and enter the OCR command:
 
 ```text
 /image image/04_ocr_scrapbook.jpg
+/text
 ```
 
-Image loading output:
+Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
 Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /text
+[Assistant] >>> /text
+Performance
+  Vision   51.7 ms
+  Prefill  59.0 ms  290 tokens
+  Decode   665.3 ms  82 tokens  123.3 tokens/s
+  Host     71.6 ms
+  Total    828.0 ms
+Result
+  Labels LAUGH, LIVE, V's Virginia., [to-day]], laugh ggle be silly, love  |  Boxes 7  |  Points 0  |  Stop im_end
 ```
 
-Enter a grounding command:
+<img src="assets/results/ocr_scrapbook_balance.jpg" alt="OCR with Balance (448)" width="720">
+
+### Text Grounding
+
+#### Max (672)
+
+Load an image and enter a grounding command:
 
 ```text
+/image image/04_ocr_scrapbook.jpg
 /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 [Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
 Performance
-  Vision   246.0 ms
-  Prefill  471.6 ms  1838 tokens
-  Decode   459.4 ms  43 tokens  93.6 tokens/s
-  Host     30.4 ms
-  Total    1311.1 ms
+  Vision   245.9 ms
+  Prefill  438.7 ms  1838 tokens
+  Decode   386.2 ms  43 tokens  111.3 tokens/s
+  Host     23.0 ms
+  Total    1139.8 ms
 Result
   Labels LIVE love LAUGH., Yes Virginia., laugh giggle be silly.  |  Boxes 3  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/ground_text_scrapbook.jpg" alt="Text grounding" width="720">
+<img src="assets/results/ground_text_scrapbook_max.jpg" alt="Text grounding with Max (672)" width="720">
+
+#### Balance (448)
+
+Load an image and enter a grounding command:
+
+```text
+/image image/04_ocr_scrapbook.jpg
+/ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/04_ocr_scrapbook.jpg
+Image loaded  image/04_ocr_scrapbook.jpg
+[User] <<< /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
+[Assistant] >>> /ground_text LIVE love LAUGH,laugh giggle be silly,Yes Virginia
+Performance
+  Vision   51.1 ms
+  Prefill  176.4 ms  878 tokens
+  Decode   253.1 ms  43 tokens  169.9 tokens/s
+  Host     23.3 ms
+  Total    534.8 ms
+Result
+  Labels LIVE love LAUGH., Yes Virginia., laugh giggle be silly.  |  Boxes 3  |  Points 0  |  Stop im_end
+```
+
+<img src="assets/results/ground_text_scrapbook_balance.jpg" alt="Text grounding with Balance (448)" width="720">
 
 ### Layout Grounding
 
-Load an image:
+#### Max (672)
+
+Load an image and enter a layout command:
 
 ```text
 /image image/05_layout_plot.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/05_layout_plot.jpg
-```
-
-Enter a layout command:
-
-```text
 /layout plot,text
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/05_layout_plot.jpg
+Image loaded  image/05_layout_plot.jpg
+[User] <<< /layout plot,text
 [Assistant] >>> /layout plot,text
 Performance
-  Vision   245.6 ms
-  Prefill  155.0 ms  620 tokens
-  Decode   448.1 ms  43 tokens  96.0 tokens/s
-  Host     37.2 ms
-  Total    908.8 ms
+  Vision   245.7 ms
+  Prefill  146.2 ms  620 tokens
+  Decode   386.2 ms  43 tokens  111.3 tokens/s
+  Host     28.9 ms
+  Total    816.1 ms
 Result
   Labels plot, text  |  Boxes 6  |  Points 0  |  Stop im_end
 ```
 
-<img src="assets/results/layout_plot.jpg" alt="Layout grounding" width="720">
+<img src="assets/results/layout_plot_max.jpg" alt="Layout grounding with Max (672)" width="720">
+
+#### Balance (448)
+
+Load an image and enter a layout command:
+
+```text
+/image image/05_layout_plot.jpg
+/layout plot,text
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/05_layout_plot.jpg
+Image loaded  image/05_layout_plot.jpg
+[User] <<< /layout plot,text
+[Assistant] >>> /layout plot,text
+Performance
+  Vision   51.4 ms
+  Prefill  58.9 ms  300 tokens
+  Decode   335.6 ms  43 tokens  128.1 tokens/s
+  Host     27.8 ms
+  Total    473.9 ms
+Result
+  Labels plot, text  |  Boxes 6  |  Points 0  |  Stop im_end
+```
+
+<img src="assets/results/layout_plot_balance.jpg" alt="Layout grounding with Balance (448)" width="720">
 
 ### Point Localization
 
-Load an image:
+#### Max (672)
+
+Load an image and enter a point localization command:
 
 ```text
 /image image/06_pointing_succulent.jpg
-```
-
-Image loading output:
-
-```text
-Image loaded  image/06_pointing_succulent.jpg
-```
-
-Enter a point localization command:
-
-```text
 /point succulent,the succulent in the center
 ```
 
 Inference output:
 
 ```text
+[User] <<< /image image/06_pointing_succulent.jpg
+Image loaded  image/06_pointing_succulent.jpg
+[User] <<< /point succulent,the succulent in the center
 [Assistant] >>> /point succulent,the succulent in the center
 Performance
-  Vision   245.9 ms
-  Prefill  310.5 ms  1220 tokens
-  Decode   645.4 ms  50 tokens  77.5 tokens/s
-  Host     47.4 ms
-  Total    1272.7 ms
+  Vision   245.8 ms
+  Prefill  292.5 ms  1220 tokens
+  Decode   581.8 ms  50 tokens  85.9 tokens/s
+  Host     39.0 ms
+  Total    1145.6 ms
 Result
   Labels succulent, the succulent in the center  |  Boxes 0  |  Points 9  |  Stop im_end
 ```
 
-<img src="assets/results/point_succulent.jpg" alt="Point localization" width="512">
+<img src="assets/results/point_succulent_max.jpg" alt="Point localization with Max (672)" width="512">
+
+#### Balance (448)
+
+Load an image and enter a point localization command:
+
+```text
+/image image/06_pointing_succulent.jpg
+/point succulent,the succulent in the center
+```
+
+Inference output:
+
+```text
+[User] <<< /image image/06_pointing_succulent.jpg
+Image loaded  image/06_pointing_succulent.jpg
+[User] <<< /point succulent,the succulent in the center
+[Assistant] >>> /point succulent,the succulent in the center
+Performance
+  Vision   51.4 ms
+  Prefill  117.5 ms  580 tokens
+  Decode   399.9 ms  42 tokens  105.0 tokens/s
+  Host     34.4 ms
+  Total    583.1 ms
+Result
+  Labels succulent, the succulent in the center  |  Boxes 0  |  Points 7  |  Stop im_end
+```
+
+<img src="assets/results/point_succulent_balance.jpg" alt="Point localization with Balance (448)" width="512">
 
 ## Image and Video Outputs
 

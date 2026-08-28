@@ -13,8 +13,9 @@ namespace {
 
 /**
  * @brief Read a tokenizer asset as an unmodified binary string.
- * @param path Tokenizer asset path.
+ * @param[in] path Tokenizer asset path.
  * @return Complete file contents.
+ * @throws std::runtime_error if the asset cannot be opened.
  */
 std::string ReadText(const std::string& path) {
   std::ifstream stream(path, std::ios::binary);
@@ -25,8 +26,8 @@ std::string ReadText(const std::string& path) {
 
 /**
  * @brief Append one Unicode scalar value encoded as UTF-8.
- * @param codepoint Unicode scalar value.
- * @param output Destination UTF-8 string.
+ * @param[in] codepoint Unicode scalar value.
+ * @param[out] output Destination UTF-8 string.
  */
 void AppendUtf8(uint32_t codepoint, std::string* output) {
   if (codepoint <= 0x7fU) {
@@ -48,9 +49,11 @@ void AppendUtf8(uint32_t codepoint, std::string* output) {
 
 /**
  * @brief Parse four hexadecimal digits from a JSON Unicode escape.
- * @param text Complete JSON text.
- * @param offset Offset of the first hexadecimal digit.
+ * @param[in] text Complete JSON text.
+ * @param[in] offset Offset of the first hexadecimal digit.
  * @return Parsed 16-bit code unit.
+ * @throws std::out_of_range if fewer than four characters remain.
+ * @throws std::runtime_error if a character is not hexadecimal.
  */
 uint32_t ReadHex4(const std::string& text, size_t offset) {
   uint32_t value = 0;
@@ -67,9 +70,10 @@ uint32_t ReadHex4(const std::string& text, size_t offset) {
 
 /**
  * @brief Parse one JSON string including escapes and surrogate pairs.
- * @param text Complete JSON text.
- * @param offset In/out parser cursor positioned at the opening quote.
+ * @param[in] text Complete JSON text.
+ * @param[in,out] offset Parser cursor positioned at the opening quote.
  * @return Decoded UTF-8 string.
+ * @throws std::runtime_error if the JSON string or escape is malformed.
  */
 std::string ParseJsonString(const std::string& text, size_t* offset) {
   if (*offset >= text.size() || text[*offset] != '"') {
@@ -119,8 +123,9 @@ std::string ParseJsonString(const std::string& text, size_t* offset) {
 
 /**
  * @brief Parse a compact tokenizer string-to-integer JSON object.
- * @param path JSON asset path.
+ * @param[in] path JSON asset path.
  * @return Parsed token-to-ID mapping.
+ * @throws std::runtime_error if the asset is missing or malformed.
  */
 std::unordered_map<std::string, int32_t> ParseStringIntMap(
     const std::string& path) {
@@ -166,8 +171,9 @@ std::unordered_map<std::string, int32_t> ParseStringIntMap(
 
 /**
  * @brief Decode UTF-8 into scalar values for tokenizer byte conversion.
- * @param value Valid UTF-8 input.
+ * @param[in] value UTF-8 input.
  * @return Unicode scalar values.
+ * @throws std::runtime_error if the byte sequence is truncated or malformed.
  */
 std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
   std::vector<uint32_t> output;
@@ -201,8 +207,9 @@ std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
 
 /**
  * @brief Split UTF-8 into byte-aligned codepoint substrings.
- * @param value Valid UTF-8 input.
+ * @param[in] value UTF-8 input.
  * @return One substring per encoded codepoint.
+ * @throws std::runtime_error if the byte sequence is truncated.
  */
 std::vector<std::string> SplitUtf8(const std::string& value) {
   std::vector<std::string> output;
@@ -221,7 +228,7 @@ std::vector<std::string> SplitUtf8(const std::string& value) {
 
 /**
  * @brief Classify letters for the model's byte-level pretokenization.
- * @param item Input byte.
+ * @param[in] item Input byte.
  * @return True for ASCII letters or a non-ASCII leading/continuation byte.
  */
 bool IsLetterByte(unsigned char item) {
@@ -230,7 +237,7 @@ bool IsLetterByte(unsigned char item) {
 
 /**
  * @brief Apply tokenizer whitespace, letter, digit, and punctuation rules.
- * @param text UTF-8 prompt segment without added tokens.
+ * @param[in] text UTF-8 prompt segment without added tokens.
  * @return Pretokenized byte strings for BPE merging.
  */
 std::vector<std::string> Pretokenize(const std::string& text) {
@@ -284,8 +291,8 @@ std::vector<std::string> Pretokenize(const std::string& text) {
 
 /**
  * @brief Build an unambiguous lookup key for an adjacent BPE symbol pair.
- * @param left Left BPE symbol.
- * @param right Right BPE symbol.
+ * @param[in] left Left BPE symbol.
+ * @param[in] right Right BPE symbol.
  * @return Null-delimited pair key.
  */
 std::string PairKey(const std::string& left, const std::string& right) {
@@ -305,8 +312,9 @@ struct Tokenizer::Impl {
 
   /**
    * @brief Merge one pretokenized piece according to loaded BPE ranks.
-   * @param piece Pretokenized UTF-8/byte segment.
+   * @param[in] piece Pretokenized UTF-8/byte segment.
    * @return Final vocabulary symbols.
+   * @throws std::runtime_error if byte-level symbols contain invalid UTF-8.
    */
   std::vector<std::string> EncodePiece(const std::string& piece) const {
     std::string encoded;
@@ -340,11 +348,30 @@ struct Tokenizer::Impl {
   }
 };
 
+/**
+ * @brief Create an empty tokenizer; Load must succeed before Encode or Decode.
+ */
 Tokenizer::Tokenizer() : impl_(std::make_unique<Impl>()) {}
+/** @brief Release loaded vocabulary, merge, and byte-mapping state. */
 Tokenizer::~Tokenizer() = default;
-Tokenizer::Tokenizer(Tokenizer&&) noexcept = default;
-Tokenizer& Tokenizer::operator=(Tokenizer&&) noexcept = default;
+/**
+ * @brief Move tokenizer tables from another object.
+ * @param[in,out] other Tokenizer whose state is transferred.
+ */
+Tokenizer::Tokenizer(Tokenizer&& other) noexcept = default;
+/**
+ * @brief Replace this tokenizer with another loaded state.
+ * @param[in,out] other Tokenizer whose state is transferred.
+ * @return This tokenizer after ownership transfer.
+ */
+Tokenizer& Tokenizer::operator=(Tokenizer&& other) noexcept = default;
 
+/**
+ * @brief Load vocabulary, added-token, merge, and byte-mapping state.
+ * @param[in] directory Directory containing vocab.json, added_tokens.json, and
+ *                      merges.txt.
+ * @throws std::runtime_error if an asset is absent or malformed.
+ */
 void Tokenizer::Load(const std::string& directory) {
   impl_->vocab = ParseStringIntMap(directory + "/vocab.json");
   impl_->added = ParseStringIntMap(directory + "/added_tokens.json");
@@ -393,6 +420,13 @@ void Tokenizer::Load(const std::string& directory) {
   }
 }
 
+/**
+ * @brief Encode UTF-8 prompt text into model token IDs.
+ * @param[in] text Input text, including any recognized added tokens.
+ * @return Token IDs in model input order.
+ * @throws std::logic_error if Load has not completed.
+ * @throws std::runtime_error if BPE output is absent from the vocabulary.
+ */
 std::vector<int32_t> Tokenizer::Encode(const std::string& text) const {
   if (impl_->vocab.empty()) throw std::logic_error("tokenizer is not loaded");
   std::vector<int32_t> result;
@@ -431,6 +465,12 @@ std::vector<int32_t> Tokenizer::Encode(const std::string& text) const {
   return result;
 }
 
+/**
+ * @brief Decode recognized model token IDs into UTF-8 text.
+ * @param[in] tokens Model token IDs; unknown IDs are ignored.
+ * @return Decoded UTF-8 text with added tokens preserved literally.
+ * @throws std::runtime_error if a vocabulary item contains an invalid byte token.
+ */
 std::string Tokenizer::Decode(const std::vector<int32_t>& tokens) const {
   std::string output;
   std::string encoded;
@@ -460,6 +500,11 @@ std::string Tokenizer::Decode(const std::vector<int32_t>& tokens) const {
   return output;
 }
 
+/**
+ * @brief Resolve an exact added-token or vocabulary string to its model ID.
+ * @param[in] token Exact token text.
+ * @return Token ID, or -1 when the text is not present.
+ */
 int32_t Tokenizer::TokenId(const std::string& token) const {
   const auto added = impl_->added.find(token);
   if (added != impl_->added.end()) return added->second;

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -12,14 +13,17 @@
 namespace locateanything {
 namespace {
 
-constexpr int kImageSize = 672;
-constexpr int kPatchSize = 14;
-constexpr int kGridSize = kImageSize / kPatchSize;
 constexpr int kPrecisionBits = 22;
 
 struct Coefficients {
   std::vector<int> starts;
   std::vector<std::vector<int32_t>> weights;
+};
+
+struct CoefficientCacheEntry {
+  int input_size = 0;
+  int output_size = 0;
+  Coefficients coefficients;
 };
 
 /**
@@ -72,6 +76,27 @@ Coefficients BuildCoefficients(int input_size, int output_size) {
 }
 
 /**
+ * @brief Reuse resize taps for source/model dimensions seen by this thread.
+ * @param input_size Source dimension in pixels.
+ * @param output_size Destination dimension in pixels.
+ * @return Cached or newly computed Pillow-compatible coefficients.
+ */
+const Coefficients& CachedCoefficients(int input_size, int output_size) {
+  constexpr size_t kMaximumEntries = 8;
+  thread_local std::vector<CoefficientCacheEntry> cache;
+  const auto found = std::find_if(
+      cache.begin(), cache.end(), [&](const CoefficientCacheEntry& entry) {
+        return entry.input_size == input_size &&
+               entry.output_size == output_size;
+      });
+  if (found != cache.end()) return found->coefficients;
+  if (cache.size() == kMaximumEntries) cache.erase(cache.begin());
+  cache.push_back(
+      {input_size, output_size, BuildCoefficients(input_size, output_size)});
+  return cache.back().coefficients;
+}
+
+/**
  * @brief Convert a fixed-point accumulated pixel value to an 8-bit channel.
  * @param value Accumulated value with kPrecisionBits fractional bits.
  * @return Clamped 8-bit channel value.
@@ -89,7 +114,7 @@ uint8_t ClipByte(int64_t value) {
  * @return Resized BGR image.
  */
 cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
-  const Coefficients horizontal = BuildCoefficients(source.cols, width);
+  const Coefficients& horizontal = CachedCoefficients(source.cols, width);
   cv::Mat intermediate(source.rows, width, CV_8UC3);
   for (int y = 0; y < source.rows; ++y) {
     const auto* input = source.ptr<cv::Vec3b>(y);
@@ -108,7 +133,7 @@ cv::Mat PillowBicubicResize(const cv::Mat& source, int width, int height) {
     }
   }
 
-  const Coefficients vertical = BuildCoefficients(source.rows, height);
+  const Coefficients& vertical = CachedCoefficients(source.rows, height);
   cv::Mat resized(height, width, CV_8UC3);
   for (int y = 0; y < height; ++y) {
     auto* output = resized.ptr<cv::Vec3b>(y);
@@ -151,6 +176,16 @@ uint16_t FloatToHalf(float value) {
 
 }  // namespace
 
+/**
+ * @brief Convert an NV12 image buffer with an optional stride to owned BGR.
+ * @param[in] data Source NV12 bytes.
+ * @param[in] data_size Number of readable source bytes.
+ * @param[in] width Source width in pixels.
+ * @param[in] height Source height in pixels.
+ * @param[in] step Source row stride, or zero to infer packed storage.
+ * @return Owned three-channel BGR image.
+ * @throws std::runtime_error for invalid dimensions, stride, or storage size.
+ */
 cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
                   uint32_t height, uint32_t step) {
   if (data == nullptr || width == 0 || height == 0 || width % 2 != 0 ||
@@ -181,6 +216,13 @@ cv::Mat Nv12ToBgr(const uint8_t* data, size_t data_size, uint32_t width,
   return bgr;
 }
 
+/**
+ * @brief Decode an in-memory JPEG image into owned BGR storage.
+ * @param[in] data Source JPEG bytes.
+ * @param[in] data_size Number of readable source bytes.
+ * @return Owned three-channel BGR image.
+ * @throws std::runtime_error if the source is empty, too large, or undecodable.
+ */
 cv::Mat JpegToBgr(const uint8_t* data, size_t data_size) {
   if (data == nullptr || data_size == 0 ||
       data_size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -195,6 +237,17 @@ cv::Mat JpegToBgr(const uint8_t* data, size_t data_size) {
   return bgr;
 }
 
+/**
+ * @brief Convert packed BGR or RGB bytes into a tightly owned BGR image.
+ * @param[in] data Source packed-color bytes.
+ * @param[in] data_size Number of readable source bytes.
+ * @param[in] width Source width in pixels.
+ * @param[in] height Source height in pixels.
+ * @param[in] step Source row stride, or zero for tightly packed rows.
+ * @param[in] input_is_rgb Swap RGB input channels into BGR order when true.
+ * @return Owned three-channel BGR image.
+ * @throws std::runtime_error for invalid dimensions, stride, or storage size.
+ */
 cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
                          uint32_t width, uint32_t height, uint32_t step,
                          bool input_is_rgb) {
@@ -220,50 +273,82 @@ cv::Mat PackedColorToBgr(const uint8_t* data, size_t data_size,
   return bgr;
 }
 
+/**
+ * @brief Create letterbox and patch preprocessing for one Vision profile.
+ * @param[in] profile Validated square canvas, patch size, and token dimensions.
+ */
+ImagePreprocessor::ImagePreprocessor(VisionProfile profile)
+    : profile_(std::move(profile)) {}
+
+/**
+ * @brief Letterbox, normalize, and tile one BGR image for Vision HBM input.
+ * @param[in] bgr Non-empty three-channel source image.
+ * @return FP16 patch bytes and the transform for restoring source coordinates.
+ * @throws std::invalid_argument if bgr is empty or not three-channel.
+ * @throws std::logic_error if produced patch storage violates the profile.
+ */
 PreparedImage ImagePreprocessor::Prepare(const cv::Mat& bgr) const {
   if (bgr.empty() || bgr.channels() != 3) {
     throw std::invalid_argument("input image must be a non-empty three-channel image");
   }
 
-  const float scale = std::min(static_cast<float>(kImageSize) / bgr.cols,
-                               static_cast<float>(kImageSize) / bgr.rows);
+  const int target_width = profile_.image_width();
+  const int target_height = profile_.image_height();
+  const float scale = std::min(static_cast<float>(target_width) / bgr.cols,
+                               static_cast<float>(target_height) / bgr.rows);
   const int resized_width = std::clamp(
-      static_cast<int>(std::lround(bgr.cols * scale)), 1, kImageSize);
+      static_cast<int>(std::lround(bgr.cols * scale)), 1, target_width);
   const int resized_height = std::clamp(
-      static_cast<int>(std::lround(bgr.rows * scale)), 1, kImageSize);
-  const int left = (kImageSize - resized_width) / 2;
-  const int top = (kImageSize - resized_height) / 2;
+      static_cast<int>(std::lround(bgr.rows * scale)), 1, target_height);
+  const int left = (target_width - resized_width) / 2;
+  const int top = (target_height - resized_height) / 2;
 
   const cv::Mat resized = PillowBicubicResize(bgr, resized_width, resized_height);
-  cv::Mat canvas(kImageSize, kImageSize, CV_8UC3, cv::Scalar(128, 128, 128));
+  cv::Mat canvas(target_height, target_width, CV_8UC3,
+                 cv::Scalar(VisionProfile::kLetterboxFill,
+                            VisionProfile::kLetterboxFill,
+                            VisionProfile::kLetterboxFill));
   resized.copyTo(canvas(cv::Rect(left, top, resized_width, resized_height)));
 
   PreparedImage output;
-  output.transform = {bgr.cols,
-                      bgr.rows,
-                      resized_width,
-                      resized_height,
-                      left,
-                      top,
-                      static_cast<float>(resized_width) / bgr.cols,
-                      static_cast<float>(resized_height) / bgr.rows};
-  output.patches.reserve(static_cast<size_t>(kGridSize * kGridSize * 3 *
-                                              kPatchSize * kPatchSize));
-  for (int grid_y = 0; grid_y < kGridSize; ++grid_y) {
-    for (int grid_x = 0; grid_x < kGridSize; ++grid_x) {
+  output.transform.source_width = bgr.cols;
+  output.transform.source_height = bgr.rows;
+  output.transform.canvas_width = target_width;
+  output.transform.canvas_height = target_height;
+  output.transform.resized_width = resized_width;
+  output.transform.resized_height = resized_height;
+  output.transform.pad_left = left;
+  output.transform.pad_top = top;
+  output.transform.scale_x = static_cast<float>(resized_width) / bgr.cols;
+  output.transform.scale_y = static_cast<float>(resized_height) / bgr.rows;
+  const size_t patch_elements = static_cast<size_t>(
+      profile_.patch_count() * profile_.patch_flat_dim());
+  output.patches_fp16.resize(patch_elements * sizeof(uint16_t));
+  size_t element_index = 0;
+  const int patch_size = profile_.patch_size();
+  for (int grid_y = 0; grid_y < profile_.grid_height(); ++grid_y) {
+    for (int grid_x = 0; grid_x < profile_.grid_width(); ++grid_x) {
       for (int channel = 2; channel >= 0; --channel) {
-        for (int patch_y = 0; patch_y < kPatchSize; ++patch_y) {
-          const auto* row = canvas.ptr<cv::Vec3b>(grid_y * kPatchSize + patch_y);
-          for (int patch_x = 0; patch_x < kPatchSize; ++patch_x) {
+        for (int patch_y = 0; patch_y < patch_size; ++patch_y) {
+          const auto* row = canvas.ptr<cv::Vec3b>(
+              grid_y * patch_size + patch_y);
+          for (int patch_x = 0; patch_x < patch_size; ++patch_x) {
             const float value =
-                static_cast<float>(row[grid_x * kPatchSize + patch_x][channel]) /
+                static_cast<float>(
+                    row[grid_x * patch_size + patch_x][channel]) /
                     127.5f -
                 1.0f;
-            output.patches.push_back(FloatToHalf(value));
+            const uint16_t fp16 = FloatToHalf(value);
+            std::memcpy(output.patches_fp16.data() +
+                            element_index++ * sizeof(fp16),
+                        &fp16, sizeof(fp16));
           }
         }
       }
     }
+  }
+  if (element_index != patch_elements) {
+    throw std::logic_error("Vision patch preparation size mismatch");
   }
   return output;
 }

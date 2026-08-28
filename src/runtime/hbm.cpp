@@ -239,10 +239,14 @@ struct DeviceBuffer::Impl {
   hbUCPSysMem memory{};
 };
 
-/** Allocate the private vendor-memory state without allocating device bytes. */
+/**
+ * @brief Create an empty device-buffer wrapper without allocating UCP memory.
+ */
 DeviceBuffer::DeviceBuffer() : impl_(std::make_unique<Impl>()) {}
 
-/** Release the UCP allocation owned by this buffer. */
+/**
+ * @brief Release the UCP allocation owned by this buffer, when present.
+ */
 DeviceBuffer::~DeviceBuffer() {
   if (impl_ != nullptr && impl_->memory.virAddr != nullptr) {
     hbUCPFree(&impl_->memory);
@@ -250,12 +254,21 @@ DeviceBuffer::~DeviceBuffer() {
   }
 }
 
-/** Return the allocated UCP byte count, or zero for an empty buffer. */
+/**
+ * @brief Return the size of the owned UCP allocation.
+ * @return Allocated bytes, or zero when no allocation exists.
+ */
 size_t DeviceBuffer::size() const {
   return impl_ == nullptr ? 0 : static_cast<size_t>(impl_->memory.memSize);
 }
 
-/** Allocate cacheable UCP memory and optionally clean an all-zero buffer. */
+/**
+ * @brief Allocate cacheable UCP memory visible to both Host and BPU.
+ * @param[in] bytes Required allocation size.
+ * @param[in] zero_initialize Zero the allocation and clean its cache when true.
+ * @param[out] buffer Destination shared device-buffer handle.
+ * @return Success, or an invalid-argument/UCP-allocation/cache error.
+ */
 Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
                             std::shared_ptr<DeviceBuffer> *buffer) {
   if (buffer == nullptr || bytes == 0) {
@@ -279,7 +292,14 @@ Result AllocateDeviceBuffer(size_t bytes, bool zero_initialize,
   return Result::Ok();
 }
 
-/** Copy and cache-clean one changed range in a device-backed tensor. */
+/**
+ * @brief Copy one changed Host range into UCP memory and clean its cache.
+ * @param[in,out] buffer Destination device allocation.
+ * @param[in] byte_offset Destination byte offset.
+ * @param[in] source Host source bytes.
+ * @param[in] bytes Number of bytes to copy and clean.
+ * @return Success, or an invalid-range/cache-clean error.
+ */
 Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
                          size_t byte_offset, const void *source, size_t bytes) {
   if (buffer == nullptr || buffer->impl_ == nullptr || source == nullptr ||
@@ -303,6 +323,7 @@ Result WriteDeviceBuffer(const std::shared_ptr<DeviceBuffer> &buffer,
 
 struct Graph::PersistentBuffers {
   std::vector<hbDNNTensor> inputs;
+  std::vector<hbDNNTensor> bound_inputs;
   std::vector<hbDNNTensor> outputs;
 
   /** Release every graph-private input and output UCP allocation. */
@@ -316,22 +337,25 @@ struct Graph::PersistentBuffers {
   }
 };
 
-/** Create an empty graph metadata/cache wrapper. */
+/** @brief Create an empty graph metadata and persistent-buffer wrapper. */
 Graph::Graph() = default;
-/** Release graph-owned persistent IO buffers. */
+/** @brief Release graph metadata and graph-owned persistent IO buffers. */
 Graph::~Graph() = default;
 
-/** Drop reusable graph IO allocations while retaining metadata and handle. */
-void Graph::ReleasePersistentBuffers() {
-  buffers_.reset();
-}
-
-/** Expose the vendor-independent element width to the Language runtime. */
+/**
+ * @brief Return the byte width of one vendor tensor element.
+ * @param[in] dtype Vendor tensor-type integer.
+ * @return Element width in bytes, or zero when the dtype is unsupported.
+ */
 int32_t DtypeElementBytes(int32_t dtype) {
   return ElementBytesForType(dtype);
 }
 
-/** Expose a short vendor-independent dtype name for diagnostics. */
+/**
+ * @brief Return a stable short name for one vendor tensor dtype.
+ * @param[in] dtype Vendor tensor-type integer.
+ * @return Static diagnostic name, or "?" for an unsupported value.
+ */
 const char *DtypeName(int32_t dtype) {
   return DtypeNameImpl(dtype);
 }
@@ -340,9 +364,10 @@ const char *DtypeName(int32_t dtype) {
 // HbmSession
 // ---------------------------------------------------------------------------
 
-/** Release all graph wrappers before releasing the packed HBM handle. */
+/**
+ * @brief Release graph wrappers followed by the packed HBM handle.
+ */
 HbmSession::~HbmSession() {
-  active_graph_ = nullptr;
   graphs_.clear();
   if (packed_handle_ != nullptr) {
     hbDNNRelease(packed_handle_);
@@ -350,7 +375,11 @@ HbmSession::~HbmSession() {
   }
 }
 
-/** Load one packed HBM file and cache its graph-name contract. */
+/**
+ * @brief Load one packed HBM file and enumerate its graph names.
+ * @param[in] hbm_path HBM file path supplied by the active configuration.
+ * @return Success, or an initialization/model-enumeration error.
+ */
 Result HbmSession::Load(const std::string &hbm_path) {
   constexpr char kL2MemoryVariable[] = "HB_DNN_USER_DEFINED_L2M_SIZES";
   if (std::getenv(kL2MemoryVariable) == nullptr &&
@@ -385,7 +414,11 @@ Result HbmSession::Load(const std::string &hbm_path) {
   return Result::Ok();
 }
 
-/** Lazily resolve a named graph and refresh its IO metadata once. */
+/**
+ * @brief Resolve one packed graph and lazily cache its IO contract.
+ * @param[in] name Exact graph name from GetGraphNames.
+ * @return Session-owned graph pointer, or nullptr if lookup/metadata fails.
+ */
 Graph *HbmSession::GetGraph(const std::string &name) {
   auto it = graphs_.find(name);
   if (it != graphs_.end()) {
@@ -413,7 +446,15 @@ Graph *HbmSession::GetGraph(const std::string &name) {
   return raw;
 }
 
-/** Resolve and execute a named graph using owned input tensor values. */
+/**
+ * @brief Resolve and execute a named graph using owned input tensors.
+ * @param[in] graph_name Exact packed graph name.
+ * @param[in] inputs Input tensors in graph-declared order.
+ * @param[out] outputs Materialized output tensors in declared order.
+ * @param[out] metrics Optional timing and byte counters.
+ * @param[in] output_slices Optional Host output materialization policy.
+ * @return Graph execution result, or graph-not-found error.
+ */
 Result HbmSession::ExecuteGraphByName(const std::string &graph_name,
                                        const std::vector<Tensor> &inputs,
                                        std::vector<Tensor> *outputs,
@@ -423,14 +464,18 @@ Result HbmSession::ExecuteGraphByName(const std::string &graph_name,
   if (g == nullptr) {
     return Result::Err(-1, "graph not found: " + graph_name);
   }
-  if (active_graph_ != nullptr && active_graph_ != g) {
-    active_graph_->ReleasePersistentBuffers();
-  }
-  active_graph_ = g;
   return g->Execute(inputs, outputs, metrics, output_slices);
 }
 
-/** Resolve and execute a named graph using caller-owned tensor views. */
+/**
+ * @brief Resolve and execute a named graph using non-owning input views.
+ * @param[in] graph_name Exact packed graph name.
+ * @param[in] inputs Non-owning tensors in graph-declared order.
+ * @param[out] outputs Materialized output tensors in declared order.
+ * @param[out] metrics Optional timing and byte counters.
+ * @param[in] output_slices Optional Host output materialization policy.
+ * @return Graph execution result, or graph-not-found error.
+ */
 Result HbmSession::ExecuteGraphByName(
     const std::string &graph_name,
     const std::vector<const Tensor *> &inputs,
@@ -441,10 +486,6 @@ Result HbmSession::ExecuteGraphByName(
   if (g == nullptr) {
     return Result::Err(-1, "graph not found: " + graph_name);
   }
-  if (active_graph_ != nullptr && active_graph_ != g) {
-    active_graph_->ReleasePersistentBuffers();
-  }
-  active_graph_ = g;
   return g->Execute(inputs, outputs, metrics, output_slices);
 }
 
@@ -452,7 +493,11 @@ Result HbmSession::ExecuteGraphByName(
 // Graph
 // ---------------------------------------------------------------------------
 
-/** Read and cache the graph's input/output names, shapes, and dtypes. */
+/**
+ * @brief Read and cache graph input/output names, shapes, and dtypes.
+ * @param[in] handle Vendor graph handle returned by the packed HBM session.
+ * @return Success, or the first vendor metadata-query error.
+ */
 Result Graph::RefreshIO(hbDNNHandle_t handle) {
   if (io_ready_) {
     return Result::Ok();
@@ -520,7 +565,14 @@ Result Graph::RefreshIO(hbDNNHandle_t handle) {
   return Result::Ok();
 }
 
-/** Adapt owned input values to views and execute through the shared path. */
+/**
+ * @brief Execute the graph by adapting owned tensors to non-owning views.
+ * @param[in] inputs Input tensors in the graph-declared order.
+ * @param[out] outputs Materialized graph outputs in declared order.
+ * @param[out] metrics Optional timing and byte counters for this execution.
+ * @param[in] output_slices Optional Host-side output materialization policy.
+ * @return Success, or an error describing invalid IO or a vendor runtime failure.
+ */
 Result Graph::Execute(const std::vector<Tensor> &inputs,
                       std::vector<Tensor> *outputs,
                       ExecutionMetrics *metrics,
@@ -531,7 +583,15 @@ Result Graph::Execute(const std::vector<Tensor> &inputs,
   return Execute(views, outputs, metrics, output_slices);
 }
 
-/** Execute using the handle remembered by SetHandle. */
+/**
+ * @brief Execute non-owning input views with the handle set on this graph.
+ * @param[in] inputs Non-owning input tensors in graph-declared order.
+ * @param[out] outputs Materialized graph outputs in declared order.
+ * @param[out] metrics Optional timing and byte counters for this execution.
+ * @param[in] output_slices Optional Host-side output materialization policy.
+ * @return Success, or an error when no handle is set, IO is invalid, or the
+ *         vendor runtime rejects the execution.
+ */
 Result Graph::Execute(const std::vector<const Tensor *> &inputs,
                       std::vector<Tensor> *outputs,
                       ExecutionMetrics *metrics,
@@ -542,7 +602,15 @@ Result Graph::Execute(const std::vector<const Tensor *> &inputs,
   return Execute(c_handle_, inputs, outputs, metrics, output_slices);
 }
 
-/** Adapt owned input values for an explicitly supplied vendor handle. */
+/**
+ * @brief Execute owned input tensors with an explicitly supplied graph handle.
+ * @param[in] handle Vendor graph handle used for this execution.
+ * @param[in] inputs Input tensors in graph-declared order.
+ * @param[out] outputs Materialized graph outputs in declared order.
+ * @param[out] metrics Optional timing and byte counters for this execution.
+ * @param[in] output_slices Optional Host-side output materialization policy.
+ * @return Success, or an error describing invalid IO or a vendor runtime failure.
+ */
 Result Graph::Execute(hbDNNHandle_t handle,
                       const std::vector<Tensor> &inputs,
                       std::vector<Tensor> *outputs,
@@ -554,7 +622,15 @@ Result Graph::Execute(hbDNNHandle_t handle,
   return Execute(handle, views, outputs, metrics, output_slices);
 }
 
-/** Allocate reusable vendor IO tensors using the graph's declared layout. */
+/**
+ * @brief Allocate and cache reusable vendor IO tensor storage for this graph.
+ * @param[in] handle Vendor graph handle used to query tensor properties.
+ * @return Success when buffers already exist or are allocated; otherwise an
+ *         error describing an unsupported dtype, invalid layout, or UCP failure.
+ *
+ * Input storage is allocated lazily during Execute so device-resident KV views
+ * can bind directly without reserving redundant graph-private input memory.
+ */
 Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
   if (buffers_ != nullptr) return Result::Ok();
 
@@ -584,12 +660,11 @@ Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
       return Result::Err(-1, "input stride layout exceeds allocation idx=" +
                                  std::to_string(index));
     }
-    err = hbUCPMallocCached(&tensor.sysMem, allocation_bytes, 0);
-    if (err != 0) {
-      return Result::Err(err, "hbUCPMallocCached input idx=" +
-                                 std::to_string(index));
-    }
+    // Input storage is allocated lazily in Execute. Device-resident KV inputs
+    // replace this view directly and must not reserve another private copy for
+    // every Language graph.
   }
+  buffers->bound_inputs = buffers->inputs;
 
   for (size_t index = 0; index < buffers->outputs.size(); ++index) {
     hbDNNTensor &tensor = buffers->outputs[index];
@@ -624,7 +699,20 @@ Result Graph::EnsurePersistentBuffers(hbDNNHandle_t handle) {
   return Result::Ok();
 }
 
-/** Pack inputs, submit one synchronous BPU task, and materialize outputs. */
+/**
+ * @brief Bind or pack inputs, run one synchronous BPU task, and unpack outputs.
+ * @param[in] handle Vendor graph handle used for allocation and submission.
+ * @param[in] inputs Non-owning input tensors in graph-declared order. A tensor
+ *                   with device_buffer is bound directly; otherwise Host data
+ *                   is copied into reusable UCP storage.
+ * @param[out] outputs Destination tensors. Unrequested outputs retain metadata
+ *                     but contain no Host data.
+ * @param[out] metrics Optional timing and transferred-byte counters.
+ * @param[in] output_slices Optional output-row selection and materialization
+ *                          policy, one entry per graph output.
+ * @return Success after task completion, or an error for an IO contract mismatch,
+ *         invalid slice/layout, memory failure, cache operation, or vendor call.
+ */
 Result Graph::Execute(hbDNNHandle_t handle,
                       const std::vector<const Tensor *> &inputs,
                       std::vector<Tensor> *outputs,
@@ -656,11 +744,12 @@ Result Graph::Execute(hbDNNHandle_t handle,
   if (!ready.ok()) return ready;
 
   auto &in_tensors = buffers_->inputs;
+  auto &bound_inputs = buffers_->bound_inputs;
   auto &out_tensors = buffers_->outputs;
   // Keep Graph-owned input allocations intact. Device-resident inputs replace
   // only the per-submission hbUCPSysMem view and may be shared across graphs.
-  std::vector<hbDNNTensor> bound_inputs = in_tensors;
   for (size_t i = 0; i < inputs.size(); ++i) {
+    bound_inputs[i] = in_tensors[i];
     if (inputs[i] == nullptr || inputs[i]->shape != input_shapes_[i] ||
         inputs[i]->dtype != input_dtypes_[i]) {
       return Result::Err(-1, "input shape or dtype mismatch idx=" +
@@ -696,6 +785,15 @@ Result Graph::Execute(hbDNNHandle_t handle,
       }
       continue;
     }
+    if (in_tensors[i].sysMem.virAddr == nullptr) {
+      const int32_t alloc_err = hbUCPMallocCached(
+          &in_tensors[i].sysMem, aligned_bytes, 0);
+      if (alloc_err != 0) {
+        return Result::Err(alloc_err, "hbUCPMallocCached input idx=" +
+                                         std::to_string(i));
+      }
+    }
+    bound_inputs[i].sysMem = in_tensors[i].sysMem;
     if (inputs[i]->byte_offset > inputs[i]->data.size() ||
         static_cast<int64_t>(inputs[i]->data.size() - inputs[i]->byte_offset) <
             want_bytes) {
@@ -773,17 +871,18 @@ Result Graph::Execute(hbDNNHandle_t handle,
   }
 
   // Pull output data from BPU cache into host vectors.
-  outputs->clear();
-  outputs->reserve(out_tensors.size());
+  outputs->resize(out_tensors.size());
   for (size_t i = 0; i < out_tensors.size(); ++i) {
+    Tensor &t = (*outputs)[i];
+    t.byte_offset = 0;
+    t.device_buffer.reset();
     if (output_slices != nullptr &&
         !(*output_slices)[i].materialize) {
-      Tensor t;
       t.shape.assign(out_tensors[i].properties.validShape.dimensionSize,
                      out_tensors[i].properties.validShape.dimensionSize +
                          out_tensors[i].properties.validShape.numDimensions);
       t.dtype = out_tensors[i].properties.tensorType;
-      outputs->push_back(std::move(t));
+      t.data.clear();
       continue;
     }
     const auto flush_started = Clock::now();
@@ -816,7 +915,6 @@ Result Graph::Execute(hbDNNHandle_t handle,
     const int64_t want_elems = ElementCount(selected_shape);
     const int64_t want_bytes = want_elems * elem_bytes;
 
-    Tensor t;
     t.shape.assign(selected_shape.dimensionSize,
                    selected_shape.dimensionSize + selected_shape.numDimensions);
     t.dtype = out_tensors[i].properties.tensorType;
@@ -837,7 +935,6 @@ Result Graph::Execute(hbDNNHandle_t handle,
       hbUCPReleaseTask(task);
       return Result::Err(-1, "cannot unpack output tensor idx=" + std::to_string(i));
     }
-    outputs->push_back(std::move(t));
     if (metrics != nullptr) {
       metrics->output_unpack_ms += std::chrono::duration<double, std::milli>(
           Clock::now() - unpack_started).count();
@@ -845,8 +942,7 @@ Result Graph::Execute(hbDNNHandle_t handle,
     }
   }
 
-  // The synchronous task is per-inference. HbmSession releases these graph IO
-  // buffers when execution switches to another static graph.
+  // The task is per-inference; graph IO allocations stay cached for reuse.
   hbUCPReleaseTask(task);
 
   if (metrics != nullptr) {

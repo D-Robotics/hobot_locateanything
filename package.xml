@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>hobot_locateanything</name>
-  <version>0.1.1</version>
+  <version>0.2.0</version>
   <description>LocateAnything-3B HBM inference for D-Robotics RDK S600 and TROS.</description>
   <maintainer email="3071744684@qq.com">Kangjie Xu</maintainer>
   <license>Apache-2.0</license>
@@ -24,6 +24,8 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>mipi_cam</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>websocket</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>
